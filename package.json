@@ -1,0 +1,48 @@
+{
+  "name": "dsh-provider-openai-subscription",
+  "version": "0.1.0-alpha.1",
+  "description": "Independent OpenAI/ChatGPT OAuth provider, model adapter and balance plugin for DeepSeek Harness. Safe bootstrap: a plugin failure must never prevent DSH from starting.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./client/client.js",
+    "./rescue": "./src/rescue.mjs",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "dsh-openai-subscription-rescue": "src/rescue.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-ui-model-selection"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:integration": "node scripts/integration-smoke.mjs",
+    "check": "node --check src/index.js && node --check src/bootstrap.js && node --check src/config.js && node --check src/constants.js && node --check src/state.js && node --check src/conflicts.js && node --check src/runtime.js && node --check src/rescue.mjs && node --check src/credentials/schema.js && node --check src/credentials/repository.js && node --check src/credentials/token-manager.js && node --check src/oauth/pkce.js && node --check src/oauth/state.js && node --check src/oauth/jwt.js && node --check src/oauth/token-client.js && node --check src/oauth/callback-parser.js && node --check src/oauth/callback-server.js && node --check src/oauth/attempt-manager.js && node --check src/oauth/device-client.js && node --check src/oauth/device-attempt.js && node --check src/balance/normalizer.js && node --check src/balance/client.js && node --check src/balance/service.js && node --check src/stream/sse-parser.js && node --check src/models/client.js && node --check src/web/routes.js && node --check src/provider/request-builder.js && node --check src/provider/event-translator.js && node --check src/provider/adapter.js && node --check client/client.js && node --test test/*.test.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "openai",
+    "chatgpt",
+    "oauth",
+    "codex",
+    "balance"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  }
+}

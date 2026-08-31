@@ -1,0 +1,12 @@
+# Safe install: the plugin is inserted in bootstrap state.
+# Runtime is activated only after compatibility validation has passed.
+- insert:
+    - id: llm-openai-subscription
+      name: dsh-provider-openai-subscription
+      config:
+        state: bootstrap
+        oauth:
+          clientId: ""
+        provider:
+          defaultModel: ""
+          reasoningEffort: ""
