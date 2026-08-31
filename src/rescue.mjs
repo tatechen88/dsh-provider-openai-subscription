@@ -9,7 +9,7 @@
  * @module dsh-provider-openai-subscription/rescue
  */
 
-import { access, readFile, readdir, stat, writeFile, mkdir, rename, mkdtemp, rm } from 'node:fs/promises'
+import { access, readFile, readdir, writeFile, mkdir, rename, mkdtemp, rm } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -394,13 +394,9 @@ async function commandRollback(dir, target) {
     process.exitCode = 2
     return
   }
-  const { writeFile } = await import('node:fs/promises')
-  const { dirname } = await import('node:path')
   await writeFile(target, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8')
   // Mark completion adjacent to the snapshot so operators can verify.
   await writeFile(join(dir, `${newest}.restored`), `${new Date().toISOString()}\n`, 'utf8')
-  void stat(target)
-  void dirname
   print(`rollback: restored ${newest} to ${target}.`)
 }
 

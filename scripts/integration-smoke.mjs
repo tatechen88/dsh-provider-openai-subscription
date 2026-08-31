@@ -8,29 +8,57 @@
  * inside DSH without breaking provider registration.
  *
  * Usage:
- *   DSH_NODE_MODULES="D:/AI/Agents/deepseek-harness/profiles/node_modules" \
+ *   DSH_NODE_MODULES="/path/to/dsh/profiles/node_modules" \
  *     node scripts/integration-smoke.mjs
+ *
+ * If DSH_NODE_MODULES is omitted, the script checks DSH_PROFILE and DSH_HOME
+ * before the standard source-checkout locations.  No machine-specific path is
+ * used as a default.
  */
 
 import { createRequire } from 'node:module'
 import { mkdtemp, rm, access } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { activateSafely } from '../src/bootstrap.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const pluginRoot = join(here, '..')
 
-const dshNodeModules = process.env.DSH_NODE_MODULES
-  || 'D:/AI/Agents/deepseek-harness/profiles/node_modules'
+/**
+ * Find the installed DSH dependency surface without assuming a host path.
+ * @returns {Promise<{path: string|undefined, checked: string[]}>}
+ */
+async function findDshNodeModules() {
+  const profile = process.env.DSH_PROFILE
+  const home = process.env.DSH_HOME
+  const candidates = [
+    process.env.DSH_NODE_MODULES,
+    profile === undefined ? undefined : basename(profile) === 'node_modules' ? profile : join(profile, 'node_modules'),
+    home === undefined ? undefined : join(home, 'profiles', 'node_modules'),
+    home === undefined ? undefined : join(home, 'profiles', 'web', 'node_modules'),
+    home === undefined ? undefined : join(home, 'profiles', 'default', 'node_modules'),
+    home === undefined ? undefined : join(home, 'node_modules'),
+  ].filter((candidate, index, all) => candidate !== undefined && candidate.length > 0 && all.indexOf(candidate) === index)
 
-try {
-  await access(join(dshNodeModules, '@deepseek-ai', 'cordis', 'package.json'))
-} catch {
-  console.log(`SKIP: DSH packages not found at ${dshNodeModules}`)
+  for (const candidate of candidates) {
+    try {
+      await access(join(candidate, '@deepseek-ai', 'cordis', 'package.json'))
+      return { path: candidate, checked: candidates }
+    } catch {
+      // Continue checking the remaining installation locations.
+    }
+  }
+  return { path: undefined, checked: candidates }
+}
+
+const dshModules = await findDshNodeModules()
+if (dshModules.path === undefined) {
+  console.log(`SKIP: DSH packages not found; checked ${dshModules.checked.join(', ') || 'no configured locations'}`)
   process.exit(0)
 }
+const dshNodeModules = dshModules.path
 
 const require = createRequire(join(dshNodeModules, 'noop.js'))
 const { Context } = require('@deepseek-ai/cordis')

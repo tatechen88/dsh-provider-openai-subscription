@@ -33,6 +33,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     balanceRefresh: '/plugins/openai-subscription/balance/refresh',
     models: '/plugins/openai-subscription/models',
     modelsRefresh: '/plugins/openai-subscription/models/refresh',
+    migrationBackup: '/plugins/openai-subscription/migration/backup',
   }
 
   async function getJson(url, options) {
@@ -120,7 +121,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       let cancelled = false
       async function load() {
         try {
-          const payload = await getJson(API.balance)
+          const payload = await getJson(`${API.balance}?provider=${encodeURIComponent(provider)}`)
           if (!cancelled) setBalance(payload.data)
         } catch {
           if (!cancelled) setBalance(null)
@@ -144,13 +145,16 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     }, summary)
   }
 
-  function OpenAISubscriptionCard() {
+  function OpenAISubscriptionCard({ sessionsService, modelDirectories }) {
+    const currentProvider = useCurrentProvider(sessionsService, modelDirectories)
     const [status, setStatus] = useState(null)
     const [balance, setBalance] = useState(null)
     const [models, setModels] = useState([])
     const [attempt, setAttempt] = useState(null)
     const [deviceAttempt, setDeviceAttempt] = useState(null)
     const [manualCode, setManualCode] = useState('')
+    const [backupPassword, setBackupPassword] = useState('')
+    const [backupMessage, setBackupMessage] = useState(null)
     const [error, setError] = useState(null)
     const [loading, setLoading] = useState(false)
 
@@ -164,8 +168,14 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     }, [])
 
     const refreshBalance = useCallback(async (force) => {
+      if (currentProvider !== 'openai-subscription') {
+        setBalance(null)
+        return
+      }
       try {
-        const payload = force ? await postJson(API.balanceRefresh) : await getJson(API.balance)
+        const payload = force
+          ? await postJson(API.balanceRefresh, { provider: currentProvider })
+          : await getJson(`${API.balance}?provider=${encodeURIComponent(currentProvider)}`)
         setBalance(payload.data)
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
@@ -186,7 +196,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       void refreshBalance(false)
       const timer = setInterval(() => { void refreshStatus() }, 60 * 1000)
       return () => clearInterval(timer)
-    }, [refreshStatus, refreshBalance])
+    }, [refreshStatus, refreshBalance, currentProvider])
 
     useEffect(() => {
       if (signedIn) void refreshModels()
@@ -252,6 +262,23 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       }
     }
 
+    async function backupLegacy() {
+      if (backupPassword.length < 12) {
+        setError('备份密码至少需要 12 个字符')
+        return
+      }
+      setError(null)
+      setBackupMessage(null)
+      try {
+        const payload = await postJson(API.migrationBackup, { password: backupPassword })
+        setBackupPassword('')
+        setBackupMessage(`旧 Provider 已加密备份：${payload.data.backupId}`)
+        await refreshStatus()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      }
+    }
+
     async function logout() {
       setError(null)
       try {
@@ -269,6 +296,15 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       h('h3', { style: { margin: '0 0 8px', fontSize: 14 } }, 'OpenAI (ChatGPT OAuth)'),
 
       error ? h('div', { style: styles.error }, error) : null,
+      backupMessage ? h('div', { style: styles.success }, backupMessage) : null,
+
+      h('div', { style: styles.row }, [
+        h('span', null, '当前会话 Provider'),
+        h('span', null, currentProvider || '未选择'),
+      ]),
+      currentProvider === 'openai-codex'
+        ? h('div', { style: styles.row }, [h('span', null, 'Balance'), h('span', null, '旧 Provider 不适用')])
+        : null,
 
       h('div', { style: styles.row }, [
         h('span', null, signedIn ? '已登录' : '未登录'),
@@ -276,6 +312,20 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
           ? h('span', null, `${status.grant.accountId}${status.grant.email ? ` · ${status.grant.email}` : ''}`)
           : h('span', null, status ? '未配置' : '加载中…'),
       ]),
+
+      status && status.migration && (status.migration.providerPresent || status.migration.credentialPresent)
+        ? h('div', { style: { marginTop: 8, borderTop: '1px solid #374151', paddingTop: 8 } }, [
+            h('div', { style: styles.row }, [h('span', null, '检测到旧 OpenAI OAuth'), h('span', null, '建议先备份')]),
+            h('input', {
+              type: 'password',
+              value: backupPassword,
+              onChange: (event) => setBackupPassword(event.target.value),
+              placeholder: '备份密码（至少 12 个字符）',
+              style: { width: '100%', boxSizing: 'border-box', background: '#111827', color: '#f9fafb', border: '1px solid #374151', borderRadius: 8, padding: 6, margin: '6px 0' },
+            }),
+            h('button', { type: 'button', style: styles.button, onClick: () => void backupLegacy() }, '加密备份旧 Provider'),
+          ])
+        : null,
 
       signedIn ? h('div', null, [
         h('div', { style: styles.row }, [
@@ -354,7 +404,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
       name: 'settings.plugin.item',
       key: 'llm-openai-subscription',
-      inject: () => ({}),
+      inject: () => ({ sessionsService: ctx.sessions, modelDirectories: ctx.modelDirectories }),
     }, OpenAISubscriptionCard))
     ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
       name: 'sidebar.footer.action',

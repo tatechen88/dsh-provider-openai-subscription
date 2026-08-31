@@ -83,7 +83,10 @@ dsh-openai-subscription-rescue disable
 ```sh
 npm test
 npm run check
+npm run test:integration
 ```
+
+集成 smoke 会按以下顺序检查 DSH 依赖目录：`DSH_NODE_MODULES`、`DSH_PROFILE/node_modules`、`DSH_HOME/profiles/node_modules`、Web/Default profile 以及 `DSH_HOME/node_modules`。因此不依赖固定电脑路径；找不到依赖时会输出所有已检查位置并安全跳过。
 
 ## 目录
 
@@ -121,6 +124,12 @@ src/
     routes.js              本地同源 Web API
 test/                      node:test 单元测试
 ```
+
+## 迁移与共存
+
+检测到旧的 `openai-codex` Provider 时，插件只报告状态，不会复制、删除或刷新旧凭据。设置页可用用户输入的密码创建加密备份；备份内容使用 scrypt/AES-256-GCM，密码不会写入文件或日志。新旧 Provider 使用独立凭据，用户可在 DSH 模型选择器中自由切换；插件不改变已有会话的 Provider 选择。
+
+Balance 只属于 `openai-subscription`。当前会话使用旧 `openai-codex` 时，客户端不查询 Balance，Host 路由也不会访问上游，并显示“旧 Provider 不适用”。Tate-DSH-DeskTop 会在托盘中显示同一脱敏状态和新 Provider 的额度；桌面壳不保存 OAuth token。
 
 ## 风险声明
 

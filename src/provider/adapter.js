@@ -8,7 +8,7 @@
  * @module dsh-provider-openai-subscription/provider/adapter
  */
 
-import { PROVIDER_ID } from '../constants.js'
+import { PROVIDER_ID, USER_AGENT } from '../constants.js'
 import { buildResponsesRequest } from './request-builder.js'
 import { ResponsesEventTranslator } from './event-translator.js'
 import { SseParser } from '../stream/sse-parser.js'
@@ -127,6 +127,7 @@ export class OpenAISubscriptionAdapter {
         headers: {
           authorization: `Bearer ${access.accessToken}`,
           'chatgpt-account-id': access.accountId,
+          'user-agent': USER_AGENT,
           'content-type': 'application/json',
           accept: 'text/event-stream',
         },

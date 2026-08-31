@@ -10,6 +10,7 @@
 import { ROUTE_PREFIX } from '../constants.js'
 import { CredentialSchemaError } from '../credentials/schema.js'
 import { BalanceClientError } from '../balance/client.js'
+import { PROVIDER_ID } from '../constants.js'
 
 /** Maximum accepted JSON body size for small mutation routes. */
 export const MAX_BODY_BYTES = 4096
@@ -37,12 +38,24 @@ export function sendJson(response, status, payload) {
 export function sameOrigin(request) {
   const origin = request.headers.origin
   const host = request.headers.host
-  if (origin === undefined || host === undefined) return false
-  try {
-    return new URL(origin).host === host
-  } catch {
-    return false
+  if (host === undefined) return false
+  if (origin !== undefined) {
+    try {
+      return new URL(origin).host === host
+    } catch {
+      return false
+    }
   }
+  if (request.headers['sec-fetch-site'] === 'same-origin') return true
+  const referer = request.headers.referer
+  if (referer !== undefined) {
+    try {
+      return new URL(referer).host === host
+    } catch {
+      return false
+    }
+  }
+  return false
 }
 
 /**
@@ -96,6 +109,9 @@ export async function readJsonBody(request) {
  * @param {{provider?: {defaultModel?: string, reasoningEffort?: string}}} [deps.config]
  * @param {(clientId: string) => Promise<{access: string, refresh?: string, expires: number, idToken?: string}>} deps.exchange
  * @param {string} deps.clientId
+ * @param {object} [deps.migration]
+ * @param {() => Promise<object>} [deps.migration.status]
+ * @param {(password: string) => Promise<object>} [deps.migration.backup]
  * @returns {() => void}
  */
 export function mountRoutes(host, deps) {
@@ -128,9 +144,11 @@ export function mountRoutes(host, deps) {
   route('GET', '/status', async (_request, response) => {
     const status = await deps.repository.status()
     const provider = deps.config?.provider
+    const migration = deps.migration?.status === undefined ? undefined : await deps.migration.status()
     sendJson(response, 200, { ok: true, data: {
       ...status,
       ...(provider === undefined ? {} : { provider: { defaultModel: provider.defaultModel || '', reasoningEffort: provider.reasoningEffort || '' } }),
+      ...(migration === undefined ? {} : { migration }),
     } })
   })
 
@@ -207,15 +225,33 @@ export function mountRoutes(host, deps) {
     sendJson(response, 200, { ok: true })
   })
 
-  route('GET', '/balance', async (_request, response) => {
+  const inactiveBalance = (response) => sendJson(response, 200, { ok: true, data: { available: false, reason: 'inactive-provider' } })
+  route('GET', '/balance', async (request, response) => {
+    const provider = new URL(request.url ?? '/', 'http://localhost').searchParams.get('provider')
+    if (provider !== PROVIDER_ID) return inactiveBalance(response)
     const snapshot = await deps.balance.get()
     sendJson(response, 200, { ok: true, data: snapshot })
   })
 
-  route('POST', '/balance/refresh', async (_request, response) => {
+  route('POST', '/balance/refresh', async (request, response) => {
+    const body = await readJsonBody(request)
+    if (body.provider !== PROVIDER_ID) return inactiveBalance(response)
     const snapshot = await deps.balance.get(true)
     sendJson(response, 200, { ok: true, data: snapshot })
   })
+
+  if (deps.migration?.backup !== undefined) {
+    route('POST', '/migration/backup', async (request, response) => {
+      const body = await readJsonBody(request)
+      const password = typeof body.password === 'string' ? body.password : ''
+      if (password.length < 12) {
+        sendJson(response, 400, { ok: false, error: 'backup password must contain at least 12 characters' })
+        return
+      }
+      const result = await deps.migration.backup(password)
+      sendJson(response, 200, { ok: true, data: result })
+    })
+  }
 
   if (deps.listModels !== undefined) {
     route('GET', '/models', async (_request, response) => {

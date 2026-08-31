@@ -4,6 +4,8 @@
  * @module dsh-provider-openai-subscription/models/client
  */
 
+import { USER_AGENT } from '../constants.js'
+
 /** Upstream model catalog endpoint. */
 export const OPENAI_MODELS_URL = 'https://chatgpt.com/backend-api/codex/models'
 
@@ -75,6 +77,7 @@ export async function fetchModels({ getAccess, fetchImpl = fetch, timeoutMs = 30
       headers: {
         authorization: `Bearer ${access.accessToken}`,
         'chatgpt-account-id': access.accountId,
+        'user-agent': USER_AGENT,
         accept: 'application/json',
       },
       signal: controller.signal,

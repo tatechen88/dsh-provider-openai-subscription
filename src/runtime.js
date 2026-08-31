@@ -22,6 +22,7 @@ import { fetchBalance } from './balance/client.js'
 import { BalanceService } from './balance/service.js'
 import { OpenAISubscriptionAdapter } from './provider/adapter.js'
 import { mountRoutes } from './web/routes.js'
+import { inspectLegacy, backupLegacyCredential } from './migration/backup.js'
 
 /**
  * Apply the runtime feature set.
@@ -70,6 +71,13 @@ export async function applyRuntime(ctx, config) {
   const balance = new BalanceService({
     fetch: () => fetchBalance({ getAccess: () => tokenManager.getAccessSnapshot() }),
   })
+  const migration = {
+    status: async () => {
+      const legacy = await inspectLegacy({ llm: ctx.get?.('llm'), credentials })
+      return { ...legacy, recommendedProvider: PROVIDER_ID, balanceProvider: PROVIDER_ID }
+    },
+    backup: (password) => backupLegacyCredential({ credentials, password }),
+  }
 
   const llm = ctx.get?.('llm')
   const adapter = llm?.registerAdapter === undefined ? undefined : new OpenAISubscriptionAdapter({
@@ -94,7 +102,7 @@ export async function applyRuntime(ctx, config) {
       }
       const webServer = ctx.get?.('webServer')
       if (webServer?.register !== undefined) {
-        const dispose = mountRoutes({ webServer }, { repository, attempts, devices, balance, listModels, config, clientId: config.oauth.clientId, exchange })
+        const dispose = mountRoutes({ webServer }, { repository, attempts, devices, balance, listModels, config, clientId: config.oauth.clientId, exchange, migration })
         disposers.push(() => {
           dispose()
           balance.clear()
@@ -120,7 +128,7 @@ export async function applyRuntime(ctx, config) {
     }
     const webServer = ctx.get?.('webServer')
     if (webServer?.register !== undefined) {
-      mountRoutes({ webServer }, { repository, attempts, devices, balance, listModels, config, clientId: config.oauth.clientId, exchange })
+      mountRoutes({ webServer }, { repository, attempts, devices, balance, listModels, config, clientId: config.oauth.clientId, exchange, migration })
     }
   }
 

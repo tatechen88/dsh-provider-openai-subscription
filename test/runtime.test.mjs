@@ -67,7 +67,7 @@ test('applyRuntime registers provider, directory, and routes', async () => {
   assert.equal(llm.adapters.providers[0], PROVIDER_ID)
   assert.equal(llm.directory[0].provider, PROVIDER_ID)
   assert.equal(llm.directory[0].settingsNs, SETTINGS_NAMESPACE)
-  assert.equal(routes.length, 13)
+  assert.equal(routes.length, 14)
   assert.equal(effects.length, 1)
   // Disposer should tear down registrations.
   effects[0].disposer()

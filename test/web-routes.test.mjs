@@ -83,6 +83,7 @@ test('sameOrigin accepts matching origin and rejects mismatches', () => {
   assert.equal(sameOrigin({ headers: { origin: 'http://localhost:1234', host: 'localhost:1234' } }), true)
   assert.equal(sameOrigin({ headers: { origin: 'http://evil.example', host: 'localhost:1234' } }), false)
   assert.equal(sameOrigin({ headers: { host: 'localhost:1234' } }), false)
+  assert.equal(sameOrigin({ headers: { host: 'localhost:1234', 'sec-fetch-site': 'same-origin' } }), true)
 })
 
 test('readJsonBody reads bounded JSON object', async () => {
