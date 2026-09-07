@@ -21,6 +21,7 @@
 - Balance/usage：响应归一化、客户端、缓存/单飞/stale fallback
 - Model catalog 客户端与 SSE parser
 - OpenAI Provider adapter：Responses 请求构造、SSE 翻译、模型目录、`ctx.llm.registerAdapter` 注册
+- Provider 工具投影：向模型隐藏 DSH 沙箱升级参数（`sandbox_permissions`/`justification`），并在受影响工具描述中追加说明。这些字段不是普通工具参数，而是经 DSH 审批通道的一次性严格加宽请求；会话已处于 `danger-full-access` 时 Harness 会以“非严格加宽”拒绝，模型据此反复重试会卡死。隐藏后模型无法触发该失败；受限模式下命令被文件沙箱拒绝时，模型会提示用户切换权限预设（实现见 `src/provider/request-builder.js` 的 `buildResponsesTools`）
 - 本地同源 Web API 路由（status / oauth start / attempt / code / cancel / logout / balance）
 - 独立「OpenAI 接入」设置页（`settings.section`）：未激活引导、OAuth 登录（授权码 / 手动回调 / 设备码）、旧凭据加密备份、Balance、模型列表、退出登录
 - 首启引导步骤（`settings.onboarding`）：空白会话且未登录时以模态引导接入；已登录或插件未激活时自动让位，不阻塞 DeepSeek 官方引导

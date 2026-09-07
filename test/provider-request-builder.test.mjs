@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildResponsesRequest, contentText } from '../src/provider/request-builder.js'
+import { buildResponsesRequest, buildResponsesTools, contentText } from '../src/provider/request-builder.js'
 
 test('buildResponsesRequest builds text and tools body', () => {
   const request = buildResponsesRequest({
@@ -61,4 +61,58 @@ test('buildResponsesRequest includes reasoning effort', () => {
 
 test('contentText works', () => {
   assert.equal(contentText([{ type: 'text', text: 'a' }]), 'a')
+})
+
+test('buildResponsesRequest withholds the sandbox-escalation lever from model-visible schemas', () => {
+  const parameters = {
+    type: 'object',
+    properties: {
+      command: { type: 'string' },
+      description: { type: 'string' },
+      workdir: { type: 'string' },
+      sandbox_permissions: { type: 'string', enum: ['workspace-write', 'danger-full-access'] },
+      justification: { type: 'string' },
+    },
+    required: ['command', 'description'],
+  }
+  const request = buildResponsesRequest({
+    model: 'm',
+    messages: [],
+    tools: [{ name: 'pwsh', description: 'Run a command.', parameters }],
+  })
+  const tool = request.tools[0]
+  assert.equal(tool.type, 'function')
+  assert.deepEqual(Object.keys(tool.parameters.properties), ['command', 'description', 'workdir'])
+  assert.deepEqual(tool.parameters.required, ['command', 'description'])
+  assert.deepEqual(tool.parameters.properties.workdir, { type: 'string' })
+  assert.ok(tool.description.includes('never set `sandbox_permissions`'))
+  assert.ok(tool.description.includes('widen the permission preset'))
+  // the caller's schema object is not mutated
+  assert.deepEqual(Object.keys(parameters.properties), ['command', 'description', 'workdir', 'sandbox_permissions', 'justification'])
+})
+
+test('buildResponsesTools drops withheld names from required and leaves lever-less tools untouched', () => {
+  const plain = { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] }
+  const passthrough = buildResponsesTools([{ name: 'echo', description: 'd', parameters: plain }])
+  assert.equal(passthrough[0].parameters, plain)
+  assert.equal(passthrough[0].description, 'd')
+
+  const projected = buildResponsesTools([{
+    name: 'fs', description: 'Edit files.',
+    parameters: {
+      type: 'object',
+      properties: { path: { type: 'string' }, sandbox_permissions: { type: 'string' }, justification: { type: 'string' } },
+      required: ['path', 'sandbox_permissions'],
+    },
+  }])
+  assert.deepEqual(Object.keys(projected[0].parameters.properties), ['path'])
+  assert.deepEqual(projected[0].parameters.required, ['path'])
+  assert.ok(projected[0].description.startsWith('Edit files.'))
+})
+
+test('buildResponsesTools tolerates schemas without a plain properties map', () => {
+  const noParameters = buildResponsesTools([{ name: 'x', description: 'd', parameters: undefined }])
+  assert.deepEqual(noParameters[0], { type: 'function', name: 'x', description: 'd', parameters: undefined })
+  const noProperties = buildResponsesTools([{ name: 'y', description: 'd', parameters: { type: 'object' } }])
+  assert.deepEqual(noProperties[0].parameters, { type: 'object' })
 })

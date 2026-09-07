@@ -4,8 +4,28 @@
  * Translates DSH GenerateOptions into the ChatGPT Codex Responses request
  * body.  This module is pure and does no I/O.
  *
+ * Tool schemas pass through verbatim except the DSH sandbox-escalation lever
+ * (`sandbox_permissions`/`justification`), which this provider withholds from
+ * the model — see {@link buildResponsesTools}.
+ *
  * @module dsh-provider-openai-subscription/provider/request-builder
  */
+
+/**
+ * The DSH sandbox-escalation lever this provider does not expose to the
+ * model.  These are not ordinary tool arguments: they route a one-shot,
+ * strictly-wider retry through the harness approval channel.  The harness
+ * rejects any escalation that is not strictly wider than the session's
+ * current mode, so a model that keeps sending them on a session already at
+ * `danger-full-access` loops on "not strictly wider" rejections and stops
+ * making progress.  Withholding the lever makes that failure unreachable for
+ * this provider; a confined command that needs wider access is instead
+ * escalated by the user widening the permission preset.
+ */
+const HIDDEN_TOOL_PARAMETERS = ['sandbox_permissions', 'justification']
+
+/** Appended to a tool description whose escalation lever was withheld, so the remaining DSH guidance stays actionable. */
+const ESCALATION_UNAVAILABLE_NOTE = ' Sandbox escalation is not available for this provider: never set `sandbox_permissions` or `justification`. If the file sandbox denies a command, tell the user to widen the permission preset instead.'
 
 /**
  * Build a Responses API request body.
@@ -37,17 +57,59 @@ export function buildResponsesRequest({ model, system, messages = [], tools = []
     store: false,
   }
   if (tools.length > 0) {
-    body.tools = tools.map((tool) => ({
-      type: 'function',
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-    }))
+    body.tools = buildResponsesTools(tools)
   }
   if (reasoningEffort !== undefined && reasoningEffort.length > 0) {
     body.reasoning = { effort: reasoningEffort }
   }
   return body
+}
+
+/**
+ * Project DSH tool schemas onto the model-visible Responses `tools` array.
+ *
+ * Parameters pass through verbatim except the sandbox-escalation lever (see
+ * {@link HIDDEN_TOOL_PARAMETERS}): the two fields are removed from
+ * `parameters.properties` and `parameters.required`, and the tool description
+ * gains {@link ESCALATION_UNAVAILABLE_NOTE}.  Tools without the lever — and
+ * schemas without a plain properties map — pass through untouched.  The
+ * caller's schema objects are never mutated.
+ *
+ * @param {Array<{name: string, description: string, parameters: Record<string, unknown>}>} tools
+ * @returns {Array<Record<string, unknown>>}
+ */
+export function buildResponsesTools(tools) {
+  return tools.map((tool) => {
+    const base = { type: 'function', name: tool.name, description: tool.description }
+    const parameters = tool.parameters
+    if (parameters === null || typeof parameters !== 'object' || Array.isArray(parameters)) {
+      return { ...base, parameters }
+    }
+    const properties = parameters.properties
+    if (properties === null || typeof properties !== 'object' || Array.isArray(properties)) {
+      return { ...base, parameters }
+    }
+    const filteredProperties = {}
+    let withheld = false
+    for (const [key, value] of Object.entries(properties)) {
+      if (HIDDEN_TOOL_PARAMETERS.includes(key)) {
+        withheld = true
+        continue
+      }
+      filteredProperties[key] = value
+    }
+    if (!withheld) return { ...base, parameters }
+    const required = Array.isArray(parameters.required)
+      ? parameters.required.filter((name) => !HIDDEN_TOOL_PARAMETERS.includes(name))
+      : parameters.required
+    const projected = { ...parameters, properties: filteredProperties }
+    if (required !== parameters.required) projected.required = required
+    return {
+      ...base,
+      description: typeof tool.description === 'string' ? tool.description + ESCALATION_UNAVAILABLE_NOTE : tool.description,
+      parameters: projected,
+    }
+  })
 }
 
 /**
