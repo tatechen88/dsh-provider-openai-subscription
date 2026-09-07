@@ -57,10 +57,43 @@ test('listModels delegates to model client', async () => {
   const adapter = new OpenAISubscriptionAdapter({
     getAccess: async () => ({ accessToken: 'at', accountId: 'a' }),
     fetchImpl: async (url) => {
-      assert.equal(url, 'https://chatgpt.com/backend-api/codex/models')
+      assert.equal(url, 'https://chatgpt.com/backend-api/codex/models?client_version=1.0.0')
       return new Response(JSON.stringify([{ id: 'gpt-5', name: 'GPT-5' }]), { status: 200 })
     },
   })
   const models = await adapter.listModels('openai-subscription')
   assert.deepEqual(models, [{ provider: 'openai-subscription', id: 'gpt-5', name: 'GPT-5' }])
+})
+
+test('resolveModel exposes reasoning efforts, default effort, and context', async () => {
+  const adapter = new OpenAISubscriptionAdapter({
+    getAccess: async () => ({ accessToken: 'at', accountId: 'a' }),
+    fetchImpl: async () => new Response(JSON.stringify({ models: [
+      {
+        slug: 'gpt-6-astra',
+        display_name: 'GPT-6-Astra',
+        context_window: 272000,
+        default_reasoning_level: 'low',
+        supported_reasoning_levels: [
+          { effort: 'low', description: 'Fast' },
+          { effort: 'max', description: 'Deepest' },
+        ],
+      },
+    ] }), { status: 200 }),
+  })
+  const info = await adapter.resolveModel('openai-subscription', 'gpt-6-astra')
+  assert.equal(info.name, 'GPT-6-Astra')
+  assert.deepEqual(info.inputModalities, ['text'])
+  assert.deepEqual(info.context, { contextWindow: 272000 })
+  assert.deepEqual(info.reasoning.efforts.map((effort) => effort.id), ['low', 'max'])
+  assert.equal(info.reasoning.defaultEffort, 'low')
+})
+
+test('resolveModel falls back for an unknown model id', async () => {
+  const adapter = new OpenAISubscriptionAdapter({
+    getAccess: async () => ({ accessToken: 'at', accountId: 'a' }),
+    fetchImpl: async () => new Response(JSON.stringify({ models: [] }), { status: 200 }),
+  })
+  const info = await adapter.resolveModel('openai-subscription', 'unknown')
+  assert.deepEqual(info, { provider: 'openai-subscription', id: 'unknown', name: 'unknown' })
 })

@@ -12,7 +12,7 @@ import { PROVIDER_ID, USER_AGENT } from '../constants.js'
 import { buildResponsesRequest } from './request-builder.js'
 import { ResponsesEventTranslator } from './event-translator.js'
 import { SseParser } from '../stream/sse-parser.js'
-import { fetchModels } from '../models/client.js'
+import { fetchModelCatalog } from '../models/client.js'
 
 /** Upstream Responses endpoint. */
 export const OPENAI_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses'
@@ -50,6 +50,8 @@ export class OpenAISubscriptionAdapter {
     this.timeoutMs = timeoutMs
     this.defaultModel = defaultModel
     this.reasoningEffort = reasoningEffort
+    /** @type {Array<{id: string, name?: string, description?: string, contextWindow?: number, maxContextWindow?: number, reasoning?: object}>|undefined} */
+    this.catalog = undefined
   }
 
   /**
@@ -68,22 +70,40 @@ export class OpenAISubscriptionAdapter {
     return undefined
   }
 
+  /** Fetch (and cache) the full catalog, including reasoning/context metadata. */
+  async #catalog() {
+    if (this.catalog === undefined) {
+      this.catalog = await fetchModelCatalog({ getAccess: this.getAccess, fetchImpl: this.fetchImpl })
+    }
+    return this.catalog
+  }
+
   /**
    * @param {string} provider
    * @returns {Promise<Array<{provider: string, id: string, name: string}>>}
    */
   async listModels(provider) {
-    const models = await fetchModels({ getAccess: this.getAccess, fetchImpl: this.fetchImpl })
-    return models.map((model) => ({ provider, id: model.id, name: model.name ?? model.id }))
+    const catalog = await this.#catalog()
+    return catalog.map((model) => ({ provider, id: model.id, name: model.name ?? model.id }))
   }
 
   /**
    * @param {string} provider
    * @param {string} model
-   * @returns {Promise<{provider: string, id: string, name: string}>}
+   * @returns {Promise<{provider: string, id: string, name: string, inputModalities?: string[], context?: {contextWindow: number}, reasoning?: {efforts: Array<{id: string, name: string, description?: string}>, defaultEffort?: string}}>}
    */
   async resolveModel(provider, model) {
-    return { provider, id: model, name: model }
+    const catalog = await this.#catalog()
+    const entry = catalog.find((candidate) => candidate.id === model)
+    if (entry === undefined) return { provider, id: model, name: model }
+    return {
+      provider,
+      id: entry.id,
+      name: entry.name ?? entry.id,
+      inputModalities: ['text'],
+      ...(entry.contextWindow === undefined ? {} : { context: { contextWindow: entry.contextWindow } }),
+      ...(entry.reasoning === undefined ? {} : { reasoning: entry.reasoning }),
+    }
   }
 
   /**
@@ -116,6 +136,7 @@ export class OpenAISubscriptionAdapter {
       reasoningEffort: options.reasoningEffort || this.reasoningEffort,
       stream: true,
     })
+    const bodyJson = JSON.stringify(body)
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.timeoutMs)
     timer.unref?.()
@@ -131,7 +152,7 @@ export class OpenAISubscriptionAdapter {
           'content-type': 'application/json',
           accept: 'text/event-stream',
         },
-        body: JSON.stringify(body),
+        body: bodyJson,
         signal,
         redirect: 'error',
       })
@@ -141,10 +162,16 @@ export class OpenAISubscriptionAdapter {
       clearTimeout(timer)
     }
     if (response.status === 401 || response.status === 403) {
-      throw new OpenAIProviderError('unauthorized', 'OpenAI subscription credential was rejected; sign in again')
+      throw new OpenAIProviderError('unauthorized', `OpenAI subscription credential was rejected; sign in again (HTTP ${response.status})`)
     }
     if (!response.ok) {
-      throw new OpenAIProviderError('upstream-error', `OpenAI Responses returned HTTP ${response.status}`)
+      let detail = ''
+      try {
+        detail = (await response.text()).slice(0, 500)
+      } catch {
+        // a stream teardown race; the status alone still identifies the failure
+      }
+      throw new OpenAIProviderError('upstream-error', `OpenAI Responses returned HTTP ${response.status}${detail.length > 0 ? `: ${detail}` : ''} | request: ${bodyJson.slice(0, 800)}`)
     }
 
     const parser = new SseParser()

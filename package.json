@@ -1,6 +1,6 @@
 {
   "name": "dsh-provider-openai-subscription",
-  "version": "0.1.0-alpha.1",
+  "version": "1.0.0",
   "description": "Independent OpenAI/ChatGPT OAuth provider, model adapter and balance plugin for DeepSeek Harness. Safe bootstrap: a plugin failure must never prevent DSH from starting.",
   "type": "module",
   "main": "src/index.js",

@@ -15,6 +15,8 @@ export class ResponsesEventTranslator {
   constructor() {
     /** @type {Map<string, number>} */
     this.itemIndexes = new Map()
+    /** @type {Map<number, {name: string, callId: string}>} */
+    this.itemMeta = new Map()
     this.nextIndex = 0
     this.completed = false
   }
@@ -33,9 +35,14 @@ export class ResponsesEventTranslator {
       case 'response.output_item.added': {
         const item = event.item
         if (item !== null && typeof item === 'object' && item.type === 'function_call') {
-          const index = this.#indexFor(String(item.id ?? 'call'))
+          const index = this.#indexFor(String(item.id ?? item.call_id ?? 'call'))
+          const meta = {
+            name: typeof item.name === 'string' ? item.name : '',
+            callId: String(item.call_id ?? item.id ?? 'call'),
+          }
+          this.itemMeta.set(index, meta)
           chunks.push({ type: 'block-start', index, blockType: 'tool-call' })
-          chunks.push({ type: 'tool-call-delta', index, id: String(item.call_id ?? item.id ?? 'call'), name: typeof item.name === 'string' ? item.name : undefined, argumentsDelta: '' })
+          chunks.push({ type: 'tool-call-delta', index, id: meta.callId, name: meta.name, argumentsDelta: '' })
         }
         break
       }
@@ -61,7 +68,17 @@ export class ResponsesEventTranslator {
       }
       case 'response.function_call_arguments.done': {
         const index = this.#indexFor(String(event.item_id ?? ''))
-        chunks.push({ type: 'block-end', index, block: { type: 'tool-call', id: String(event.call_id ?? ''), name: String(event.name ?? ''), arguments: String(event.arguments ?? '') } })
+        const meta = this.itemMeta.get(index) ?? { name: '', callId: '' }
+        chunks.push({
+          type: 'block-end',
+          index,
+          block: {
+            type: 'tool-call',
+            id: meta.callId || String(event.call_id ?? ''),
+            name: meta.name || String(event.name ?? ''),
+            arguments: String(event.arguments ?? ''),
+          },
+        })
         break
       }
       case 'response.completed':

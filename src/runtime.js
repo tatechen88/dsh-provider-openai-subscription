@@ -24,17 +24,62 @@ import { OpenAISubscriptionAdapter } from './provider/adapter.js'
 import { mountRoutes } from './web/routes.js'
 import { inspectLegacy, backupLegacyCredential } from './migration/backup.js'
 
+/** How long the runtime waits for a DSH service to become available. */
+export const SERVICE_WAIT_TIMEOUT_MS = 30_000
+
+/** Poll cadence while waiting for a DSH service. */
+export const SERVICE_WAIT_TICK_MS = 25
+
+/**
+ * Wait for one DSH service to be registered on the context.
+ *
+ * Activation can race the Loader: sibling rows (llm, credentials, webserver)
+ * provide their services during their own activation, and this plugin has no
+ * fiber-level inject to order itself after them.  The wait is bounded so a
+ * missing service degrades the plugin instead of stalling DSH boot.
+ *
+ * @param {object} ctx - Cordis context.
+ * @param {string} name - service name to look up via ctx.get(name).
+ * @param {object} [options]
+ * @param {number} [options.timeoutMs] - max wait before giving up.
+ * @param {number} [options.tickMs] - poll cadence.
+ * @param {() => number} [options.now]
+ * @param {(ms: number) => Promise<void>} [options.sleep]
+ * @returns {Promise<unknown>} the service once available, undefined on timeout.
+ */
+export async function waitForService(ctx, name, options = {}) {
+  const { timeoutMs = SERVICE_WAIT_TIMEOUT_MS, tickMs = SERVICE_WAIT_TICK_MS, now = Date.now } = options
+  // No service registry at all: nothing can ever register, so do not wait.
+  if (ctx === null || typeof ctx !== 'object' || typeof ctx.get !== 'function') return undefined
+  const sleep = options.sleep === undefined
+    ? (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    : options.sleep
+  const deadline = now() + timeoutMs
+  while (true) {
+    const service = ctx.get(name)
+    if (service !== undefined) return service
+    const remaining = deadline - now()
+    if (remaining <= 0) return undefined
+    await sleep(Math.min(tickMs, remaining))
+  }
+}
+
 /**
  * Apply the runtime feature set.
  *
  * @param {object} ctx - Cordis context.
  * @param {object} config - normalized plugin config.
+ * @param {object} [options] - forwarded to the service waits (test seam).
  * @returns {Promise<{ok: boolean, reason?: string}>}
  */
-export async function applyRuntime(ctx, config) {
+export async function applyRuntime(ctx, config, options = {}) {
+  const logger = ctx?.logger
+  const credentials = await waitForService(ctx, 'credentials', options)
+  const llm = await waitForService(ctx, 'llm', options)
+  const webServer = await waitForService(ctx, 'webServer', options)
+
   const report = await readConflictReport(ctx)
   if (!report.ok) {
-    const logger = ctx?.logger
     const reason = report.missingServices.length > 0
       ? `missing DSH services: ${report.missingServices.join(', ')}`
       : `provider/namespace conflict: ${[...report.providerConflicts, ...report.namespaceConflicts].join(', ')}`
@@ -42,10 +87,12 @@ export async function applyRuntime(ctx, config) {
     return { ok: false, reason }
   }
 
-  const credentials = ctx.get?.('credentials')
   if (credentials === undefined) {
-    ctx?.logger?.warn?.(`${PACKAGE_NAME}: runtime stays disabled (credentials service is unavailable)`)
+    logger?.warn?.(`${PACKAGE_NAME}: runtime stays disabled (credentials service is unavailable)`)
     return { ok: false, reason: 'no-credentials' }
+  }
+  if (webServer === undefined) {
+    logger?.warn?.(`${PACKAGE_NAME}: webServer service is unavailable; HTTP routes are not mounted`)
   }
 
   const repository = new CredentialRepository(credentials)
@@ -73,13 +120,12 @@ export async function applyRuntime(ctx, config) {
   })
   const migration = {
     status: async () => {
-      const legacy = await inspectLegacy({ llm: ctx.get?.('llm'), credentials })
+      const legacy = await inspectLegacy({ llm, credentials })
       return { ...legacy, recommendedProvider: PROVIDER_ID, balanceProvider: PROVIDER_ID }
     },
     backup: (password) => backupLegacyCredential({ credentials, password }),
   }
 
-  const llm = ctx.get?.('llm')
   const adapter = llm?.registerAdapter === undefined ? undefined : new OpenAISubscriptionAdapter({
     getAccess: () => tokenManager.getAccessSnapshot(),
     defaultModel: config.provider?.defaultModel || '',
@@ -100,7 +146,6 @@ export async function applyRuntime(ctx, config) {
         }])
         disposers.push(() => { adapterHandle(); directoryHandle() })
       }
-      const webServer = ctx.get?.('webServer')
       if (webServer?.register !== undefined) {
         const dispose = mountRoutes({ webServer }, { repository, attempts, devices, balance, listModels, config, clientId: config.oauth.clientId, exchange, migration })
         disposers.push(() => {
@@ -126,13 +171,11 @@ export async function applyRuntime(ctx, config) {
         settingsPath: [],
       }])
     }
-    const webServer = ctx.get?.('webServer')
     if (webServer?.register !== undefined) {
       mountRoutes({ webServer }, { repository, attempts, devices, balance, listModels, config, clientId: config.oauth.clientId, exchange, migration })
     }
   }
 
-  const logger = ctx?.logger
   if (logger?.info) logger.info(`${PACKAGE_NAME}: runtime active for provider "${PROVIDER_ID}" namespace "${SETTINGS_NAMESPACE}"`)
   return { ok: true }
 }

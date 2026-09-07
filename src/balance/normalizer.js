@@ -41,8 +41,9 @@ function normalizeWindow(raw, fallbackId, fallbackLabel, now = Date.now) {
   const windowSeconds = record.limit_window_seconds
   const resetAfterSeconds = record.reset_after_seconds
   const resetAt = record.reset_at
+  // reset_at is an epoch SECOND count; resetsAt is exposed in milliseconds.
   const resetsAt = typeof resetAt === 'number' && Number.isFinite(resetAt)
-    ? resetAt
+    ? resetAt * 1000
     : typeof resetAfterSeconds === 'number' && Number.isFinite(resetAfterSeconds)
       ? now() + resetAfterSeconds * 1000
       : undefined
@@ -85,7 +86,7 @@ export function normalizeBalanceResponse(data, now = Date.now) {
     windows.push(normalizeWindow(rateLimit.secondary_window, 'secondary', 'Secondary', now))
   }
   const additionalRaw = record.additional_rate_limits
-  if (additionalRaw !== undefined) {
+  if (additionalRaw !== undefined && additionalRaw !== null) {
     if (!Array.isArray(additionalRaw)) {
       throw new BalanceSchemaError('malformed-additional-limits', 'Balance additional_rate_limits is malformed')
     }

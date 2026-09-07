@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildResponsesRequest, contentText, contentToolCalls } from '../src/provider/request-builder.js'
+import { buildResponsesRequest, contentText } from '../src/provider/request-builder.js'
 
 test('buildResponsesRequest builds text and tools body', () => {
   const request = buildResponsesRequest({
@@ -17,12 +17,15 @@ test('buildResponsesRequest builds text and tools body', () => {
   assert.equal(request.model, 'gpt-5')
   assert.equal(request.instructions, 'You are helpful')
   assert.equal(request.stream, true)
-  assert.equal(request.max_output_tokens, 100)
+  assert.equal(request.store, false)
+  assert.equal('max_output_tokens' in request, false, 'the codex endpoint rejects max_output_tokens')
   assert.equal(request.input.length, 2)
+  assert.deepEqual(request.input[0], { role: 'user', content: [{ type: 'input_text', text: 'Hi' }] })
+  assert.deepEqual(request.input[1], { role: 'assistant', content: [{ type: 'output_text', text: 'Hello' }] })
   assert.equal(request.tools[0].type, 'function')
 })
 
-test('buildResponsesRequest maps tool result to function_call_output', () => {
+test('buildResponsesRequest emits a tool result as a top-level function_call_output item', () => {
   const request = buildResponsesRequest({
     model: 'm',
     messages: [{
@@ -30,9 +33,25 @@ test('buildResponsesRequest maps tool result to function_call_output', () => {
       content: [{ type: 'tool-result', toolCallId: 'call_1', content: [{ type: 'text', text: '42' }], isError: false }],
     }],
   })
-  assert.equal(request.input[0].content[0].type, 'function_call_output')
-  assert.equal(request.input[0].content[0].call_id, 'call_1')
-  assert.equal(request.input[0].content[0].output, '42')
+  assert.deepEqual(request.input, [{ type: 'function_call_output', call_id: 'call_1', output: '42' }])
+})
+
+test('buildResponsesRequest emits assistant tool calls as top-level function_call items', () => {
+  const request = buildResponsesRequest({
+    model: 'm',
+    messages: [
+      { role: 'assistant', content: [
+        { type: 'text', text: 'Running' },
+        { type: 'tool-call', id: 'call_1|item_1', name: 'bash', arguments: '{"command":"ls"}' },
+      ] },
+      { role: 'user', content: [{ type: 'tool-result', toolCallId: 'call_1|item_1', content: [{ type: 'text', text: 'ok' }] }] },
+    ],
+  })
+  assert.deepEqual(request.input, [
+    { role: 'assistant', content: [{ type: 'output_text', text: 'Running' }] },
+    { type: 'function_call', call_id: 'call_1', id: 'item_1', name: 'bash', arguments: '{"command":"ls"}' },
+    { type: 'function_call_output', call_id: 'call_1', output: 'ok' },
+  ])
 })
 
 test('buildResponsesRequest includes reasoning effort', () => {
@@ -40,7 +59,6 @@ test('buildResponsesRequest includes reasoning effort', () => {
   assert.deepEqual(request.reasoning, { effort: 'high' })
 })
 
-test('contentText and contentToolCalls helpers work', () => {
+test('contentText works', () => {
   assert.equal(contentText([{ type: 'text', text: 'a' }]), 'a')
-  assert.deepEqual(contentToolCalls([{ type: 'tool-call', name: 'x', arguments: '{}' }]), [{ type: 'function_call', name: 'x', arguments: '{}' }])
 })

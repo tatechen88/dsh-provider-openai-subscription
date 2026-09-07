@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyRuntime } from '../src/runtime.js'
+import { applyRuntime, waitForService } from '../src/runtime.js'
 import { PROVIDER_ID, SETTINGS_NAMESPACE } from '../src/constants.js'
 
 function fakeContext() {
@@ -82,4 +82,61 @@ test('applyRuntime stays disabled on provider conflict', async () => {
   const result = await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } })
   assert.equal(result.ok, false)
   assert.equal(result.reason.includes('conflict'), true)
+})
+
+test('waitForService returns an already-available service without sleeping', async () => {
+  const service = { marker: true }
+  let polls = 0
+  const ctx = { get() { polls += 1; return service } }
+  const result = await waitForService(ctx, 'credentials', {
+    timeoutMs: 100,
+    sleep: async () => { throw new Error('waitForService must not sleep when the service is present') },
+  })
+  assert.equal(result, service)
+  assert.equal(polls, 1)
+})
+
+test('waitForService polls until a late service appears', async () => {
+  let service
+  let clock = 0
+  const ctx = { get() { return service } }
+  let sleeps = 0
+  const sleep = async () => {
+    sleeps += 1
+    clock += 25
+    service = { marker: true } // the provider registers after the first tick
+  }
+  const result = await waitForService(ctx, 'credentials', { timeoutMs: 100, tickMs: 25, now: () => clock, sleep })
+  assert.equal(result.marker, true)
+  assert.equal(sleeps, 1)
+  assert.equal(clock, 25)
+})
+
+test('waitForService gives up after the timeout', async () => {
+  const ctx = { get() { return undefined } }
+  let clock = 0
+  let sleeps = 0
+  const sleep = async () => {
+    sleeps += 1
+    clock += 25
+  }
+  const result = await waitForService(ctx, 'webServer', { timeoutMs: 100, tickMs: 25, now: () => clock, sleep })
+  assert.equal(result, undefined)
+  assert.equal(sleeps, 4, 'four 25ms ticks exhaust the 100ms budget')
+  assert.equal(clock, 100)
+})
+
+test('applyRuntime waits for a late webServer before mounting routes', async () => {
+  const { ctx, webServer, routes } = fakeContext()
+  // Hide webServer behind the first poll so the wait path is exercised.
+  const originalGet = ctx.get
+  let visible = false
+  ctx.get = (name) => {
+    if (name === 'webServer') return visible ? webServer : undefined
+    return originalGet(name)
+  }
+  const sleep = async () => { visible = true }
+  const result = await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } }, { sleep, timeoutMs: 100 })
+  assert.equal(result.ok, true)
+  assert.ok(routes.length > 0, 'routes must mount after webServer appears')
 })

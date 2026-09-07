@@ -22,8 +22,10 @@
 - Model catalog 客户端与 SSE parser
 - OpenAI Provider adapter：Responses 请求构造、SSE 翻译、模型目录、`ctx.llm.registerAdapter` 注册
 - 本地同源 Web API 路由（status / oauth start / attempt / code / cancel / logout / balance）
-- 基础 Web settings card：登录、设备码、退出、Balance 展示、模型列表
-- 侧边栏 Balance 指示条（当前模型为 openai-subscription 时显示）
+- 独立「OpenAI 接入」设置页（`settings.section`）：未激活引导、OAuth 登录（授权码 / 手动回调 / 设备码）、旧凭据加密备份、Balance、模型列表、退出登录
+- 首启引导步骤（`settings.onboarding`）：空白会话且未登录时以模态引导接入；已登录或插件未激活时自动让位，不阻塞 DeepSeek 官方引导
+- Web settings card（`settings.plugin.item`）保留为入口；侧边栏 Balance 指示条（当前模型为 openai-subscription 时显示）
+- 客户端 UI 文案为 zh/en 双语文案字典，可跟随 DSH locale 服务（缺失时按浏览器语言回退）
 - Rescue CLI：status / disable / enable / snapshot / rollback / install / doctor / canary
 - 真实 DSH 组合 smoke：`npm run test:integration`
 
@@ -122,7 +124,9 @@ src/
     sse-parser.js          SSE 增量解析
   web/
     routes.js              本地同源 Web API
-test/                      node:test 单元测试
+client/
+  client.js                浏览器端 UI：设置页 / 首启引导步骤 / 卡片入口 / 侧栏指示条
+test/                      node:test 单元测试（含 client-ui 契约测试）
 ```
 
 ## 迁移与共存
