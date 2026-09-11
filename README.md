@@ -1,47 +1,48 @@
 # dsh-provider-openai-subscription
 
-`dsh-provider-openai-subscription` 是 DeepSeek Harness（DSH）的独立 OpenAI／ChatGPT 订阅 Provider 插件。它通过 ChatGPT OAuth 凭据访问 Codex Responses 接口，为 DSH 提供模型发现、流式生成、订阅额度查询和 Web 设置界面。
+`dsh-provider-openai-subscription` 是面向 DeepSeek Harness（DSH）的独立 OpenAI / ChatGPT 订阅 Provider。插件使用 ChatGPT OAuth 凭据访问 Codex Responses 接口，并向 DSH 提供模型目录、流式生成、订阅额度查询和 Web 设置界面。
 
-> 本插件面向 ChatGPT/Codex 订阅的非公开接口，不等同于 OpenAI Platform API。正式使用前请确认账号、Client ID 与接口使用风险。
+> 本插件连接的是 ChatGPT / Codex 订阅所使用的非公开接口，不是 OpenAI Platform API。启用前，请自行确认账号、OAuth Client ID 和相关接口的使用风险。
+
+## 效果预览
+
+下面是插件在 DSH Web 设置页中的实际效果。截图中的账号信息已隐藏。
+
+![OpenAI ChatGPT OAuth Provider 在 DSH 设置页中的效果](docs/images/openai-subscription-preview.png)
 
 ## 功能
 
-- ChatGPT OAuth 登录：授权码、手动回调和设备码流程。
-- 独立 Provider ID：`openai-subscription`，不与 `dsh-codex`、`dsh-codex-connect`、`llm-pi-ai/openai-codex` 抢占。
-- OpenAI Responses 请求构造与 SSE 流式事件转换。
-- 模型目录查询，包含上下文窗口与 reasoning effort 信息。
-- Balance／使用额度查询，支持缓存、单飞刷新与过期数据回退。
-- DSH Web 设置页、首启引导、模型列表与退出登录。
-- 旧 `openai-codex` Provider 检测与迁移凭据加密备份。
-- Rescue CLI：status / enable / disable / snapshot / rollback / install / doctor / canary。
-- 安全 Bootstrap：插件失败不会阻止 DSH 启动。
+- 支持授权码、手动回调和设备码三种 ChatGPT OAuth 登录流程。
+- 注册独立 Provider ID `openai-subscription`，不占用 `dsh-codex`、`dsh-codex-connect` 或 `llm-pi-ai/openai-codex` 的标识。
+- 构造 OpenAI Responses 请求，并将 SSE 事件转换为 DSH 流式输出。
+- 查询模型目录，包括上下文窗口和 reasoning effort 信息。
+- 查询订阅额度，支持缓存、并发请求合并和过期数据回退。
+- 提供 DSH Web 设置页、首次启动引导、模型列表和退出登录功能。
+- 检测旧 `openai-codex` Provider，并支持对旧凭据创建加密备份。
+- 提供 Rescue CLI，可查看状态、启用或禁用插件、管理快照以及执行安装检查。
+- 使用安全 Bootstrap。插件加载失败时，DSH 仍可继续启动。
 
-## 设计目标
+## 安全加载
 
-> 插件功能失败可以接受；导致本机 DSH 无法重启不可接受。
+插件遵循一个简单原则：插件自身可以停用，但不能因为加载失败而阻止 DSH 重启。
 
-- Cordis 只加载 `src/index.js` 与 `src/bootstrap.js`。
-- Runtime 只在 `state: active` 且配置非空 `oauth.clientId` 时动态加载。
-- Runtime 加载或初始化失败会被捕获并转为禁用，不会抛给 DSH Loader。
-- 提供独立 Rescue CLI，可在 DSH 无法启动时禁用插件。
+Cordis 启动时只加载 `src/index.js` 和 `src/bootstrap.js`。只有同时满足以下条件，插件才会动态加载 Runtime：
 
-## 与 DSH 权限模型的关系
+- `state` 设置为 `active`；
+- `oauth.clientId` 已配置且不为空；
+- 未通过 Rescue CLI 启用 kill switch。
 
-Provider 把 DSH 工具 schema 投影为模型可见的 Responses 工具定义：普通工具参数保持原样，但 `sandbox_permissions` 与 `justification` 不会暴露给模型。
+Runtime 加载或初始化失败时，Bootstrap 会捕获错误并停止激活插件，不会把异常继续抛给 DSH Loader。即使 DSH 本身无法进入 Web 设置页，也可以通过独立的 Rescue CLI 禁用插件。
 
-这两个字段是 DSH 内部经审批通道的一次性严格加宽控制参数，不是普通工具参数。当会话已处于 `danger-full-access` 时，DSH 会正确拒绝同级升级请求（`not strictly wider`），模型可能据此反复重试并卡住。隐藏字段后该循环不可达；受限文件策略拒绝命令时，模型应提示用户切换权限预设。
+## 安装与激活
 
-实现位置：`src/provider/request-builder.js` 的 `buildResponsesTools`。
-
-## 安装（安全两阶段）
-
-在 DSH 源码目录或已安装的 DSH 环境中加入插件：
+在 DSH 源码目录或已经安装 DSH 的环境中添加插件：
 
 ```sh
 dsh plugin --profile web add ../dsh-provider-openai-subscription
 ```
 
-插件默认以 `bootstrap` 状态加入，不会加载 Runtime。需在 profile 中显式激活：
+安装后，插件默认处于 `bootstrap` 状态，不会加载 Runtime。确认配置无冲突后，在对应 profile 中显式激活：
 
 ```yaml
 - id: llm-openai-subscription
@@ -55,7 +56,9 @@ dsh plugin --profile web add ../dsh-provider-openai-subscription
       reasoningEffort: ""
 ```
 
-如需快速禁用：
+重新启动对应的 DSH profile，然后在 Web 设置页完成 ChatGPT OAuth 登录。
+
+如需立即停用插件，可以运行：
 
 ```sh
 dsh-openai-subscription-rescue disable
@@ -65,23 +68,45 @@ dsh-openai-subscription-rescue disable
 
 | 字段 | 说明 |
 |---|---|
-| `state` | `bootstrap`、`disabled` 或 `active`；仅 `active` 加载 Runtime。 |
-| `oauth.clientId` | OAuth Client ID；未配置时 Runtime 不加载。 |
-| `provider.defaultModel` | 默认模型 ID，可留空。 |
-| `provider.reasoningEffort` | 默认 reasoning effort，可留空。 |
+| `state` | 可选值为 `bootstrap`、`disabled` 或 `active`。只有 `active` 会加载 Runtime。 |
+| `oauth.clientId` | OAuth Client ID。留空时不加载 Runtime。 |
+| `provider.defaultModel` | 默认模型 ID，可以留空。 |
+| `provider.reasoningEffort` | 默认 reasoning effort，可以留空。 |
 
-Provider 使用独立的 Provider ID、设置命名空间与凭据键，不覆盖旧 `openai-codex` 的配置或凭据。
+插件使用独立的 Provider ID、设置命名空间和凭据键，不会覆盖旧 `openai-codex` Provider 的配置或凭据。
+
+## Web 设置页
+
+Runtime 激活后，插件会在 DSH Web 客户端注册设置入口。登录成功后，可以在页面中查看：
+
+- 当前 ChatGPT 账号；
+- 订阅方案与额度窗口；
+- 上游返回的模型目录；
+- 默认模型和 reasoning effort 配置；
+- 旧 Provider 的检测与备份状态。
+
+浏览器只访问插件注册的本地同源路由。OAuth token、额度请求和模型请求均由 DSH Runtime 发往上游接口。
+
+## DSH 工具权限
+
+Provider 会把 DSH 工具 schema 转换为模型可用的 Responses 工具定义。普通参数保持不变，但不会向模型暴露 `sandbox_permissions` 和 `justification`。
+
+这两个字段由 DSH 的审批和权限系统管理，用于对单次工具调用进行严格的权限加宽。它们不是普通业务参数。在会话已经处于 `danger-full-access` 时，继续申请同级权限会被 DSH 以 `not strictly wider` 拒绝，模型可能因此重复提交相同请求。隐藏这些字段后，模型无法进入该重试循环。若命令被受限文件策略拒绝，模型应提示用户切换 DSH 权限预设。
+
+相关实现位于 `src/provider/request-builder.js` 的 `buildResponsesTools`。
 
 ## Rescue CLI
+
+Rescue CLI 不依赖插件 Runtime，可在 Web 设置页或 DSH 启动异常时单独运行。
 
 ```sh
 # 查看脱敏状态
 dsh-openai-subscription-rescue status
 
-# 检查依赖与激活准备情况
+# 检查依赖和激活条件
 dsh-openai-subscription-rescue doctor --profile path/to/profile/package.json
 
-# 创建 / 回滚快照
+# 创建或回滚快照
 dsh-openai-subscription-rescue snapshot
 dsh-openai-subscription-rescue rollback
 
@@ -90,17 +115,41 @@ dsh-openai-subscription-rescue enable
 dsh-openai-subscription-rescue disable
 ```
 
-凭据状态输出均脱敏。OAuth access token、refresh token 与密码不会写入日志或状态响应。
+所有状态输出都会脱敏。OAuth access token、refresh token 和备份密码不会写入日志或状态响应。
+
+## 迁移与共存
+
+插件发现旧 `openai-codex` Provider 后只报告状态，不会自动复制、删除或刷新旧凭据。需要迁移时，可以先用密码创建旧凭据的加密备份，再登录新的 `openai-subscription` Provider。
+
+新旧 Provider 使用不同的凭据键和设置命名空间，可以同时存在并按会话切换。当前会话使用旧 Provider 时，本插件不会查询或显示 `openai-subscription` 的额度，客户端和桌面壳也不会为它请求上游额度接口。
+
+## 常见问题
+
+### 模型目录提示 `Model catalog request failed: fetch failed`
+
+这条错误表示 Node.js 在收到 HTTP 响应前未能完成网络请求。它通常与 DNS、TLS、代理、VPN 或 TUN 网络状态有关，并不等同于 OAuth 凭据失效。
+
+可以按以下顺序检查：
+
+1. 在设置页重新刷新模型目录；
+2. 确认运行 DSH 的 Node.js 进程可以访问 `chatgpt.com`；
+3. 检查代理规则是否允许访问 `chatgpt.com` 和 `auth.openai.com`；
+4. 如果浏览器可以访问但 DSH 不行，检查启动 DSH 的终端是否配置了正确的 `HTTP_PROXY`、`HTTPS_PROXY` 或 TUN 路由；
+5. 网络恢复后重启对应的 DSH profile，清除页面中保留的旧错误状态。
+
+凭据被拒绝时，插件会返回需要重新登录的明确错误；上游返回异常状态时，错误中会包含 HTTP 状态码。只有看到这些提示时，才需要优先检查登录状态或上游接口。
+
+### 修改源码后，刷新浏览器仍未生效
+
+Runtime 由 DSH profile 加载。修改源码后需要重新启动对应 profile，仅刷新浏览器页面不会重新加载 Runtime。
 
 ## 开发与测试
 
 ```sh
-npm test                # 运行全部单元测试
-npm run check           # 语法检查 + 全部单元测试
-npm run test:integration  # 真实 DSH 组合 smoke（缺少依赖时安全跳过）
+npm test                  # 运行全部单元测试
+npm run check             # 语法检查并运行全部单元测试
+npm run test:integration  # 运行真实 DSH 组合 smoke；缺少依赖时安全跳过
 ```
-
-本地验证基线：180 个单元测试全部通过。
 
 ## 目录结构
 
@@ -108,39 +157,32 @@ npm run test:integration  # 真实 DSH 组合 smoke（缺少依赖时安全跳�
 src/
   index.js                 Cordis 插件入口
   bootstrap.js             安全引导与失败隔离
-  runtime.js               Runtime 装配（凭据/OAuth/额度/路由/adapter）
+  runtime.js               Runtime 装配，包括凭据、OAuth、额度、路由和 adapter
   config.js                配置归一化与激活判断
   state.js                 DSH_HOME 下的 kill switch 状态
   conflicts.js             Provider、namespace 与凭据冲突检查
-  rescue.mjs               救援 CLI
-  credentials/             凭据 schema、repository、token manager
-  oauth/                   PKCE、state、JWT、callback、device code
-  balance/                 Balance 客户端、归一化与缓存服务
+  rescue.mjs               Rescue CLI
+  credentials/             凭据 schema、repository 和 token manager
+  oauth/                   PKCE、state、JWT、callback 和 device code
+  balance/                 额度客户端、响应归一化与缓存服务
   models/                  模型目录客户端
   provider/
-    request-builder.js     Responses 请求构造与工具 schema 投影
+    request-builder.js     Responses 请求构造与工具 schema 转换
     adapter.js             OpenAI 订阅 Provider adapter
-    event-translator.js    Responses SSE → DSH chunk 转换
+    event-translator.js    Responses SSE 到 DSH chunk 的转换
   stream/                  SSE parser
   web/                     本地同源 Web API 路由
 client/
-  client.js                设置页、首启引导与额度 UI
-test/                     Node.js 单元测试
+  client.js                设置页、首次启动引导和额度 UI
+test/                      Node.js 单元测试
 cordis.patch.yml           DSH bundle patch 定义
 ```
 
-## 迁移与共存
-
-插件会报告旧 `openai-codex` Provider 的存在，但不会复制、删除或刷新旧凭据。用户可用密码创建旧凭据的加密备份，再独立登录新 Provider。
-
-新旧 Provider 使用不同凭据与设置命名空间，可自由切换。当前会话选择旧 Provider 时，插件不查询、不显示 `openai-subscription` 的 Balance，客户端与桌面壳也不请求上游额度接口。
-
 ## 已知限制
 
-- 真实 OAuth、模型与 Balance live 验证需要真实账号与明确授权。
-- ChatGPT/Codex 非公开接口可能发生协议变化。
-- 高级模型配置 UI 尚未覆盖全部 Provider 参数。
-- 修改源码后需让实际 DSH profile 重新加载插件；仅刷新浏览器页面不会更新已加载的 Runtime。
+- OAuth、模型目录和额度接口的完整验证需要真实账号及明确授权。
+- ChatGPT / Codex 非公开接口可能随时调整协议或返回字段。
+- 高级模型配置 UI 尚未覆盖 Provider 的全部参数。
 
 ## 许可证
 
