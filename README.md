@@ -1,12 +1,12 @@
 # dsh-provider-openai-subscription
 
-`dsh-provider-openai-subscription` 是面向 DeepSeek Harness（DSH）的独立 OpenAI / ChatGPT 订阅 Provider。插件使用 ChatGPT OAuth 凭据访问 Codex Responses 接口，并向 DSH 提供模型目录、流式生成、订阅额度查询和 Web 设置界面。
+`dsh-provider-openai-subscription` 是面向 DeepSeek Harness（DSH）的独立 OpenAI / ChatGPT 订阅 Provider。插件使用 ChatGPT OAuth 凭据访问 Codex Responses 接口，并向 DSH 提供模型目录、流式生成、token 用量（含缓存命中）、订阅额度查询和 Web 设置界面。额度指示器默认停在侧边栏底部，也可以拖到页面任意位置。
 
 > 本插件连接的是 ChatGPT / Codex 订阅所使用的非公开接口，不是 OpenAI Platform API。启用前，请自行确认账号、OAuth Client ID 和相关接口的使用风险。
 
 ## 效果预览
 
-下面是插件在 DSH Web 设置页中的实际效果。截图中的账号信息已隐藏。
+下面是插件在 DSH Web 设置页中的实际效果。截图中的账号信息已隐藏；左下角额度指示器的拖拽行为不在截图中，见 [Web 设置页](#web-设置页)。
 
 ![OpenAI ChatGPT OAuth Provider 在 DSH 设置页中的效果](docs/images/openai-subscription-preview.png)
 
@@ -18,6 +18,7 @@
 - 上报 token 用量，包括缓存命中（cached input）与 reasoning token，供 DSH 消息用量与 `dsh-cost-meter` 统计使用。
 - 查询模型目录，包括上下文窗口和 reasoning effort 信息。
 - 查询订阅额度，支持缓存、并发请求合并和过期数据回退。
+- 在侧边栏底部显示额度指示器，可拖拽到任意位置并记住位置；恢复、拖动结束或窗口变化时避让该位置已有的 UI。
 - 提供 DSH Web 设置页、首次启动引导、模型列表和退出登录功能。
 - 检测旧 `openai-codex` Provider，并支持对旧凭据创建加密备份。
 - 提供 Rescue CLI，可查看状态、启用或禁用插件、管理快照以及执行安装检查。
@@ -91,6 +92,20 @@ Runtime 激活后，插件会在 DSH Web 客户端注册设置入口。登录成
 侧边栏底部是所有 footer 操作共享的一行，不是指示器独占的整行（`dsh-cost-meter` 等插件也注册在同一席位）。选中 OpenAI 订阅 Provider、指示器出现时，它会让该行可以换行，并把自己排在其它操作之前、独占一整行，因此显示在已有 UI 的上方，而不是和它们挤在同一行或覆盖它们。指示器浮出、或该 Provider 不再被选中后，这一行的布局会恢复原状。
 
 浏览器只访问插件注册的本地同源路由。OAuth token、额度请求和模型请求均由 DSH Runtime 发往上游接口。
+
+## Token 用量与缓存命中
+
+Responses 的终止事件会携带 `usage`，插件在 finish 之前把它转换为 DSH 的用量块：
+
+- OpenAI 的 `input_tokens` **包含**缓存命中，而 DSH 的 `inputTokens` 是**不含缓存**的口径，因此插件上报 `inputTokens = input_tokens - cached_tokens`，并把 `cached_tokens` 单独作为 `cacheReadTokens`；
+- `output_tokens_details.reasoning_tokens` 映射为 `reasoningTokens`；
+- 始终附带精确的 `totalTokens`（`input_tokens + output_tokens`）。DSH 只在存在总额时接受"只有缓存读取、没有缓存写入"的用量，缺少总额会导致整条用量被丢弃；
+- 上游**未上报** `cached_tokens` 时省略该字段，而不是伪造为 0；上报了 `cached_tokens: 0` 时保留 0，因为"未上报"和"确认零命中"是两个不同事实；
+- 缓存数大于输入总数、reasoning 大于输出总数、非整数等不可能取值的明细会被丢弃，避免负的 prompt 计数。
+
+转换后的用量会出现在 DSH 消息的 token 用量显示（Cached input / 缓存读取）与 `dsh-cost-meter` 的统计中。
+
+用量转换位于 Host 侧，升级插件后需要重新启动对应 DSH profile 才会生效。
 
 ## DSH 工具权限
 
@@ -174,26 +189,14 @@ src/
   provider/
     request-builder.js     Responses 请求构造与工具 schema 转换
     adapter.js             OpenAI 订阅 Provider adapter
-    event-translator.js    Responses SSE 到 DSH chunk 的转换
+    event-translator.js    Responses SSE 到 DSH chunk 与 token 用量的转换
   stream/                  SSE parser
   web/                     本地同源 Web API 路由
 client/
-  client.js                设置页、首次启动引导和额度 UI
+  client.js                设置页、首次启动引导、可拖拽的额度指示器
 test/                      Node.js 单元测试
 cordis.patch.yml           DSH bundle patch 定义
 ```
-
-## Token 用量与缓存命中
-
-Responses 的终止事件会携带 `usage`，插件在 finish 之前把它转换为 DSH 的用量块：
-
-- OpenAI 的 `input_tokens` **包含**缓存命中，而 DSH 的 `inputTokens` 是**不含缓存**的口径，因此插件上报 `inputTokens = input_tokens - cached_tokens`，并把 `cached_tokens` 单独作为 `cacheReadTokens`；
-- `output_tokens_details.reasoning_tokens` 映射为 `reasoningTokens`；
-- 始终附带精确的 `totalTokens`（`input_tokens + output_tokens`）。DSH 只在存在总额时接受"只有缓存读取、没有缓存写入"的用量，缺少总额会导致整条用量被丢弃；
-- 上游**未上报** `cached_tokens` 时省略该字段，而不是伪造为 0；上报了 `cached_tokens: 0` 时保留 0，因为"未上报"和"确认零命中"是两个不同事实；
-- 缓存数大于输入总数、reasoning 大于输出总数、非整数等不可能取值的明细会被丢弃，避免负的 prompt 计数。
-
-转换后的用量会出现在 DSH 消息的 token 用量显示（Cached input / 缓存读取）与 `dsh-cost-meter` 的统计中。
 
 ## 已知限制
 
