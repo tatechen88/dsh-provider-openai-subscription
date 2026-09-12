@@ -5,8 +5,9 @@
  * would (window.__ModuleLoader__.load handoff), executes its factory with a
  * stubbed module table, and asserts the plugin descriptor, the pure
  * state-derivation surface, and the four slot registrations apply() wires.
- * Components are never rendered; React and the primitives module are empty
- * shims.
+ * Only the draggable sidebar indicator is rendered, through a minimal hook
+ * runtime that models React's index-keyed state slots and its
+ * cleanup-before-next-effect ordering; every other component stays unrendered.
  *
  * @module dsh-provider-openai-subscription/client-ui
  */
@@ -17,24 +18,76 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const clientFile = join(dirname(fileURLToPath(import.meta.url)), '..', 'client', 'client.js')
+const PANEL_STORE_KEY = 'dsh-provider-openai-subscription.balance-panel'
 
 let captured = null
+const storedValues = new Map()
+const windowListeners = []
 globalThis.window = {
   __ModuleLoader__: {
     load: (registration) => { captured = registration },
   },
+  innerWidth: 1000,
+  innerHeight: 800,
+  localStorage: {
+    getItem: (key) => (storedValues.has(key) ? storedValues.get(key) : null),
+    setItem: (key, value) => { storedValues.set(key, String(value)) },
+    removeItem: (key) => { storedValues.delete(key) },
+  },
+  addEventListener: (type, listener) => { windowListeners.push({ type, listener }) },
+  removeEventListener: (type, listener) => {
+    const index = windowListeners.findIndex((entry) => entry.type === type && entry.listener === listener)
+    if (index >= 0) windowListeners.splice(index, 1)
+  },
+  // Enough of the CSSOM for the seat lookup: only `display` is read.
+  getComputedStyle: (node) => ({ display: node.display === undefined ? 'block' : node.display }),
 }
 
 await import(`${pathToFileURL(clientFile).href}`)
 
 assert.notEqual(captured, null, 'bundle must register through window.__ModuleLoader__.load')
 
+/**
+ * Minimal hook runtime: index-keyed slots that survive re-renders, an effect
+ * queue drained after each render, and cleanups run before the next effect so a
+ * pending timer is cancelled the way React cancels it.
+ * @returns {object} the runtime `renderOnce` drives.
+ */
+function createHookRuntime() {
+  let cursor = 0
+  let slots = []
+  let pending = []
+  let cleanups = []
+  return {
+    begin() { cursor = 0; pending = [] },
+    useState(initial) {
+      const index = cursor++
+      if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial
+      return [slots[index], (next) => { slots[index] = typeof next === 'function' ? next(slots[index]) : next }]
+    },
+    useRef(initial) {
+      const index = cursor++
+      if (!(index in slots)) slots[index] = { current: initial }
+      return slots[index]
+    },
+    useEffect(fn) { pending.push(fn) },
+    drain() {
+      for (const cleanup of cleanups) if (typeof cleanup === 'function') cleanup()
+      cleanups = pending.map((fn) => fn())
+      return cleanups
+    },
+    cleanups() { return cleanups },
+  }
+}
+
+let hooks = createHookRuntime()
+
 const reactShim = {
-  createElement: () => null,
-  useEffect: () => {},
-  useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
+  createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+  useEffect: (fn) => hooks.useEffect(fn),
+  useState: (initial) => hooks.useState(initial),
   useCallback: (fn) => fn,
-  useRef: (initial) => ({ current: initial }),
+  useRef: (initial) => hooks.useRef(initial),
 }
 
 function fakeRequire(specifier) {
@@ -94,6 +147,63 @@ test('pure surface: status kinds and onboarding decisions', () => {
   assert.equal(deriveOnboardingDecision('unconfigured'), 'prompt')
   assert.equal(deriveOnboardingDecision('error'), 'error')
   assert.equal(deriveOnboardingDecision('unexpected'), 'skip', 'unknown kinds skip defensively')
+})
+
+test('pure surface: floating balance panel stays inside the viewport', () => {
+  const { clampFloatingPanel } = descriptor.pure
+  const viewport = { width: 1000, height: 800 }
+  const box = (x, y) => ({ x, y, width: 200, height: 40 })
+
+  assert.deepEqual(clampFloatingPanel(box(120, 300), viewport), box(120, 300), 'an inside box is kept as dragged')
+  assert.deepEqual(clampFloatingPanel(box(-40, -90), viewport), box(4, 4), 'dragging past an edge keeps a margin')
+  assert.deepEqual(
+    clampFloatingPanel(box(5000, 5000), viewport),
+    box(796, 756),
+    'the right and bottom edges keep the margin too',
+  )
+  assert.deepEqual(
+    clampFloatingPanel(box(300, 300), { width: 120, height: 30 }),
+    box(4, 4),
+    'a panel larger than the viewport pins to the top-left margin',
+  )
+  assert.deepEqual(clampFloatingPanel(box(10, 10), { width: 0, height: 0 }), box(4, 4), 'an unknown viewport falls back to the margin')
+})
+
+test('pure surface: floating panel moves to the nearest unoccupied position', () => {
+  const { avoidPanelCollisions } = descriptor.pure
+  const viewport = { width: 1000, height: 800 }
+  const panel = { x: 400, y: 300, width: 200, height: 40 }
+
+  assert.deepEqual(avoidPanelCollisions(panel, [], viewport), panel, 'an empty position stays unchanged')
+  assert.deepEqual(
+    avoidPanelCollisions(panel, [{ x: 390, y: 290, width: 220, height: 60 }], viewport),
+    { ...panel, y: 242 },
+    'an occupied position picks the nearest free side',
+  )
+  assert.deepEqual(
+    avoidPanelCollisions(panel, [
+      { x: 390, y: 290, width: 220, height: 60 },
+      { x: 390, y: 220, width: 220, height: 60 },
+    ], viewport),
+    { ...panel, y: 358 },
+    'a blocked first candidate uses another free side',
+  )
+})
+
+test('pure surface: a persisted panel box round-trips or is rejected', () => {
+  const { parseStoredPanel } = descriptor.pure
+  const stored = { x: 12, y: 34, width: 180, height: 36 }
+
+  assert.deepEqual(parseStoredPanel(JSON.stringify(stored)), stored)
+  assert.deepEqual(parseStoredPanel(JSON.stringify({ ...stored, x: -5 })), { ...stored, x: -5 }, 'clamping happens at read time, not here')
+  assert.equal(parseStoredPanel(null), null)
+  assert.equal(parseStoredPanel(''), null)
+  assert.equal(parseStoredPanel('{'), null, 'truncated JSON is not a position')
+  assert.equal(parseStoredPanel('[12,34]'), null, 'a non-object payload is not a position')
+  assert.equal(parseStoredPanel('{"x":12,"y":34,"width":180}'), null, 'a partial box is not a position')
+  assert.equal(parseStoredPanel('{"x":12,"y":34,"width":"180","height":36}'), null, 'a non-numeric edge is not a position')
+  assert.equal(parseStoredPanel('{"x":12,"y":34,"width":0,"height":36}'), null, 'a zero-width box is not a position')
+  assert.equal(parseStoredPanel('{"x":12,"y":34,"width":180,"height":null}'), null, 'a null height is not a position')
 })
 
 test('apply registers the four UI surfaces with stable identities', () => {
@@ -163,4 +273,157 @@ test('apply tolerates missing or throwing slot seats', () => {
   })
   assert.notEqual(threw, null)
   assert.equal(typeof descriptor.name, 'string')
+})
+
+/**
+ * Capture the sidebar indicator apply() registers, together with the fake
+ * services that make it resolve the plugin's own provider.
+ * @returns {{component: Function, props: object}} the component and its props.
+ */
+function sidebarIndicator() {
+  let component = null
+  const sessionsService = {
+    list: { getSnapshot: () => ({ current: 's1' }), subscribe: () => () => {} },
+  }
+  const modelDirectories = {
+    directoryFor: () => ({ store: { getSnapshot: () => ({ current: { provider: 'openai-subscription' } }) } }),
+  }
+  descriptor.apply({
+    sessions: sessionsService,
+    modelDirectories,
+    get: () => undefined,
+    slots: {
+      inject: (name, factory) => { if (name === 'sidebar.footer.action') factory() },
+      register: (options, registered) => {
+        if (options.name === 'sidebar.footer.action') component = registered
+        return () => {}
+      },
+    },
+  })
+  return { component, props: { sessionsService, modelDirectories, getLocale: () => undefined } }
+}
+
+test('sidebar indicator drags into a floating panel and remembers where', async () => {
+  const { component, props } = sidebarIndicator()
+  assert.equal(typeof component, 'function')
+  const runtimes = [hooks]
+
+  // Models the committed DOM node: docked, the indicator is the sidebar's
+  // 200px-wide button; floating, it sizes to its own text. The seat mirrors the
+  // real DOM — a `display: contents` slot wrapper inside the flex row that
+  // dsh-cost-meter also occupies.
+  let committed = null
+  const seat = { style: { flexWrap: '' }, parentElement: null, display: 'flex' }
+  const slotWrapper = { style: {}, parentElement: seat, display: 'contents', children: [] }
+  const domNode = {
+    parentElement: slotWrapper,
+    getBoundingClientRect: () => {
+      const style = committed === null ? {} : committed.props.style
+      const isFloating = style.position === 'fixed'
+      return {
+        left: isFloating ? style.left : 10,
+        top: isFloating ? style.top : 660,
+        width: isFloating ? 260 : 200,
+        height: 30,
+      }
+    },
+    setPointerCapture: () => {},
+  }
+  const renderOnce = () => {
+    hooks.begin()
+    const node = component(props)
+    committed = node
+    const ref = node === null ? null : node.props.ref
+    if (typeof ref === 'function') ref(domNode)
+    else if (ref !== null && ref !== undefined) ref.current = domNode
+    hooks.drain()
+    return node
+  }
+  const pointer = (overrides) => ({ preventDefault: () => {}, ...overrides })
+  const anchor = domNode
+
+  try {
+    renderOnce()
+    let node = renderOnce()
+    assert.equal(node.type, 'button', 'the indicator renders once the provider is known')
+    assert.equal(node.props.style.position, undefined, 'it starts docked in the sidebar foot')
+    assert.equal(node.props.style.flex, '1 1 100%', 'it claims a whole line of the footer seat')
+    assert.equal(node.props.style.order, -1, 'its line sorts above the other footer actions')
+    assert.equal(node.props.style.minWidth, 0, 'the indicator shrinks instead of pushing a neighbour out')
+    assert.equal(node.props.style.boxSizing, 'border-box', 'its own padding stays inside the seat')
+    assert.equal(node.props.style.textOverflow, 'ellipsis', 'its own text clips before it covers a neighbour')
+    assert.equal(node.props.style.cursor, 'grab')
+    assert.equal(seat.style.flexWrap, 'wrap', 'the occupied seat is allowed to give the indicator its own line')
+    assert.ok(node.props.title.includes('拖动'), 'the tooltip states the drag affordance')
+
+    node.props.onPointerDown(pointer({ button: 0, pointerId: 1, clientX: 100, clientY: 680, currentTarget: anchor }))
+    node.props.onPointerMove(pointer({ pointerId: 1, clientX: 102, clientY: 681, currentTarget: anchor }))
+    node = renderOnce()
+    assert.equal(node.props.style.position, undefined, 'a press below the threshold stays a click')
+
+    node.props.onPointerMove(pointer({ pointerId: 1, clientX: 400, clientY: 380, currentTarget: anchor }))
+    node = renderOnce()
+    assert.equal(node.props.style.position, 'fixed', 'a real drag detaches the indicator')
+    assert.equal(node.props.style.left, 310)
+    assert.equal(node.props.style.top, 360)
+    assert.equal(node.props.style.width, undefined, 'the floating panel sizes to its own text, not the sidebar width')
+    assert.equal(node.props.style.whiteSpace, 'nowrap')
+    assert.equal(node.props.style.maxWidth, 992, 'only a viewport narrower than the text can trim it')
+    assert.equal(node.props.style.cursor, 'grabbing')
+    assert.equal(seat.style.flexWrap, '', 'the seat keeps its own layout once the indicator floats away')
+
+    node.props.onPointerMove(pointer({ pointerId: 1, clientX: 5000, clientY: 5000, currentTarget: anchor }))
+    node = renderOnce()
+    assert.equal(node.props.style.left, 736, 'the right edge clamps against the measured floating width')
+    assert.equal(node.props.style.top, 766, 'the bottom edge clamps')
+
+    node.props.onPointerUp(pointer({ pointerId: 1 }))
+    node = renderOnce()
+    assert.equal(node.props.style.cursor, 'grab', 'releasing restores the grab cursor')
+
+    await new Promise((resolve) => { setTimeout(resolve, 260) })
+    assert.deepEqual(
+      JSON.parse(storedValues.get(PANEL_STORE_KEY)),
+      { x: 736, y: 766, width: 260, height: 30 },
+      'the settled position and measured size are stored',
+    )
+
+    // A fresh mount restores the stored position, re-measured and clamped.
+    storedValues.set(PANEL_STORE_KEY, JSON.stringify({ x: 990, y: 900, width: 200, height: 30 }))
+    hooks = createHookRuntime()
+    runtimes.push(hooks)
+    renderOnce()
+    node = renderOnce()
+    // The mount effect re-measures the floating panel and updates state; that
+    // update lands on the next render, exactly as it would under React.
+    node = renderOnce()
+    assert.equal(node.props.style.position, 'fixed', 'a stored position restores as a floating panel')
+    assert.equal(node.props.style.left, 736, 'restoring re-clamps against the panel it actually renders')
+    assert.equal(node.props.style.top, 766)
+
+    node.props.onDoubleClick()
+    node = renderOnce()
+    assert.equal(node.props.style.position, undefined, 'a double click docks the panel again')
+    await new Promise((resolve) => { setTimeout(resolve, 260) })
+    assert.equal(storedValues.has(PANEL_STORE_KEY), false, 'docking drops the stored position')
+
+    // A shrinking window pulls a floating panel back into view.
+    node.props.onPointerDown(pointer({ button: 0, pointerId: 2, clientX: 100, clientY: 680, currentTarget: anchor }))
+    node.props.onPointerMove(pointer({ pointerId: 2, clientX: 400, clientY: 380, currentTarget: anchor }))
+    node = renderOnce()
+    assert.equal(node.props.style.left, 310)
+    window.innerWidth = 320
+    const resizeListeners = windowListeners.filter((entry) => entry.type === 'resize')
+    assert.ok(resizeListeners.length > 0, 'a resize listener must be registered')
+    for (const entry of resizeListeners) entry.listener()
+    node = renderOnce()
+    assert.equal(node.props.style.left, 56, 'the shrunk viewport clamps the panel back inside')
+  } finally {
+    window.innerWidth = 1000
+    // Every mount left a poll interval behind; the remount's runtime is a
+    // different one, so both must be torn down.
+    for (const runtime of runtimes) {
+      for (const cleanup of runtime.cleanups()) if (typeof cleanup === 'function') cleanup()
+    }
+  }
 })
