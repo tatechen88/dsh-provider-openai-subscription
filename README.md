@@ -15,6 +15,7 @@
 - 支持授权码、手动回调和设备码三种 ChatGPT OAuth 登录流程。
 - 注册独立 Provider ID `openai-subscription`，不占用 `dsh-codex`、`dsh-codex-connect` 或 `llm-pi-ai/openai-codex` 的标识。
 - 构造 OpenAI Responses 请求，并将 SSE 事件转换为 DSH 流式输出。
+- 上报 token 用量，包括缓存命中（cached input）与 reasoning token，供 DSH 消息用量与 `dsh-cost-meter` 统计使用。
 - 查询模型目录，包括上下文窗口和 reasoning effort 信息。
 - 查询订阅额度，支持缓存、并发请求合并和过期数据回退。
 - 提供 DSH Web 设置页、首次启动引导、模型列表和退出登录功能。
@@ -182,10 +183,23 @@ test/                      Node.js 单元测试
 cordis.patch.yml           DSH bundle patch 定义
 ```
 
+## Token 用量与缓存命中
+
+Responses 的终止事件会携带 `usage`，插件在 finish 之前把它转换为 DSH 的用量块：
+
+- OpenAI 的 `input_tokens` **包含**缓存命中，而 DSH 的 `inputTokens` 是**不含缓存**的口径，因此插件上报 `inputTokens = input_tokens - cached_tokens`，并把 `cached_tokens` 单独作为 `cacheReadTokens`；
+- `output_tokens_details.reasoning_tokens` 映射为 `reasoningTokens`；
+- 始终附带精确的 `totalTokens`（`input_tokens + output_tokens`）。DSH 只在存在总额时接受"只有缓存读取、没有缓存写入"的用量，缺少总额会导致整条用量被丢弃；
+- 上游**未上报** `cached_tokens` 时省略该字段，而不是伪造为 0；上报了 `cached_tokens: 0` 时保留 0，因为"未上报"和"确认零命中"是两个不同事实；
+- 缓存数大于输入总数、reasoning 大于输出总数、非整数等不可能取值的明细会被丢弃，避免负的 prompt 计数。
+
+转换后的用量会出现在 DSH 消息的 token 用量显示（Cached input / 缓存读取）与 `dsh-cost-meter` 的统计中。
+
 ## 已知限制
 
 - OAuth、模型目录和额度接口的完整验证需要真实账号及明确授权。
 - ChatGPT / Codex 非公开接口可能随时调整协议或返回字段。
+- 缓存命中依赖上游在 `usage.input_tokens_details.cached_tokens` 中上报；未上报时不会显示命中率。
 - 高级模型配置 UI 尚未覆盖 Provider 的全部参数。
 
 ## 许可证

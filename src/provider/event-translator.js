@@ -3,10 +3,77 @@
  *
  * Converts the Responses API stream into DSH StreamChunk values.  The
  * translator is stateful because function-call deltas arrive as separate
- * events that must be correlated to the same output item.
+ * events that must be correlated to the same output item, and because the
+ * terminal usage reading may be carried by any terminal event.
  *
  * @module dsh-provider-openai-subscription/provider/event-translator
  */
+
+/**
+ * Whether one wire counter is a usable token count.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isTokenCount(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+/**
+ * Read one nested details object without trusting a remote encoder's types.
+ * @param {unknown} holder
+ * @param {string} key
+ * @returns {unknown}
+ */
+function detailOf(holder, key) {
+  if (holder === null || typeof holder !== 'object' || Array.isArray(holder)) return undefined
+  const details = /** @type {Record<string, unknown>} */ (holder)[key]
+  return details !== null && typeof details === 'object' && !Array.isArray(details) ? details : undefined
+}
+
+/**
+ * Map one Responses `usage` payload onto the harness TokenUsage convention.
+ *
+ * OpenAI's `input_tokens` aggregates cache reads (`input_tokens_details.
+ * cached_tokens`) and `output_tokens` aggregates reasoning tokens
+ * (`output_tokens_details.reasoning_tokens`), while harness counts are
+ * DISJOINT: cache reads are subtracted out of `inputTokens`.  The exact
+ * `totalTokens` is always reported because the harness refuses a cache-read
+ * bucket that has no cache-write counterpart unless a total is present, and the
+ * two aggregate counters define that total exactly.
+ *
+ * @param {unknown} raw - a terminal event's `response` object (or the event itself).
+ * @returns {Record<string, unknown>|undefined} harness usage, or undefined when
+ *   the payload carries no usable aggregate counters.
+ */
+export function usageFromResponse(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const usage = detailOf(raw, 'usage')
+  if (usage === undefined) return undefined
+  const inputTokens = usage.input_tokens
+  const outputTokens = usage.output_tokens
+  if (!isTokenCount(inputTokens) || !isTokenCount(outputTokens)) return undefined
+
+  const cached = detailOf(usage, 'input_tokens_details')?.cached_tokens
+  // A cache read is a subset of the wire input count; a larger number is not a
+  // cache hit, and subtracting it would produce a negative prompt count.
+  const cacheHit = isTokenCount(cached) && cached <= inputTokens ? cached : undefined
+  const reasoning = detailOf(usage, 'output_tokens_details')?.reasoning_tokens
+  const reasoningTokens = isTokenCount(reasoning) && reasoning <= outputTokens ? reasoning : undefined
+
+  const combined = inputTokens + outputTokens
+  const totalTokens = Number.isSafeInteger(combined) ? combined : undefined
+  // Without a total the harness drops the whole reading, so an unusable total
+  // costs the cache field alone.
+  const cacheReadTokens = totalTokens === undefined ? undefined : cacheHit
+
+  return {
+    inputTokens: inputTokens - (cacheReadTokens ?? 0),
+    outputTokens,
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+  }
+}
 
 /**
  * Translator from parsed Responses events to DSH chunks.
@@ -18,7 +85,22 @@ export class ResponsesEventTranslator {
     /** @type {Map<number, {name: string, callId: string}>} */
     this.itemMeta = new Map()
     this.nextIndex = 0
-    this.completed = false
+    this.terminal = false
+    this.usageEmitted = false
+  }
+
+  /**
+   * At most one usage chunk: the harness rejects a second one, and every
+   * terminal event of one response carries the same reading.
+   * @param {unknown} response - the terminal event's response payload.
+   * @returns {Array<Record<string, unknown>>} zero or one usage chunk.
+   */
+  #usageChunks(response) {
+    if (this.usageEmitted) return []
+    const usage = usageFromResponse(response === undefined ? undefined : response)
+    if (usage === undefined) return []
+    this.usageEmitted = true
+    return [{ type: 'usage', usage }]
   }
 
   /**
@@ -82,14 +164,20 @@ export class ResponsesEventTranslator {
         break
       }
       case 'response.completed':
-        this.completed = true
+        this.terminal = true
+        // Usage rides the terminal event and must precede the finish chunk.
+        chunks.push(...this.#usageChunks(event.response ?? event))
         chunks.push({ type: 'finish', reason: { kind: 'stop' } })
         break
       case 'response.failed':
       case 'response.incomplete':
+        this.terminal = true
+        // A truncated or failed response still bills the tokens it produced.
+        chunks.push(...this.#usageChunks(event.response ?? event))
         chunks.push({ type: 'finish', reason: { kind: 'error', failure: { message: typeof event.message === 'string' ? event.message : 'OpenAI response did not complete', code: type } } })
         break
       case 'error':
+        this.terminal = true
         chunks.push({ type: 'finish', reason: { kind: 'error', failure: { message: typeof event.message === 'string' ? event.message : 'OpenAI stream error', code: 'provider-error' } } })
         break
       default:
@@ -99,11 +187,15 @@ export class ResponsesEventTranslator {
   }
 
   /**
-   * Finalize an incomplete stream.
+   * Finalize a stream that never reached a terminal event. Every terminal event
+   * already emitted its own finish, and a second one would both replace the
+   * real failure reason in the assembler and break the stream grammar the
+   * harness validates.
    * @returns {Array<Record<string, unknown>>}
    */
   end() {
-    if (this.completed) return []
+    if (this.terminal) return []
+    this.terminal = true
     return [{ type: 'finish', reason: { kind: 'error', failure: { message: 'OpenAI stream ended without completion', code: 'STREAM_CLOSED' } } }]
   }
 
