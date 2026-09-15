@@ -10,9 +10,10 @@
  */
 
 import { assertUsageFact, cacheHitRatio } from './types.js'
-import { buildSchedules, quoteUsage, resolveSchedule, scheduleCovers, DEEPSEEK_PUBLIC_SCHEDULE } from './pricing.js'
+import { buildSchedules, quoteUsage, resolveSchedule, scheduleCovers, PUBLIC_SCHEDULES } from './pricing.js'
 import { fetchDeepSeekBalance, DeepSeekBalanceError } from './deepseek-balance.js'
 import { normalizeMeterConfig } from './config.js'
+import { pricedVendors } from './vendors.js'
 
 /** How long a DeepSeek balance reading stays fresh. */
 export const DEEPSEEK_BALANCE_TTL_MS = 5 * 60 * 1000
@@ -93,9 +94,21 @@ export class UsageMeterService {
     return this.config
   }
 
+  /**
+   * The public price tables this deployment offers: one per vendor that
+   * publishes a table. The registry names them by id, so this module joins an id
+   * to a table instead of importing a snapshot it may not use.
+   * @returns {object[]}
+   */
+  publicSchedules() {
+    return pricedVendors()
+      .map((vendor) => PUBLIC_SCHEDULES[vendor.priceTableId])
+      .filter((schedule) => schedule !== undefined)
+  }
+
   /** The schedules currently reachable by the resolver. */
   schedules() {
-    return buildSchedules({ contractual: this.config.contractualSchedules })
+    return buildSchedules({ contractual: this.config.contractualSchedules, schedules: this.publicSchedules() })
   }
 
   /**
@@ -244,6 +257,10 @@ export class UsageMeterService {
    */
   view({ sessionId } = {}) {
     const hideCost = this.config.hideCost
+    // One deployment offers one priced public table today. Reading it from the
+    // registry rather than importing the snapshot keeps the wire shape stable
+    // while a second priced vendor becomes a list entry instead of an import.
+    const publicPrice = this.publicSchedules()[0]
     const emptySummary = { calls: 0, usage: { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, reasoningTokens: 0, promptTokens: 0 }, amountsMicrosByCurrency: {} }
     const aggregate = (summary) => {
       const base = viewOfAggregate(summary, this.config)
@@ -265,10 +282,10 @@ export class UsageMeterService {
       deepseek: this.balanceView(),
       pricing: {
         public: {
-          scheduleId: DEEPSEEK_PUBLIC_SCHEDULE.id,
-          currency: DEEPSEEK_PUBLIC_SCHEDULE.currency,
-          retrievedAt: DEEPSEEK_PUBLIC_SCHEDULE.retrievedAt,
-          sourceUrl: DEEPSEEK_PUBLIC_SCHEDULE.sourceUrl,
+          scheduleId: publicPrice?.id,
+          currency: publicPrice?.currency,
+          retrievedAt: publicPrice?.retrievedAt,
+          sourceUrl: publicPrice?.sourceUrl,
         },
         contractual: this.contractualStatus(),
         estimated: true,

@@ -77,6 +77,11 @@ export const DEEPSEEK_PUBLIC_SCHEDULE = Object.freeze({
   }),
 })
 
+/** Public price tables by schedule id, so the vendor registry can name one declaratively. */
+export const PUBLIC_SCHEDULES = Object.freeze({
+  [DEEPSEEK_PUBLIC_SCHEDULE.id]: DEEPSEEK_PUBLIC_SCHEDULE,
+})
+
 /** Charge quoting failed for a reason the caller shows to the user. */
 export const UNPRICED_UNKNOWN_MODEL = 'unknown-model'
 export const UNPRICED_NO_SCHEDULE = 'no-schedule'

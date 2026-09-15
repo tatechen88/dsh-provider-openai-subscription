@@ -9,8 +9,13 @@
  * @module dsh-provider-openai-subscription/usage/types
  */
 
-/** Provider routes this meter records. Every other route is passed through. */
-export const METERED_PROVIDERS = Object.freeze(['openai-subscription', 'deepseek-official'])
+/**
+ * Provider routes this meter records. Every other route is passed through.
+ *
+ * Re-exported from the vendor registry so callers keep one import site while the
+ * list itself has exactly one home.
+ */
+export { METERED_PROVIDERS } from './vendors.js'
 
 /** Token buckets summed for display; reasoning is a subset of output. */
 export const USAGE_BUCKETS = Object.freeze(['inputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'outputTokens'])
