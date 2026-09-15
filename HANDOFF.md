@@ -19,12 +19,14 @@
 ## 最近在做什么
 
 ```
+907a59a 2026-09-15 feat: reduce the meter settings to the display currency
 5367490 2026-09-15 fix: read the account quota on the OpenAI panel whatever the session runs
 eedd2c0 2026-09-15 feat: read the DeepSeek balance on demand and expose its switch
 3fab498 2026-09-15 test: render the connection surfaces and read the balance on open
 dd0e7d9 2026-09-15 docs: 增加 HANDOFF.md
-107df56 2026-09-15 chore: 接入 SkillsHub 工程流程约定
 ```
+
+产品口径定了：**「用量与费用」面板只保留显示币种（CNY / USD）与保存按钮**。账号类型、统计时区、是否读取官方余额、隐藏余额/隐藏费用、企业合同价都退回 `cordis.patch.yml` 的 `meter` 配置层（能力全部保留，只是不再由面板暴露）；面板不再有「刷新余额」按钮，因为余额现在由服务端按需自动读取。字典里随之删掉了 8 个只剩定义、没有任何调用点的键 —— 注意工具提示仍在使用 `meterAccountHint` / `meterAccountUnknown` / `meterAccountPersonal` / `meterAccountEnterprise`，改字典前务必 grep 具体键名而不是只 grep `t('meter…')` 字面量。
 
 近期主线是计量正确性：并发 ledger 写入合并（重读＋按 callId 合并，写前 fsync）、审计发现的 metering / settings 缺陷修复、provider 级定价的测试覆盖、连接链路的页面级渲染测试（`test/client-page-render.test.mjs`），以及余额读取链路。
 
