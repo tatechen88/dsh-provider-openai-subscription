@@ -119,14 +119,25 @@ test('mountRoutes registers model routes when listModels is provided', async () 
   const web = fakeWebServer()
   const { repository, attempts, balance } = deps()
   const devices = { create: async () => ({}), get: () => undefined, dispose: async () => {} }
+  let invalidated = 0
   const listModels = async () => [{ id: 'gpt-5', name: 'GPT-5' }]
-  mountRoutes({ webServer: web }, { repository, attempts, devices, balance, listModels, clientId: 'cid', exchange: async () => ({ access: 'a', expires: 1 }) })
+  const invalidateModels = () => { invalidated += 1 }
+  mountRoutes({ webServer: web }, { repository, attempts, devices, balance, listModels, invalidateModels, clientId: 'cid', exchange: async () => ({ access: 'a', expires: 1 }) })
   const res = fakeResponse()
   const req = fakeRequest({ method: 'GET', url: '/plugins/openai-subscription/models', origin: 'http://localhost:1234' })
   await findRoute(web, '/models').handler(req, res)
   assert.equal(res.state.status, 200)
   const body = JSON.parse(res.state.body)
   assert.deepEqual(body.data, [{ id: 'gpt-5', name: 'GPT-5' }])
+
+  // A refresh that answers with the cached catalogue is not a refresh.
+  const refreshed = fakeResponse()
+  await findRoute(web, '/models/refresh').handler(
+    fakeRequest({ method: 'POST', url: '/plugins/openai-subscription/models/refresh', origin: 'http://localhost:1234' }),
+    refreshed,
+  )
+  assert.equal(refreshed.state.status, 200)
+  assert.equal(invalidated, 1, 'the refresh drops the cached catalogue first')
 })
 
 test('status route returns configured false when signed out', async () => {

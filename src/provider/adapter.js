@@ -17,6 +17,15 @@ import { fetchModelCatalog } from '../models/client.js'
 /** Upstream Responses endpoint. */
 export const OPENAI_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses'
 
+/**
+ * How long a fetched model catalogue is reused.
+ *
+ * The vendor ships models between releases of this plugin, so the catalogue has
+ * to expire on its own: a list cached for the life of the process would keep a
+ * new model out of the picker until DSH restarted.
+ */
+export const MODEL_CATALOG_TTL_MS = 10 * 60 * 1000
+
 /** Stable adapter error. */
 export class OpenAIProviderError extends Error {
   /**
@@ -42,16 +51,28 @@ export class OpenAISubscriptionAdapter {
    * @param {number} [options.timeoutMs]
    * @param {string} [options.defaultModel]
    * @param {string} [options.reasoningEffort]
+   * @param {() => number} [options.now]
    */
-  constructor({ getAccess, fetchImpl = fetch, timeoutMs = 120_000, defaultModel = '', reasoningEffort = '' }) {
+  constructor({ getAccess, fetchImpl = fetch, timeoutMs = 120_000, defaultModel = '', reasoningEffort = '', now = Date.now }) {
     if (typeof getAccess !== 'function') throw new TypeError('OpenAISubscriptionAdapter requires getAccess')
     this.getAccess = getAccess
     this.fetchImpl = fetchImpl
     this.timeoutMs = timeoutMs
     this.defaultModel = defaultModel
     this.reasoningEffort = reasoningEffort
+    this.now = now
     /** @type {Array<{id: string, name?: string, description?: string, contextWindow?: number, maxContextWindow?: number, reasoning?: object}>|undefined} */
     this.catalog = undefined
+    this.catalogAt = 0
+  }
+
+  /**
+   * Drop the cached catalogue, so the next listing reads the vendor again.
+   * @returns {void}
+   */
+  invalidateCatalog() {
+    this.catalog = undefined
+    this.catalogAt = 0
   }
 
   /**
@@ -72,8 +93,10 @@ export class OpenAISubscriptionAdapter {
 
   /** Fetch (and cache) the full catalog, including reasoning/context metadata. */
   async #catalog() {
-    if (this.catalog === undefined) {
+    const now = this.now()
+    if (this.catalog === undefined || now - this.catalogAt >= MODEL_CATALOG_TTL_MS) {
       this.catalog = await fetchModelCatalog({ getAccess: this.getAccess, fetchImpl: this.fetchImpl })
+      this.catalogAt = now
     }
     return this.catalog
   }

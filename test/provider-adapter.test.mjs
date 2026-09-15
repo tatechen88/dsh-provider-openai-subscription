@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { OpenAISubscriptionAdapter, OPENAI_RESPONSES_URL } from '../src/provider/adapter.js'
+import { OpenAISubscriptionAdapter, MODEL_CATALOG_TTL_MS, OPENAI_RESPONSES_URL } from '../src/provider/adapter.js'
 
 function sseResponse(...events) {
   const body = events.map((data) => `data: ${JSON.stringify(data)}\n\n`).join('')
@@ -98,6 +98,29 @@ test('listModels delegates to model client', async () => {
   })
   const models = await adapter.listModels('openai-subscription')
   assert.deepEqual(models, [{ provider: 'openai-subscription', id: 'gpt-5', name: 'GPT-5' }])
+})
+
+test('the catalogue expires on its own, so a shipped model appears without a restart', async () => {
+  let now = 1_000
+  let calls = 0
+  const adapter = new OpenAISubscriptionAdapter({
+    getAccess: async () => ({ accessToken: 'at', accountId: 'a' }),
+    now: () => now,
+    fetchImpl: async () => {
+      calls += 1
+      return new Response(JSON.stringify([{ id: `gpt-${calls}`, name: `GPT-${calls}` }]), { status: 200 })
+    },
+  })
+
+  assert.deepEqual((await adapter.listModels('p')).map((model) => model.id), ['gpt-1'])
+  assert.deepEqual((await adapter.listModels('p')).map((model) => model.id), ['gpt-1'], 'the list is reused while it is fresh')
+  assert.equal(calls, 1)
+
+  now += MODEL_CATALOG_TTL_MS
+  assert.deepEqual((await adapter.listModels('p')).map((model) => model.id), ['gpt-2'], 'and read again once it expires')
+
+  adapter.invalidateCatalog()
+  assert.deepEqual((await adapter.listModels('p')).map((model) => model.id), ['gpt-3'], 'a refresh drops the cache instead of returning it')
 })
 
 test('resolveModel exposes reasoning efforts, default effort, and context', async () => {

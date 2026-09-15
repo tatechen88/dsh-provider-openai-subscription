@@ -141,6 +141,7 @@ export async function applyRuntime(ctx, config, options = {}) {
     reasoningEffort: config.provider?.reasoningEffort || '',
   })
   const listModels = adapter === undefined ? undefined : () => adapter.listModels(PROVIDER_ID)
+  const invalidateModels = adapter === undefined ? undefined : () => adapter.invalidateCatalog()
 
   if (typeof ctx.effect === 'function') {
     ctx.effect(() => {
@@ -156,7 +157,7 @@ export async function applyRuntime(ctx, config, options = {}) {
         disposers.push(() => { adapterHandle(); directoryHandle() })
       }
       if (webServer?.register !== undefined) {
-        const dispose = mountRoutes({ webServer }, { repository, attempts, devices, balance, listModels, config, clientId: config.oauth.clientId, exchange, migration, meter })
+        const dispose = mountRoutes({ webServer }, { repository, attempts, devices, balance, listModels, invalidateModels, config, clientId: config.oauth.clientId, exchange, migration, meter })
         disposers.push(() => {
           dispose()
           balance.clear()
@@ -197,7 +198,7 @@ export async function applyRuntime(ctx, config, options = {}) {
       }])
     }
     if (webServer?.register !== undefined) {
-      mountRoutes({ webServer }, { repository, attempts, devices, balance, listModels, config, clientId: config.oauth.clientId, exchange, migration, meter })
+      mountRoutes({ webServer }, { repository, attempts, devices, balance, listModels, invalidateModels, config, clientId: config.oauth.clientId, exchange, migration, meter })
     }
   }
 

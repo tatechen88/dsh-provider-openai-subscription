@@ -23,7 +23,7 @@
 
 ### `usage/vendors.js`
 
-厂商注册表：每条记录把厂商 id、它下面的 Provider 代号、价格表 id（没有价格表的厂商留空）和它支持的读数类型放在一起。计量范围（`METERED_PROVIDERS`）由它派生，因此「新增一个要计量的厂商」只有一处改动；价格解析按 `provider` 过滤，任何厂商的价格表都不会给另一个厂商的调用计价。模块刻意不 import 任何东西，避免 pricing → types → vendors 的循环。
+厂商注册表：每条记录把厂商 id、它下面的 Provider 代号、价格表 id（没有价格表的厂商留空）和它支持的读数类型放在一起。**注册表决定的是「谁能读到账号读数、谁有价格表」，不是「谁被记账」**：计量范围是一个活查询（见 `runtime.js` 的 `createMeterRoutes`），任何 DSH 已注册的 Provider 都记 token，注册表只负责给它加上余额与费率。模块刻意不 import 任何东西，避免 pricing → types → vendors 的循环。
 
 ### `usage/types.js`
 
@@ -47,9 +47,13 @@
 - 消费者提前中断时向下游传播 `return()`；
 - 没有 usage 就不写事实。
 
+`providers` 既接受固定名单，也接受 `(id) => boolean` 的**活判定**：主机传的是后者，因此「另一个插件刚注册的 Provider」从第一次调用起就被记账。判定本身抛错时不代表任何计量决定，只当作「不计量」——这个监听器观察的是模型调用，绝不能因为一次判定失败而让调用失败。
+
 ### `usage/ledger.js`
 
 `UsageLedger` 保存 append-only 事实与当时报价。`callId` 是幂等键；写入 2 秒防抖、串行、临时文件加 rename 原子落盘；`flush()`/`close()` 等待最新字节。文件无法解析或版本不认识时，先改名保留再抛 `UsageLedgerCorruptError`，绝不当作空账本继续。
+
+`summary(range, provider?)` 与 `sessionSummary(sessionId, provider?)` 的第二个参数是**归属**而不是事后过滤：指示器描述的是当前模型，别家的 token 不能加进来。不传则保持全局汇总，供不针对某一路由的读取使用。`unpricedModels(providers?)` 按 `(provider, model)` 汇总未定价调用（次数、最近时间、原因），只有传入了「有价格表的路由」时它才代表真正的缺口。
 
 ### `usage/deepseek-balance.js`
 
@@ -61,7 +65,17 @@
 
 ### `usage/service.js`
 
-组装计价、账本与两家厂商的账户读数，产出浏览器视图模型。视图里没有密钥、没有原始事实、没有企业合同内部备注。`hideBalance` 只去掉余额，`hideCost` 只去掉金额，token 始终保留；GLM 的现金余额受 `hideBalance` 约束，资源包 token 不受——token 永远不是隐私。`view({sessionId, provider})` 收到厂商提示时才触发那一家的到期刷新。
+组装计价、账本与两家厂商的账户读数，产出浏览器视图模型。视图里没有密钥、没有原始事实、没有企业合同内部备注。`hideBalance` 只去掉余额，`hideCost` 只去掉金额，token 始终保留；GLM 的现金余额受 `hideBalance` 约束，资源包 token 不受——token 永远不是隐私。`view({sessionId, provider})` 收到厂商提示时才触发那一家的到期刷新，并按该路由收窄三个时间窗；`metered` 切片告诉页面「现在到底在统计哪些 Provider」，客户端不再自带名单。
+
+`publicSchedules()` 的返回顺序是有意的：**学到的表在前、内置快照在后**。`resolveSchedule` 先按状态、再按 `retrievedAt` 排序，所以新表覆盖它带的模型，快照继续为它没有的模型兜底，合同价仍然压过两者。`recordUsage` 在报价为 `unknown-model` 时后台触发一次价格页刷新（开关默认关）；`refreshPublicPrices` 是单飞的，任何解析失败都只记录原因、不动正在生效的表。
+
+### `usage/deepseek-pricing-page.js`
+
+官方价格页被当作数据读：`fetchPricingPage` 只请求 HTTPS 的 `api-docs.deepseek.com`、禁止重定向、超时覆盖响应体，且不携带任何凭据（那是公开文档页）。`parsePricingPage` 把转置表格按 `rowspan`/`colspan` 铺成网格后逐列取费率：模型 slug 取自表头，`空闲时段`/`高峰时段` 两档、缓存命中/未命中/输出三类必须**齐全**，金额按十进制字符串转成整数微元（不经浮点）。高峰时段从页面脚注读，读不到才回退内置 `PEAK_WINDOWS` 并把 `windowSource` 标成 `builtin`。旧模型别名只在**页面仍然提到它、且它指向的模型仍在页面上**时保留——厂商下线的名字因此不会再被计价。任何一行读不出来就整表拒绝，返回 `{ok:false, reason}`。
+
+### `usage/pricing-store.js`
+
+学到的价格表存在 `storages/openai-subscription-meter/prices.json`：临时文件 + rename 原子写、写入串行。它是**派生数据**，因此读不出来时只报告原因然后当作不存在，内置快照继续计价；文件同时记住最后一次尝试的时刻与失败原因，好让「页面停止解析」这件事在卡片和 `rescue meter` 里看得见。刷新间隔 24 小时，失败同样按尝试时刻退避。
 
 ### `usage/settings-store.js`
 
@@ -77,12 +91,13 @@
 
 | 路由 | 作用 |
 |---|---|
-| `GET /meter/usage?sessionId=&provider=` | 视图模型（账号、余额、GLM 读数、价格来源、会话/今日/本月聚合） |
+| `GET /meter/usage?sessionId=&provider=` | 视图模型（账号、余额、GLM 读数、价格来源、未定价模型、会话/今日/本月聚合） |
 | `POST /meter/deepseek/refresh` | 强制刷新一次 DeepSeek 余额 |
 | `POST /meter/zhipu/refresh` | 强制刷新一次 GLM 账号读数 |
+| `POST /meter/prices/refresh` | 强制读一次官方价格页（与开关无关，供排障用） |
 | `GET/PATCH /meter/settings` | 读设置 / 带 revision 写设置 |
 
-`provider` 是**提示而不是过滤**：视图永远返回完整模型，只有该厂商的读数到期时才会去问那个站点，因此切到别的 Provider 不会顺带查一个无关账号。两条 refresh 路由目前只有测试在驱动，客户端靠轮询与 TTL 自己刷新。
+`provider` 是**提示而不是过滤**：视图永远返回完整模型，只有该厂商的读数到期时才会去问那个站点，因此切到别的 Provider 不会顺带查一个无关账号；同时它又是**归属**，三个时间窗按它收窄。三条 refresh 路由目前只有测试在驱动，客户端靠轮询、TTL 与开关自己刷新。
 
 一个路径只注册一次，方法在路由内分发：DSH 的 exact 路由按路径匹配，同一路径注册两次会互相遮蔽。
 
@@ -92,13 +107,19 @@
 - **浮动的两个元素都挂在 `document.body` 上**（`react-dom` 的 portal）：席位在侧边栏里，而侧边栏裁剪自己的子树 —— rail 收起/展开期间带动画的祖先同时是包含块，此时 `overflow: hidden` 连 `position: fixed` 的后代一起裁掉，卡片会被切在侧边栏右边缘。模块表没有 `react-dom`（或没有 `document`）时两者退回原地渲染，功能不变但会重新受祖先裁剪。层级取 120：压过应用 chrome（最高 100），仍在模态层（1000）之下。
 - **卡片会自动收回**：打开后 12 秒倒计时，卡片上的指针交互重新计时；点卡片外（`document` 捕获阶段的 `pointerdown`，被下游 `stopPropagation` 吞掉的按压也算）、再点图标、Esc、以及**切换模型**都立即收回。切换模型这一条是必须的：卡片描述的是上一个账号，留着它就等于显示过期数字。
 - `conversation.composer.dock`：会话用量一行，与侧栏共用同一数据源，避免两处数字不一致。
-- `settings.section`：用量与费用面板只保留**显示币种**（CNY / USD）与保存按钮；账号类型、统计时区、是否读取 DeepSeek 官方余额、隐藏余额/隐藏费用都退回 `cordis.patch.yml` 的 `meter` 配置层，面板不再暴露。改动只提交与当前值不同的键。
+- `settings.section`：用量与费用面板只保留**显示币种**（CNY / USD）与保存按钮；账号类型、统计时区、是否读取 DeepSeek 官方余额、是否自动纳入所有已注册 Provider、是否读官方价格页、隐藏余额/隐藏费用都退回 `cordis.patch.yml` 的 `meter` 配置层，面板不再暴露。改动只提交与当前值不同的键。
+
+卡片还承担两件「看得见」的职责：**未定价模型**（`未配置价格: deepseek-v5 ×3`，按卡片描述的 Provider 过滤）与**价格表刷新失败的原因**。没有这两行，"新模型停在未定价" 和 "页面改版导致自动更新静默失效" 都无从察觉。
 
 侧栏与输入框下方的两个席位分别在 `ui-sidebar` 和 `ui-conversation` 中声明，但它们的包名**不**进 `package.json` 的 `dsh.client.inject`：`inject` 声明的是「本 bundle 执行前必须已 materialize 的包行」，属于加载顺序与预取元数据；bundle 通过模块表 `require` 的包才写在 `dsh.client.external` 里。席位既不是前者也不是后者——它是运行时查表，且失败被 `attempt()` 包住，所以两个字段都不该出现它。
 
 ## 测试策略
 
-纯函数与契约优先：计价与阶梯时段、采集器的委托/嵌套/并发/中止、账本的原子写与损坏保留、余额端点门禁与多币种、服务层的企业合同价、隐私与按 Provider 限定的计价（OpenAI 只计 token、不计费）、指示器的金额格式与 Provider 切换、meter 路由的方法分发与冲突。智谱一侧用**真实响应夹具**覆盖：业务性拒绝、空字符串余额、非 `EFFECTIVE` 包、`TOKENS`/`TIMES` 两种包、部分失败与全量失败的差别，以及「DeepSeek 的价格表绝不给 GLM 计价」。真实余额 e2e 需要显式 Key，否则跳过。
+纯函数与契约优先：计价与阶梯时段、采集器的委托/嵌套/并发/中止与活判定门禁、账本的原子写/损坏保留/按路由归属与未定价汇总、余额端点门禁与多币种、服务层的企业合同价、隐私与按 Provider 限定的计价（OpenAI 只计 token、不计费）、指示器的金额格式与 Provider 切换、meter 路由的方法分发与冲突。
+
+三条口径各有专门的覆盖：**模型自动发现**（`createMeterRoutes` 的注册名单、5 秒过期、auto 关掉后回退注册表、context 没有 llm 时不致命，外加集成冒烟里注册一个本插件从未听说过的 adapter 并断言事实落账）；**按路由归属**（三厂商混合账本下各 Provider 的时间窗互不串台，无 provider 提示时保持全局）；**价格页**（真实页面夹具逐项对齐内置快照、时段句与别名、缺行/非人民币/整表颠倒一律拒绝、`yuanToMicros` 的精度边界、store 的原子写与损坏回退、learned 覆盖与快照兜底的优先级、开关关闭时不发请求、失败退避）。
+
+真实余额 e2e 需要显式 Key，否则跳过；价格页解析另有一次性的人工验证（对线上页面跑 `fetchPricingPage` + `parsePricingPage`），因为夹具会随时间与线上漂移。
 
 ## 与旧插件的关系
 
@@ -106,4 +127,4 @@
 
 ## 运维检查
 
-`dsh-openai-subscription-rescue meter` 在不加载插件 Runtime 的前提下只读报告落盘状态：ledger 的 schema 版本与事实条数、首末事实时间、设置文件的 revision 与账号/币种/时区/合同价条数，以及旧 `cost-meter` ledger 是否仍在磁盘上。它只读文件、不查网络、不取凭据，也不打印任何 ledger 条目内容。迁移完成后用它确认「新 ledger 已在记账、旧 ledger 仍在原处」。
+`dsh-openai-subscription-rescue meter` 在不加载插件 Runtime 的前提下只读报告落盘状态：ledger 的 schema 版本与事实条数、首末事实时间、**未定价模型清单**（只列出有价格表的路由，按调用次数排序，只给模型名不给调用与会话）、设置文件的 revision 与账号/币种/时区/合同价条数，以及旧 `cost-meter` ledger 是否仍在磁盘上。它只读文件、不查网络、不取凭据，也不打印任何 ledger 条目内容。迁移完成后用它确认「新 ledger 已在记账、旧 ledger 仍在原处」；新模型发布后用它确认「内置快照还没有这个费率」。

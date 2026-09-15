@@ -280,6 +280,8 @@ export function mountRoutes(host, deps) {
     })
 
     route('POST', '/models/refresh', async (_request, response) => {
+      // A refresh that answers with the cached catalogue is not a refresh.
+      if (deps.invalidateModels !== undefined) deps.invalidateModels()
       const models = await deps.listModels()
       sendJson(response, 200, { ok: true, data: models })
     })

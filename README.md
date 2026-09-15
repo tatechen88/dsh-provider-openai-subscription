@@ -18,7 +18,7 @@
 - 上报 token 用量，包括缓存命中（cached input）与 reasoning token，供 DSH 消息用量与统计使用。
 - 查询模型目录，包括上下文窗口和 reasoning effort 信息。
 - 查询订阅额度，支持缓存、并发请求合并和过期数据回退。
-- 内置用量与费用统计：指示器跟随当前模型在 OpenAI 订阅、DeepSeek 与智谱 GLM 之间切换，显示订阅额度、DeepSeek 官方余额、GLM Coding Plan 额度与资源包、本会话/今日/本月 token 与 DeepSeek 费用估算。
+- 内置用量与费用统计：指示器跟随当前模型在 OpenAI 订阅、DeepSeek 与智谱 GLM 之间切换，显示订阅额度、DeepSeek 官方余额、GLM Coding Plan 额度与资源包、本会话/今日/本月 token 与 DeepSeek 费用估算。**任何 DSH 已注册的 Provider 都自动纳入 token 计量**，新模型出现无需等插件更新；未定价的模型会被逐个点名，可选打开官方价格页自动更新。
 - 在侧边栏底部显示用量与余额：**桌面宽度下直接显示文字**（DeepSeek 显示余额与今日消费，OpenAI 显示各额度窗口剩余百分比，GLM 显示资源包剩余 token 与今日用量）；**手机宽度或远程接入时自动收成一个柱状图图标**，点击才在图标上方展开数据卡片，卡片按视口夹取并换行，因此不会溢出屏幕。图标可拖拽到任意位置并记住位置，双击复位。数据卡片与拖出的浮动面板都挂在 `document.body` 上，不受侧边栏裁剪；卡片在无人操作 12 秒后自动收回，点击卡片之外、再点一次图标或按 Esc 也会立刻收回。
 - 提供 DSH Web 设置页、首次启动引导、模型列表和退出登录功能。
 - 检测旧 `openai-codex` Provider，并支持对旧凭据创建加密备份。
@@ -65,6 +65,8 @@ dsh plugin --profile web add ../dsh-provider-openai-subscription
       displayCurrency: CNY
       timeZone: system          # system | UTC | Asia/Shanghai
       deepseekBalance: true     # 读取 DeepSeek 官方余额；关掉则完全不发该请求
+      autoProviders: true       # 所有已注册 Provider 都记 token；关掉只记注册表里的厂商
+      refreshPublicPrices: false # 读官方价格页给新模型定价；默认关，见「新模型怎么自己出现」
       hideBalance: false
       hideCost: false
       contractualSchedules: []  # 企业合同价，见「企业合同价」一节
@@ -152,7 +154,8 @@ Responses 的终止事件会携带 `usage`，插件在 finish 之前把它转换
 | `openai-subscription` | 桌面：`OpenAI 5小时 82% · 每周 64%`；卡片：`OpenAI (ChatGPT OAuth)`、各窗口剩余百分比、本会话/今日/本月 token |
 | `deepseek-official` | 桌面：`DeepSeek ¥86.20 · 今日 ¥0.42`（余额 + 今日消费）；卡片：再加上账号类型、月消费、价格来源 |
 | `zai-coding-cn`（智谱 GLM） | 桌面：`GLM 余 14M · 今日 1.2M`（资源包剩余 token + 今日用量）；卡片：Coding Plan 各窗口剩余额度、现金余额、每个资源包（名称、剩余量、模型范围、到期日）、本会话/今日/本月 token |
-| 其他 | 不显示 |
+| 其他已注册 Provider | 桌面：`<provider id> 今日 3.4M`；卡片：该路由的 token 与未定价模型。没有账号读数就不显示余额，没有价格表就不显示金额 |
+| 未注册的 Provider | 不显示 |
 
 鼠标悬停在任何一种渲染上都会给出同一份数据的单行摘要，两份内容来自同一个函数，不会互相矛盾。
 
@@ -172,6 +175,18 @@ GLM 走 pi-ai 的 `zai-coding-cn` 路由，用量与资源包也从智谱自己�
 - 读数 5 分钟内复用缓存；某个端点失败只影响它自己那条，卡片写「部分数据不可用」，并保留上一次成功的读数。
 - 资源包只统计 `EFFECTIVE` 状态的包：`TOKENS` 包算 token，`TIMES` 包算次（图片/视频、搜索）。
 
+### 新模型怎么自己出现
+
+模型换得比插件版本快，所以"哪些 Provider、哪些模型要统计"不写死在代码里：
+
+- **任何 DSH 已注册的 Provider 都自动纳入计量**（token 口径），不需要改代码或等新版本：你换到一个别的插件刚注册的模型，它的 token 立即进账本，指示器按它自己的名字显示。没有账号读数就不显示余额，没有价格表就不显示金额——**不会借用别的厂商的数字**。
+- **数字按 Provider 归属**：切到哪个模型就看哪个 Provider 的「本会话/今日/本月」，别家的 token 不会混进来。
+- **未定价的模型会被点名**：卡片与 `rescue meter` 会列出「未配置价格: deepseek-v5 ×3」这样的行——这是新模型刚发布、内置快照还没有它的费率时的样子。
+- **OpenAI 订阅的模型目录**每 10 分钟自动重新拉取一次，页面上的「刷新」按钮也会真正清掉缓存重拉，因此新模型不需要重启。
+- **可选：让价格表自己去官方页更新。** 打开 `meter.refreshPublicPrices` 后，一旦出现内置快照没有的 DeepSeek 模型，插件会在后台读一次[官方价格页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)，把整张表解析出来（含页面自己写明的高峰时段与旧模型别名），存到 `$DSH_HOME/storages/openai-subscription-meter/prices.json`，下次调用就按新表计价。默认关闭：这是本插件唯一一个与账号状态无关的外发请求。
+
+价格表自动刷新有三条硬规则：**整表解析成功才采用**（任何一行读不出来就整张丢弃，继续用旧表，并把原因记在卡片上）；**绝不编价**（页面没写的费率不会推算，也不会拿别的模型的价格顶替）；**改表不改历史**（每条已记录的调用都保存当时用的价格表 ID）。
+
 ### 费用口径
 
 - **OpenAI 订阅不显示金额。** ChatGPT 订阅没有按 token 的现金结算，把 API 目录价当成订阅支出是错的。
@@ -179,8 +194,8 @@ GLM 走 pi-ai 的 `zai-coding-cn` 路由，用量与资源包也从智谱自己�
 - **DeepSeek 显示的是本地估算。** 官方公开接口只提供余额，没有账单历史；费用由本插件按 token 与价格表计算，措辞与 UI 始终标注"估算"。
 - 计价使用**整数定点**：价格以「每百万 token 的货币微元」存储，金额是各桶分子求和后一次性四舍五入，不经过浮点累加。
 - 三个计费桶：未缓存输入、缓存读取、输出。`reasoning` 是输出的子集，只展示不重复计费。官方未公布独立的 cache-write 价格，因此该桶只统计、不计费。
-- 未知模型**不套默认价**，显示为"未配置价格"，避免用别的模型价格编造金额。
-- 价格带版本：当前内置 DeepSeek 公开价快照（2026-09-15，含阶梯时段），每条记录都保存当时采用的价格表 ID，改价不会改写历史。
+- 未知模型**不套默认价**，显示为"未配置价格"，避免用别的模型价格编造金额；这类模型会在卡片与 `rescue meter` 里被逐个点名。
+- 价格带版本：当前内置 DeepSeek 公开价快照（2026-09-15，含阶梯时段），每条记录都保存当时采用的价格表 ID，改价不会改写历史。打开 `meter.refreshPublicPrices` 后，官方页读到的表会排在快照之前，快照继续为它没有覆盖的模型兜底。
 
 ### 账号类型与企业合同价
 
@@ -232,8 +247,10 @@ dsh --profile web --dump-default-config
 
 - 账本位于 `$DSH_HOME/storages/openai-subscription-meter/usage.json`，只保存调用事实与当时报价，不保存提示词、响应正文或密钥；
 - 设置位于 `$DSH_HOME/plugin-state/openai-subscription-meter.json`，带 revision，冲突写入返回 409 而不是覆盖；
+- 从官方页学到的价格表位于 `$DSH_HOME/storages/openai-subscription-meter/prices.json`：它是派生数据，删掉只会让内置快照重新接管计价，不影响账本；
 - 余额查询每次重新解析 `DEEPSEEK_API_KEY`（或 `llm-deepseek.apiKeyEnv` 指定的变量），只允许发往 HTTPS `api.deepseek.com`，禁止重定向；失败保留上一次成功读数；
-- 设置页的「用量与费用」面板只提供**显示币种**（人民币 / 美元）；账号类型、统计时区、是否读取官方余额、隐藏余额与隐藏费用都在 `cordis.patch.yml` 的 `meter` 配置层，token 统计不受这些开关影响。
+- 价格页请求不携带任何凭据（那是公开文档页），同样禁止重定向，超时覆盖响应体；
+- 设置页的「用量与费用」面板只提供**显示币种**（人民币 / 美元）；账号类型、统计时区、是否读取官方余额、是否自动纳入所有已注册 Provider、是否读官方价格页、隐藏余额与隐藏费用都在 `cordis.patch.yml` 的 `meter` 配置层，token 统计不受这些开关影响。
 
 ## DSH 工具权限
 
@@ -251,7 +268,7 @@ Rescue CLI 不依赖插件 Runtime，可在 Web 设置页或 DSH 启动异常时
 # 查看脱敏状态
 dsh-openai-subscription-rescue status
 
-# 只读检查内置 meter 的落盘状态（ledger schema 版本与事实条数、设置 revision、新旧 ledger 是否并存）
+# 只读检查内置 meter 的落盘状态（ledger schema 版本与事实条数、未定价模型清单、设置 revision、新旧 ledger 是否并存）
 dsh-openai-subscription-rescue meter
 
 # 检查依赖和激活条件
@@ -345,7 +362,8 @@ cordis.patch.yml           DSH bundle patch 定义，含 meter 默认层
 - OAuth、模型目录和额度接口的完整验证需要真实账号及明确授权。
 - ChatGPT / Codex 非公开接口可能随时调整协议或返回字段。
 - 缓存命中依赖上游在 `usage.input_tokens_details.cached_tokens` 中上报；未上报时不会显示命中率。
-- DeepSeek 费用是本地估算：价格来自 2026-09-15 的公开价快照，官方改价后需要更新价格表；跨阶梯时段的请求按**请求开始时刻**取档，官方未公开实际结算规则。
+- DeepSeek 费用是本地估算：价格来自 2026-09-15 的公开价快照，跨阶梯时段的请求按**请求开始时刻**取档，官方未公开实际结算规则。打开 `refreshPublicPrices` 后价格表会从官方页更新，但页面结构一变就会整表拒用并回退到快照，此时新模型会停在「未配置价格」。
+- 自动纳入的 Provider 只记 token：账号读数（余额、套餐）与价格表仍需在 `src/usage/vendors.js` 里显式登记，因此新厂商的「还剩多少」不会凭空出现。
 - 账号类型无法自动识别，企业身份始终是用户声明；插件不读取也不展示官方账单、发票或信用额度。
 - 智谱 GLM 的额度窗口类型（`TOKENS_LIMIT` / `TIME_LIMIT`）来自官方接口，插件只呈现上报值；该条读数失败时显示为不可用，不用 0 代替。
 - 只统计本 DSH 进程内的调用；同账号在其他机器或客户端上的消耗不会进入本地账本。
