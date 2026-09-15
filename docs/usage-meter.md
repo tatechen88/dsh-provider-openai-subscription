@@ -72,7 +72,7 @@
 
 ## UI
 
-- `sidebar.footer.action`：唯一指示器，按 Provider 切换内容，带 generation 守卫丢弃过期响应；复用拖拽、位置持久化、视口夹取与碰撞避让，停靠时排在已有 footer UI 上方。
+- `sidebar.footer.action`：唯一指示器，默认只渲染一个图标（不含文字，窄屏/远程不会溢出），点击后在图标上方展开数据卡片并在视口内夹取、换行；卡片内容与悬停提示共用 `indicatorDetails()`，不会互相矛盾。按 Provider 切换内容，带 generation 守卫丢弃过期响应；图标可拖拽并持久化位置，双击复位。
 - `conversation.composer.dock`：会话用量一行，与侧栏共用同一数据源，避免两处数字不一致。
 - `settings.section`：用量与费用面板只保留**显示币种**（CNY / USD）与保存按钮；账号类型、统计时区、是否读取 DeepSeek 官方余额、隐藏余额/隐藏费用都退回 `cordis.patch.yml` 的 `meter` 配置层，面板不再暴露。改动只提交与当前值不同的键。
 

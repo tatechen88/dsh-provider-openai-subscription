@@ -346,11 +346,18 @@ test('sidebar indicator drags into a floating panel and remembers where', async 
     },
     setPointerCapture: () => {},
   }
-  const renderOnce = () => {
-    hooks.begin()
+  /** The indicator's own button, found inside the element that wraps it. */
+  const buttonOf = (tree) => {
+    if (tree === null || typeof tree !== 'object') return null
+    if (tree.type === 'button') return tree
+    const children = Array.isArray(tree.children) ? tree.children.flat(Infinity) : []
+    return children.find((child) => child !== null && typeof child === 'object' && child.type === 'button') ?? null
+  }
+
+  const renderOnce = () => {    hooks.begin()
     const node = component(props)
-    committed = node
-    const ref = node === null ? null : node.props.ref
+    committed = buttonOf(node)
+    const ref = node === null ? null : buttonOf(node).props.ref
     if (typeof ref === 'function') ref(domNode)
     else if (ref !== null && ref !== undefined) ref.current = domNode
     hooks.drain()
@@ -362,41 +369,84 @@ test('sidebar indicator drags into a floating panel and remembers where', async 
   try {
     renderOnce()
     let node = renderOnce()
-    assert.equal(node.type, 'button', 'the indicator renders once the provider is known')
-    assert.equal(node.props.style.position, undefined, 'it starts docked in the sidebar foot')
-    assert.equal(node.props.style.flex, '1 1 100%', 'it claims a whole line of the footer seat')
-    assert.equal(node.props.style.order, -1, 'its line sorts above the other footer actions')
-    assert.equal(node.props.style.minWidth, 0, 'the indicator shrinks instead of pushing a neighbour out')
-    assert.equal(node.props.style.boxSizing, 'border-box', 'its own padding stays inside the seat')
-    assert.equal(node.props.style.textOverflow, 'ellipsis', 'its own text clips before it covers a neighbour')
-    assert.equal(node.props.style.cursor, 'grab')
+    assert.equal(buttonOf(node).type, 'button', 'the indicator renders once the provider is known')
+    assert.equal(buttonOf(node).props.style.position, undefined, 'it starts docked in the sidebar foot')
+    assert.equal(buttonOf(node).props.style.flex, '1 1 100%', 'it claims a whole line of the footer seat')
+    assert.equal(buttonOf(node).props.style.order, -1, 'its line sorts above the other footer actions')
+    assert.equal(buttonOf(node).props.style.minWidth, 0, 'the indicator shrinks instead of pushing a neighbour out')
+    assert.equal(buttonOf(node).props.style.boxSizing, 'border-box', 'its own padding stays inside the seat')
+    assert.equal(buttonOf(node).props.style.textOverflow, 'ellipsis', 'its own text clips before it covers a neighbour')
+    assert.equal(buttonOf(node).props.style.cursor, 'grab')
     assert.equal(seat.style.flexWrap, 'wrap', 'the occupied seat is allowed to give the indicator its own line')
-    assert.ok(node.props.title.includes('拖动'), 'the tooltip states the drag affordance')
+    assert.ok(buttonOf(node).props.title.includes('拖动'), 'the tooltip states the drag affordance')
 
-    node.props.onPointerDown(pointer({ button: 0, pointerId: 1, clientX: 100, clientY: 680, currentTarget: anchor }))
-    node.props.onPointerMove(pointer({ pointerId: 1, clientX: 102, clientY: 681, currentTarget: anchor }))
-    node = renderOnce()
-    assert.equal(node.props.style.position, undefined, 'a press below the threshold stays a click')
+    // The seat shows an icon and the numbers wait for a click: a remote or
+    // phone-width sidebar cannot fit them, and a clipped number reads as wrong.
+    const flatten = (tree) => (tree !== null && typeof tree === 'object' && Array.isArray(tree.children)
+      ? tree.children.flat(Infinity)
+      : [])
+    const cardOf = (tree) => flatten(tree).find((child) => child !== null && typeof child === 'object' && child.props?.['data-details'] === 'meter')
+    const iconsOf = (tree) => {
+      const found = []
+      const walk = (entry) => {
+        if (entry === null || typeof entry !== 'object') return
+        if (Array.isArray(entry)) { for (const child of entry) walk(child); return }
+        if (entry.type === 'svg') found.push(entry)
+        walk(entry.children)
+      }
+      walk(tree)
+      return found
+    }
+    const textOfTree = (tree) => {
+      if (tree === null || tree === undefined || typeof tree === 'boolean') return ''
+      if (typeof tree === 'string' || typeof tree === 'number') return String(tree)
+      if (Array.isArray(tree)) return tree.map(textOfTree).join(' ')
+      if (typeof tree !== 'object') return ''
+      return textOfTree(tree.children)
+    }
 
-    node.props.onPointerMove(pointer({ pointerId: 1, clientX: 400, clientY: 380, currentTarget: anchor }))
+    const icon = buttonOf(node)
+    assert.equal(iconsOf(icon.children ?? icon).length, 1, 'the indicator renders exactly one icon')
+    assert.equal(textOfTree(icon).trim(), '', 'and no text of its own to overflow the sidebar')
+    assert.equal(cardOf(node), undefined, 'the data starts hidden')
+
+    icon.props.onClick()
     node = renderOnce()
-    assert.equal(node.props.style.position, 'fixed', 'a real drag detaches the indicator')
-    assert.equal(node.props.style.left, 310)
-    assert.equal(node.props.style.top, 360)
-    assert.equal(node.props.style.width, undefined, 'the floating panel sizes to its own text, not the sidebar width')
-    assert.equal(node.props.style.whiteSpace, 'nowrap')
-    assert.equal(node.props.style.maxWidth, 992, 'only a viewport narrower than the text can trim it')
-    assert.equal(node.props.style.cursor, 'grabbing')
+    const card = cardOf(node)
+    assert.notEqual(card, undefined, 'clicking the icon reveals the data')
+    assert.equal(card.props['data-details'], 'meter')
+    assert.ok(textOfTree(card).trim().length > 0, 'the revealed card carries the numbers')
+    assert.equal(card.props.style.whiteSpace, 'normal', 'and wraps instead of clipping on a narrow viewport')
+    assert.ok(Number(card.props.style.width) <= window.innerWidth, 'the card never exceeds the viewport')
+
+    buttonOf(node).props.onClick()
+    node = renderOnce()
+    assert.equal(cardOf(node), undefined, 'clicking the icon again hides it')
+
+    buttonOf(node).props.onPointerDown(pointer({ button: 0, pointerId: 1, clientX: 100, clientY: 680, currentTarget: anchor }))
+    buttonOf(node).props.onPointerMove(pointer({ pointerId: 1, clientX: 102, clientY: 681, currentTarget: anchor }))
+    node = renderOnce()
+    assert.equal(buttonOf(node).props.style.position, undefined, 'a press below the threshold stays a click')
+
+    buttonOf(node).props.onPointerMove(pointer({ pointerId: 1, clientX: 400, clientY: 380, currentTarget: anchor }))
+    node = renderOnce()
+    assert.equal(buttonOf(node).props.style.position, 'fixed', 'a real drag detaches the indicator')
+    assert.equal(buttonOf(node).props.style.left, 310)
+    assert.equal(buttonOf(node).props.style.top, 360)
+    assert.equal(buttonOf(node).props.style.width, undefined, 'the floating panel sizes to its own text, not the sidebar width')
+    assert.equal(buttonOf(node).props.style.whiteSpace, 'nowrap')
+    assert.equal(buttonOf(node).props.style.maxWidth, 992, 'only a viewport narrower than the text can trim it')
+    assert.equal(buttonOf(node).props.style.cursor, 'grabbing')
     assert.equal(seat.style.flexWrap, '', 'the seat keeps its own layout once the indicator floats away')
 
-    node.props.onPointerMove(pointer({ pointerId: 1, clientX: 5000, clientY: 5000, currentTarget: anchor }))
+    buttonOf(node).props.onPointerMove(pointer({ pointerId: 1, clientX: 5000, clientY: 5000, currentTarget: anchor }))
     node = renderOnce()
-    assert.equal(node.props.style.left, 736, 'the right edge clamps against the measured floating width')
-    assert.equal(node.props.style.top, 766, 'the bottom edge clamps')
+    assert.equal(buttonOf(node).props.style.left, 736, 'the right edge clamps against the measured floating width')
+    assert.equal(buttonOf(node).props.style.top, 766, 'the bottom edge clamps')
 
-    node.props.onPointerUp(pointer({ pointerId: 1 }))
+    buttonOf(node).props.onPointerUp(pointer({ pointerId: 1 }))
     node = renderOnce()
-    assert.equal(node.props.style.cursor, 'grab', 'releasing restores the grab cursor')
+    assert.equal(buttonOf(node).props.style.cursor, 'grab', 'releasing restores the grab cursor')
 
     await new Promise((resolve) => { setTimeout(resolve, 260) })
     assert.deepEqual(
@@ -414,27 +464,27 @@ test('sidebar indicator drags into a floating panel and remembers where', async 
     // The mount effect re-measures the floating panel and updates state; that
     // update lands on the next render, exactly as it would under React.
     node = renderOnce()
-    assert.equal(node.props.style.position, 'fixed', 'a stored position restores as a floating panel')
-    assert.equal(node.props.style.left, 736, 'restoring re-clamps against the panel it actually renders')
-    assert.equal(node.props.style.top, 766)
+    assert.equal(buttonOf(node).props.style.position, 'fixed', 'a stored position restores as a floating panel')
+    assert.equal(buttonOf(node).props.style.left, 736, 'restoring re-clamps against the panel it actually renders')
+    assert.equal(buttonOf(node).props.style.top, 766)
 
-    node.props.onDoubleClick()
+    buttonOf(node).props.onDoubleClick()
     node = renderOnce()
-    assert.equal(node.props.style.position, undefined, 'a double click docks the panel again')
+    assert.equal(buttonOf(node).props.style.position, undefined, 'a double click docks the panel again')
     await new Promise((resolve) => { setTimeout(resolve, 260) })
     assert.equal(storedValues.has(PANEL_STORE_KEY), false, 'docking drops the stored position')
 
     // A shrinking window pulls a floating panel back into view.
-    node.props.onPointerDown(pointer({ button: 0, pointerId: 2, clientX: 100, clientY: 680, currentTarget: anchor }))
-    node.props.onPointerMove(pointer({ pointerId: 2, clientX: 400, clientY: 380, currentTarget: anchor }))
+    buttonOf(node).props.onPointerDown(pointer({ button: 0, pointerId: 2, clientX: 100, clientY: 680, currentTarget: anchor }))
+    buttonOf(node).props.onPointerMove(pointer({ pointerId: 2, clientX: 400, clientY: 380, currentTarget: anchor }))
     node = renderOnce()
-    assert.equal(node.props.style.left, 310)
+    assert.equal(buttonOf(node).props.style.left, 310)
     window.innerWidth = 320
     const resizeListeners = windowListeners.filter((entry) => entry.type === 'resize')
     assert.ok(resizeListeners.length > 0, 'a resize listener must be registered')
     for (const entry of resizeListeners) entry.listener()
     node = renderOnce()
-    assert.equal(node.props.style.left, 56, 'the shrunk viewport clamps the panel back inside')
+    assert.equal(buttonOf(node).props.style.left, 56, 'the shrunk viewport clamps the panel back inside')
   } finally {
     window.innerWidth = 1000
     // Every mount left a poll interval behind; the remount's runtime is a

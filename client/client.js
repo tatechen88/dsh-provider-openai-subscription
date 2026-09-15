@@ -135,7 +135,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       onboardingBody: '使用 ChatGPT / Codex 订阅账号登录，即可在 DSH 中使用 OpenAI 模型。',
       onboardingLater: '稍后配置',
       account: '账号',
+      panelClickHint: '点击查看数据',
       panelDragHint: '拖动可移动位置，双击复位',
+      panelClose: '关闭',
       meterTitle: '用量与费用',
       meterSession: '本会话',
       meterToday: '今日',
@@ -210,7 +212,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       onboardingBody: 'Sign in with your ChatGPT / Codex subscription account to use OpenAI models in DSH.',
       onboardingLater: 'Configure later',
       account: 'Account',
+      panelClickHint: 'Click for details',
       panelDragHint: 'Drag to move, double-click to reset',
+      panelClose: 'Close',
       meterTitle: 'Usage and cost',
       meterSession: 'Session',
       meterToday: 'Today',
@@ -1527,7 +1531,11 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const generationRef = useRef(0)
     const floating = panel !== null
     const headline = indicatorHeadline({ provider: currentProvider, meter, quota, t })
-    const summary = headline === null ? '' : headline.text
+    // The seat shows an icon; the numbers live behind a click. A phone-width or
+    // remote sidebar cannot fit them, and a clipped number is worse than none.
+    const [open, setOpen] = useState(false)
+    const details = indicatorDetails({ provider: currentProvider, meter, quota, t })
+    const summary = details.join(' · ')
 
     useEffect(() => {
       if (!isMeteredProvider(currentProvider)) {
@@ -1692,6 +1700,10 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     }
 
     function onKeyDown(event) {
+      if (event.key === 'Escape' && open === true) {
+        setOpen(false)
+        return
+      }
       const step = event.shiftKey === true ? 1 : 16
       const delta = {
         ArrowLeft: [-step, 0],
@@ -1720,20 +1732,67 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       setPanel(null)
     }
 
+    /** Reveal or hide the numbers, unless the press turned into a drag. */
+    function onClick() {
+      if (dragRef.current !== null && dragRef.current.moved === true) return
+      setOpen((current) => !current)
+    }
+
+    /**
+     * Where the open card sits: just above the icon, sized to the viewport.
+     *
+     * The card wraps rather than clips. On a phone-width or remote sidebar the
+     * numbers cannot share the icon's line, and a nowrap line was exactly what
+     * overflowed the screen.
+     * @returns {object}
+     */
+    function detailsStyle() {
+      const margin = FLOAT_MARGIN_PX
+      const minWidth = 160
+      const maxWidth = 320
+      const viewport = viewportSize()
+      const node = nodeRef.current
+      const box = node !== null && node !== undefined && typeof node.getBoundingClientRect === 'function' ? boxOf(node) : null
+      const width = Math.max(minWidth, Math.min(maxWidth, viewport.width - margin * 2))
+      return {
+        position: 'fixed',
+        left: box === null
+          ? margin
+          : Math.min(Math.max(box.x, margin), Math.max(margin, viewport.width - width - margin)),
+        bottom: box === null ? margin : Math.max(margin, viewport.height - box.y + margin),
+        width,
+        maxHeight: Math.max(120, viewport.height - margin * 2),
+        overflowY: 'auto',
+        whiteSpace: 'normal',
+        wordBreak: 'break-word',
+        textAlign: 'left',
+        zIndex: 41,
+        background: '#111827',
+        color: '#f9fafb',
+        border: '1px solid #374151',
+        borderRadius: 10,
+        boxShadow: '0 6px 18px rgba(0, 0, 0, 0.35)',
+        padding: '10px 12px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        fontSize: 12,
+      }
+    }
+
     const placement = panel === null
       ? {
           // The footer-action seat is one flex row shared with every other
-          // registered action, and each occupant owns its button geometry. Take
-          // a whole line of that (now wrapping) row and sort ahead of the other
-          // occupants, so the indicator sits above them instead of squeezing or
-          // covering them. The box counts its own padding and clips its own
-          // text, so it can never spill onto a neighbour.
+          // registered action, and each occupant owns its button geometry. The
+          // occupant is now a single icon, so the row fits a sidebar of any
+          // width instead of needing room for a sentence.
           flex: '1 1 100%',
           order: -1,
           minWidth: 0,
           boxSizing: 'border-box',
-          textAlign: 'left',
-          whiteSpace: 'nowrap',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
         }
@@ -1741,52 +1800,99 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
           position: 'fixed',
           left: panel.x,
           top: panel.y,
-          // The panel sizes to its own text. The docked width is the sidebar's,
-          // and pinning it would cut the summary short; `maxWidth` only binds on
-          // a viewport narrower than the text, where trimming is the least-bad
-          // reading.
+          // A detached icon keeps its own size; the measured box still clamps it
+          // and still names the file it is stored in.
           whiteSpace: 'nowrap',
           maxWidth: Math.max(FLOAT_MARGIN_PX * 2, viewportSize().width - FLOAT_MARGIN_PX * 2),
           overflow: 'hidden',
           textOverflow: 'ellipsis',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
           zIndex: 40,
           boxShadow: '0 6px 18px rgba(0, 0, 0, 0.35)',
         }
-    return h('button', {
-      type: 'button',
-      ref: nodeRef,
-      style: {
-        ...s.button,
-        ...placement,
-        cursor: dragging === true ? 'grabbing' : 'grab',
-        touchAction: 'none',
-        userSelect: 'none',
-      },
-      title: `${indicatorTooltip({ provider: currentProvider, meter, quota, t })} · ${t('panelDragHint')}`,
-      onPointerDown,
-      onPointerMove,
-      onPointerUp: endDrag,
-      onPointerCancel: endDrag,
-      onDoubleClick,
-      onKeyDown,
-    }, summary)
+    const card = open === false ? null : h('div', {
+      key: 'indicator-details',
+      'data-details': 'meter',
+      role: 'group',
+      'aria-label': t('meterTitle'),
+      style: detailsStyle(),
+      onClick: (event) => { event.stopPropagation() },
+    }, [
+      h('div', { key: 'head', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } }, [
+        h('strong', { key: 'title' }, t('meterTitle')),
+        h('span', {
+          key: 'close',
+          role: 'button',
+          tabIndex: 0,
+          'aria-label': t('panelClose'),
+          style: { cursor: 'pointer', padding: '0 4px', fontSize: 14, lineHeight: 1 },
+          onClick: (event) => { event.stopPropagation(); setOpen(false) },
+          onKeyDown: (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return
+            event.preventDefault()
+            setOpen(false)
+          },
+        }, '×'),
+      ]),
+      ...details.map((line, index) => h('div', { key: `line-${index}` }, line)),
+    ])
+    return h('div', { key: 'indicator', style: { display: 'contents' } }, [
+      h('button', {
+        key: 'icon',
+        type: 'button',
+        ref: nodeRef,
+        style: {
+          ...s.button,
+          ...placement,
+          cursor: dragging === true ? 'grabbing' : 'grab',
+          touchAction: 'none',
+          userSelect: 'none',
+        },
+        title: `${indicatorTooltip({ provider: currentProvider, meter, quota, t })} · ${t('panelClickHint')} · ${t('panelDragHint')}`,
+        'aria-label': t('meterTitle'),
+        'aria-expanded': open,
+        onPointerDown,
+        onPointerMove,
+        onPointerUp: endDrag,
+        onPointerCancel: endDrag,
+        onDoubleClick,
+        onKeyDown,
+        onClick,
+      }, h('svg', {
+        key: 'glyph',
+        width: 16,
+        height: 16,
+        viewBox: '0 0 16 16',
+        'aria-hidden': true,
+        focusable: false,
+      }, [
+        h('rect', { key: 'bar-1', x: 2, y: 9, width: 3, height: 5, rx: 1, fill: 'currentColor' }),
+        h('rect', { key: 'bar-2', x: 6.5, y: 5, width: 3, height: 9, rx: 1, fill: 'currentColor' }),
+        h('rect', { key: 'bar-3', x: 11, y: 2, width: 3, height: 12, rx: 1, fill: 'currentColor' }),
+      ])),
+      card,
+    ])
   }
 
   /**
-   * Detail line behind the indicator: provider-specific facts plus the price
-   * provenance, so a cost shown in the sidebar is always explainable.
+   * The indicator's details, one fact per line.
+   *
+   * The card behind the icon renders these as lines and the hover tooltip joins
+   * them, so the two readings can never disagree.
    *
    * Every period the meter keeps is stated here — session, today, month — since
-   * the one-line summary can only carry two of them.
+   * a single line can only carry two of them.
    * @param {object} input - same inputs as {@link indicatorHeadline}.
-   * @returns {string}
+   * @returns {string[]}
    */
-  function indicatorTooltip({ provider, meter, quota, t }) {
+  function indicatorDetails({ provider, meter, quota, t }) {
     if (provider === PROVIDER_ID) {
       const detail = summaryWindows(quota)
         .map((window) => `${windowLabel(t, window)} ${window.remainingPercent}%`)
         .join(' / ')
-      return ['OpenAI (ChatGPT OAuth)', detail, ...tokenLines(meter, t)].filter(isFilled).join(' · ')
+      return ['OpenAI (ChatGPT OAuth)', detail, ...tokenLines(meter, t)].filter(isFilled)
     }
     const balance = meter?.deepseek
     const account = meter?.account?.kind
@@ -1801,7 +1907,16 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       amountTextOf(meter?.usage?.today) === undefined ? undefined : `${t('meterToday')} ${amountTextOf(meter?.usage?.today)}`,
       amountTextOf(meter?.usage?.month) === undefined ? undefined : `${t('meterMonth')} ${amountTextOf(meter?.usage?.month)}`,
       priceSourceLine(pricing, t),
-    ].filter(isFilled).join(' · ')
+    ].filter(isFilled)
+  }
+
+  /**
+   * The same facts as one line, for the hover tooltip a pointer device gets.
+   * @param {object} input - same inputs as {@link indicatorHeadline}.
+   * @returns {string}
+   */
+  function indicatorTooltip(input) {
+    return indicatorDetails(input).join(' · ')
   }
 
   /**
