@@ -19,6 +19,7 @@
 ## 最近在做什么
 
 ```
+cc73b0f 2026-09-15 fix: float the meter card and panel above the sidebar and retract them
 45fe074 2026-09-15 docs: hand off the GLM meter round
 54b7284 2026-09-15 feat: show the GLM plan and packages in the meter
 7aa4cff 2026-09-15 feat: read the Zhipu account through the meter's reading slot
@@ -32,6 +33,16 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 907a59a 2026-09-15 feat: reduce the meter settings to the display currency
 6213f43 2026-09-15 docs: record the OpenAI panel balance fix in the handoff
 ```
+
+### 浮动与自动收回（本轮）
+
+远程手机上的截图暴露了一个此前没有被验证过的问题：**卡片虽然写了 `position: fixed`，却被切在侧边栏右边缘**。原因是 `position: fixed` 只有在祖先不是它的包含块时才逃得掉 `overflow: hidden`；侧边栏的 rail 收起/展开带 `transform` 动画，动画期间那个祖先就是包含块，于是卡片被裁。之前桌面拖拽"能用"只说明数字位置算对了，没人从手机上看过。
+
+修法是让浮动的两个元素**离开那棵子树**：`react-dom` 的 `createPortal(element, document.body)`。拖动后的浮动面板（`floating === true` 时的按钮本身）和详情卡片都走 portal；模块表里没有 `react-dom`、或没有 `document` 时（测试与老客户端宿主）两者退回原地渲染，功能不变但会重新受祖先裁剪。层级从 40/41 提到 120：压过应用 chrome（最高 100），仍在模态层（1000）之下。
+
+顺手按用户要求加了**自动收回**：卡片打开后 12 秒倒计时（`AUTO_COLLAPSE_MS`），卡片上的指针交互会重新计时；点击卡片外（`document` 捕获阶段的 `pointerdown`，被下游 `stopPropagation` 吞掉的按压也算）、再点图标、Esc、以及切换模型都立即收回。切换模型这条是必须的：卡片描述的是上一个账号。
+
+测试在 `test/client-float-portal.test.mjs`（4 条，本仓唯一带 `document` 与 `react-dom` stub 的 harness）：拖动后按钮挂到 body、卡片挂到 body 且不裁剪、倒计时与外部按压的收回、切换模型收回。`client-ui.test.mjs` 继续覆盖"没有 `react-dom` 时原地渲染"的降级路径——两个 harness 的模块表不同，正因为行为本来就不同。踩过的坑：那份 harness 里 `hooks` 是模块级变量，`mount()` 必须重置它，否则第二个测试会拿到第一个测试的状态槽；以及 `useCurrentProvider` 是**订阅驱动**的（不随每次渲染重读），测试里换 Provider 必须触发 `sessionsService.list.subscribe` 的回调。
 
 ### 智谱 GLM（本轮）
 
