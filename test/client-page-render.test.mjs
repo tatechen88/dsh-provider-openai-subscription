@@ -368,6 +368,39 @@ test('signed in, the page shows the account, the plan, the window and the catalo
   }
 })
 
+test('the page reads the subscription quota even while the session runs another provider', async () => {
+  const restore = stubFetch({
+    [`${PREFIX}/status`]: () => ({
+      ok: true,
+      data: {
+        configured: true,
+        kind: 'grant',
+        grant: { accountId: 'acct-1', email: 'ta***@gmail.com', needsReauth: false },
+        provider: { defaultModel: '', reasoningEffort: '' },
+        migration: { providerPresent: false, credentialPresent: false },
+      },
+    }),
+    [`${PREFIX}/balance`]: () => ({
+      ok: true,
+      data: { status: 'ready', plan: 'plus', windows: [{ id: 'primary', remainingPercent: 42, resetsAt: 1_700_000_000_000 }] },
+    }),
+    [`${PREFIX}/models`]: () => ({ ok: true, data: [{ id: 'gpt-5', name: 'GPT-5' }] }),
+    [`${PREFIX}/meter/settings`]: () => settingsPayload(),
+  })
+  try {
+    // The session is on DeepSeek. The account panel belongs to the OpenAI
+    // account, so its numbers must not depend on the session's own provider —
+    // keying them to it left the block empty and the refresh button inert.
+    const node = await render(components()['settings.section'], props('deepseek-official'))
+    const text = textOf(node)
+    assert.match(text, /acct-1/)
+    assert.match(text, /42%/, 'the subscription window is shown regardless of the session provider')
+  } finally {
+    restore()
+    unmountAll()
+  }
+})
+
 test('the onboarding step skips an unreachable status and prompts while signed out', async () => {
   const step = components()['settings.onboarding']
   let completed = 0

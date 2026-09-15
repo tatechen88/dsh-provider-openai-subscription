@@ -1233,7 +1233,11 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const { sessionsService, modelDirectories, getLocale } = props
     const t = useT(getLocale)
     const currentProvider = useCurrentProvider(sessionsService, modelDirectories)
-    const flow = useOpenAISubscriptionFlow({ provider: currentProvider })
+    // This page is the OpenAI account's own panel, so its quota must not depend
+    // on which provider the current session happens to run: on a DeepSeek
+    // session the balance block would sit empty forever and its refresh button
+    // would do nothing at all.
+    const flow = useOpenAISubscriptionFlow({ provider: PROVIDER_ID })
     return h('div', { style: s.page }, [
       h('h2', { style: s.title }, t('heading')),
       h(OpenAISubscriptionContent, { flow, currentProvider, t, page: true }),
