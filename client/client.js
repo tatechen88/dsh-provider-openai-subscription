@@ -8,7 +8,9 @@
  *   blank session to connect while the plugin is active and signed out;
  * - the sidebar balance indicator (slot `sidebar.footer.action`), which the
  *   user can drag out of the sidebar into a floating panel whose position the
- *   browser remembers;
+ *   browser remembers. Both that panel and the indicator's details card attach
+ *   to the document body, because the seat lives inside a sidebar that clips
+ *   its own subtree;
  * - a per-session usage line (slot `conversation.composer.dock`) that shares
  *   the indicator's data source.
  *
@@ -34,6 +36,18 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     primitives = require('@deepseek-ai/dsh-client-ui-primitives')
   } catch {
     primitives = null
+  }
+  // Whether a floating element can be attached to the document body. Both the
+  // sidebar and the composer dock clip their own subtree, and `overflow: hidden`
+  // on an ancestor does clip a `position: fixed` descendant whenever that
+  // ancestor is also its containing block — a rail that animates with a
+  // transform does exactly that. Attaching to the body is the only placement
+  // that cannot be cut off by whoever the indicator happens to be mounted in.
+  let createPortal = null
+  try {
+    createPortal = require('react-dom').createPortal
+  } catch {
+    createPortal = null
   }
 
   const PACKAGE_NAME = 'dsh-provider-openai-subscription'
@@ -68,6 +82,17 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   const NARROW_VIEWPORT_PX = 640
   /** Currencies the meter settings offer. A composition may still name another. */
   const DISPLAY_CURRENCIES = ['CNY', 'USD']
+  /**
+   * How long the details card stays open with nobody touching it. The card is a
+   * reading, not a place to park: on a phone it covers the conversation, and a
+   * card left open keeps showing numbers from the model the user has left.
+   */
+  const AUTO_COLLAPSE_MS = 12_000
+  /**
+   * Stacking order of the two floating elements: above the application chrome
+   * (which tops out at 100) and below the modal layer (1000).
+   */
+  const FLOAT_Z_INDEX = 120
 
   const API = {
     status: '/plugins/openai-subscription/status',
@@ -1402,6 +1427,18 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   }
 
   /**
+   * Attach one floating element to the document body, where no slot ancestor can
+   * clip it. Without a module table entry for `react-dom`, or without a document
+   * to attach to, the element stays where it was rendered.
+   * @param {object} element - React element to attach.
+   * @returns {object} the portal, or the element itself.
+   */
+  function floatFree(element) {
+    if (createPortal === null || typeof document === 'undefined' || document.body === null) return element
+    return createPortal(element, document.body)
+  }
+
+  /**
    * Keep a floating panel fully inside the viewport, leaving a margin at every
    * edge. A panel wider or taller than the viewport pins to the top-left margin
    * rather than flipping to the opposite edge.
@@ -1627,6 +1664,8 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     // keeps showing the balance (or quota) and the spend.
     const [narrow, setNarrow] = useState(() => viewportSize().width < NARROW_VIEWPORT_PX)
     const [open, setOpen] = useState(false)
+    // Bumped by every interaction with the card, which restarts its countdown.
+    const [activity, setActivity] = useState(0)
     const details = indicatorDetails({ provider: currentProvider, meter, quota, t })
     const summary = headline === null ? '' : headline.text
 
@@ -1738,6 +1777,35 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       window.addEventListener('resize', onResize)
       return () => { window.removeEventListener('resize', onResize) }
     }, [])
+
+    // The card retracts on its own. It is a reading taken at one moment, and the
+    // account behind it moves on: left open on a phone it covers the
+    // conversation, and it keeps showing the model the user has already left.
+    useEffect(() => {
+      if (open === false) return undefined
+      const timer = setTimeout(() => { setOpen(false) }, AUTO_COLLAPSE_MS)
+      return () => { clearTimeout(timer) }
+    }, [open, activity])
+
+    // A press anywhere outside the indicator and its card retracts it. Capture
+    // phase, so a press that a handler downstream swallows still counts.
+    useEffect(() => {
+      if (open === false) return undefined
+      if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return undefined
+      const onPress = (event) => {
+        const target = event.target
+        const anchor = nodeRef.current
+        if (anchor !== null && anchor !== undefined && typeof anchor.contains === 'function' && anchor.contains(target) === true) return
+        if (target !== null && target !== undefined && typeof target.closest === 'function' && target.closest('[data-details="meter"]') !== null) return
+        setOpen(false)
+      }
+      document.addEventListener('pointerdown', onPress, true)
+      return () => { document.removeEventListener('pointerdown', onPress, true) }
+    }, [open])
+
+    // Switching model switches the account the numbers belong to, so an open
+    // card must not keep showing the previous one.
+    useEffect(() => { setOpen(false) }, [currentProvider])
 
     if (headline === null) return null
 
@@ -1863,7 +1931,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         whiteSpace: 'normal',
         wordBreak: 'break-word',
         textAlign: 'left',
-        zIndex: 41,
+        zIndex: FLOAT_Z_INDEX,
         background: '#111827',
         color: '#f9fafb',
         border: '1px solid #374151',
@@ -1918,16 +1986,18 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
           ...(narrow
             ? { display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 4 }
             : {}),
-          zIndex: 40,
+          zIndex: FLOAT_Z_INDEX,
           boxShadow: '0 6px 18px rgba(0, 0, 0, 0.35)',
         }
-    const card = open === false ? null : h('div', {
+    const cardElement = h('div', {
       key: 'indicator-details',
       'data-details': 'meter',
       role: 'group',
       'aria-label': t('meterTitle'),
       style: detailsStyle(),
       onClick: (event) => { event.stopPropagation() },
+      onPointerEnter: () => { setActivity((count) => count + 1) },
+      onPointerDown: () => { setActivity((count) => count + 1) },
     }, [
       h('div', { key: 'head', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } }, [
         h('strong', { key: 'title' }, t('meterTitle')),
@@ -1947,42 +2017,46 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       ]),
       ...details.map((line, index) => h('div', { key: `line-${index}` }, line)),
     ])
+    const card = open === false ? null : floatFree(cardElement)
+    const indicator = h('button', {
+      key: 'icon',
+      type: 'button',
+      ref: nodeRef,
+      style: {
+        ...s.button,
+        ...placement,
+        cursor: dragging === true ? 'grabbing' : 'grab',
+        touchAction: 'none',
+        userSelect: 'none',
+      },
+      title: `${indicatorTooltip({ provider: currentProvider, meter, quota, t })} · ${t('panelClickHint')} · ${t('panelDragHint')}`,
+      'aria-label': t('meterTitle'),
+      'aria-expanded': open,
+      onPointerDown,
+      onPointerMove,
+      onPointerUp: endDrag,
+      onPointerCancel: endDrag,
+      onDoubleClick,
+      onKeyDown,
+      onClick,
+    }, narrow
+      ? h('svg', {
+          key: 'glyph',
+          width: 16,
+          height: 16,
+          viewBox: '0 0 16 16',
+          'aria-hidden': true,
+          focusable: false,
+        }, [
+          h('rect', { key: 'bar-1', x: 2, y: 9, width: 3, height: 5, rx: 1, fill: 'currentColor' }),
+          h('rect', { key: 'bar-2', x: 6.5, y: 5, width: 3, height: 9, rx: 1, fill: 'currentColor' }),
+          h('rect', { key: 'bar-3', x: 11, y: 2, width: 3, height: 12, rx: 1, fill: 'currentColor' }),
+        ])
+      : summary)
     return h('div', { key: 'indicator', style: { display: 'contents' } }, [
-      h('button', {
-        key: 'icon',
-        type: 'button',
-        ref: nodeRef,
-        style: {
-          ...s.button,
-          ...placement,
-          cursor: dragging === true ? 'grabbing' : 'grab',
-          touchAction: 'none',
-          userSelect: 'none',
-        },
-        title: `${indicatorTooltip({ provider: currentProvider, meter, quota, t })} · ${t('panelClickHint')} · ${t('panelDragHint')}`,
-        'aria-label': t('meterTitle'),
-        'aria-expanded': open,
-        onPointerDown,
-        onPointerMove,
-        onPointerUp: endDrag,
-        onPointerCancel: endDrag,
-        onDoubleClick,
-        onKeyDown,
-        onClick,
-      }, narrow
-        ? h('svg', {
-            key: 'glyph',
-            width: 16,
-            height: 16,
-            viewBox: '0 0 16 16',
-            'aria-hidden': true,
-            focusable: false,
-          }, [
-            h('rect', { key: 'bar-1', x: 2, y: 9, width: 3, height: 5, rx: 1, fill: 'currentColor' }),
-            h('rect', { key: 'bar-2', x: 6.5, y: 5, width: 3, height: 9, rx: 1, fill: 'currentColor' }),
-            h('rect', { key: 'bar-3', x: 11, y: 2, width: 3, height: 12, rx: 1, fill: 'currentColor' }),
-          ])
-        : summary),
+      // Detached, the numbers leave the seat entirely: the sidebar's own width
+      // and clipping are what stopped them from floating free in the first place.
+      floating ? floatFree(indicator) : indicator,
       card,
     ])
   }
@@ -2272,6 +2346,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       indicatorTooltip,
       meterUsageUrl,
       sessionUsageLine,
+      AUTO_COLLAPSE_MS,
       // Mounted directly by tests: every slot component nests inside a page
       // component, and a shallow harness cannot drive a nested component's
       // effects, so this one is reachable only through the test surface.
