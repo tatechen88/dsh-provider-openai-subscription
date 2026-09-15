@@ -278,6 +278,13 @@ export function mountRoutes(host, deps) {
     const { service, settings, openaiQuota } = deps.meter
 
     route('GET', '/meter/usage', async (request, response) => {
+      // A meter whose ledger could not be opened stays installed but reports
+      // itself unavailable: the client hides the surface instead of showing a
+      // request failure it cannot act on.
+      if (service === undefined) {
+        sendJson(response, 200, { ok: true, data: { status: 'unavailable', usage: undefined, deepseek: { status: 'off', infos: [], message: '' } } })
+        return
+      }
       const sessionId = new URL(request.url ?? '/', 'http://localhost').searchParams.get('sessionId')
       const quota = openaiQuota === undefined ? undefined : await openaiQuota().catch(() => undefined)
       sendJson(response, 200, {
@@ -290,6 +297,10 @@ export function mountRoutes(host, deps) {
     })
 
     route('POST', '/meter/deepseek/refresh', async (_request, response) => {
+      if (service === undefined) {
+        sendJson(response, 200, { ok: false, error: 'usage meter is unavailable', data: { status: 'off', infos: [], message: '' } })
+        return
+      }
       const balance = await service.refreshDeepSeekBalance({ force: true })
       sendJson(response, 200, { ok: true, data: service.view().deepseek, status: balance.status })
     })
@@ -309,7 +320,9 @@ export function mountRoutes(host, deps) {
         }
         try {
           const result = await settings.update(patch, expectedRevision)
-          service.updateConfig(result.config)
+          // A degraded meter has no service to reconfigure; the settings still
+          // persist so the next start picks them up.
+          service?.updateConfig?.(result.config)
           sendJson(response, 200, { ok: true, data: result })
         } catch (error) {
           if (/** @type {{code?: string}} */ (error).code === 'settings-conflict') {

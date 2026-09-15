@@ -163,3 +163,36 @@ test('a foreign origin cannot read or change meter state', async () => {
   assert.equal(response.state.status, 403)
   dispose()
 })
+
+test('a meter without a service reports itself unavailable instead of failing the request', async () => {
+  const web = fakeWebServer()
+  const settings = { revision: 0, resolved: () => ({ accountKind: 'unknown' }), update: async () => ({ revision: 1, config: {} }) }
+  const dispose = mountRoutes({ webServer: web }, {
+    repository: { status: async () => ({ configured: false }) },
+    attempts: { get: () => undefined },
+    balance: { get: async () => ({ status: 'ready' }), clear: () => {} },
+    clientId: 'cid',
+    exchange: async () => ({ access: 'a', expires: 1 }),
+    // Exactly what createMeter returns when its ledger cannot be opened.
+    meter: { service: undefined, settings, openaiQuota: undefined },
+  })
+
+  const usage = fakeResponse()
+  await routeOf(web, '/meter/usage').handler(fakeRequest(), usage)
+  assert.equal(usage.state.status, 200)
+  assert.equal(JSON.parse(usage.state.body).data.status, 'unavailable')
+
+  const refresh = fakeResponse()
+  await routeOf(web, '/meter/deepseek/refresh').handler(fakeRequest({ method: 'POST' }), refresh)
+  assert.equal(refresh.state.status, 200)
+  assert.equal(JSON.parse(refresh.state.body).ok, false)
+
+  // Settings still persist even with no running service to reconfigure.
+  const patch = fakeResponse()
+  await routeOf(web, '/meter/settings').handler(
+    fakeRequest({ method: 'PATCH', body: JSON.stringify({ patch: { hideCost: true }, expectedRevision: 0 }) }),
+    patch,
+  )
+  assert.equal(patch.state.status, 200)
+  dispose()
+})

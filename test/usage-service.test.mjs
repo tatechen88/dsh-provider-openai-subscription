@@ -120,7 +120,7 @@ test('an enterprise declaration unlocks a configured agreement but changes nothi
     label: 'Acme agreement',
     currency: 'USD',
     validFrom: '2026-01-01',
-    models: { 'deepseek-flash': { offPeak: { cacheMiss: 100_000, cacheHit: 1_000, output: 200_000 } } },
+    models: { 'deepseek-flash': { offPeak: { cacheMiss: 0.1, cacheHit: 0.001, output: 0.2 } } },
   }]
   const personal = new UsageMeterService({ ledger, config: { accountKind: 'personal', contractualSchedules }, now: () => 0 })
   assert.equal(personal.recordUsage(fact()).quote.currency, 'CNY')
@@ -145,6 +145,58 @@ test('privacy hides money and balance while tokens stay visible', async () => {
   await ledger.close()
 })
 
+test('an amount is shown in the currency it was billed in, never converted', async () => {
+  const ledger = await openedLedger()
+  const contractualSchedules = [{
+    id: 'acme',
+    label: 'Acme agreement',
+    currency: 'USD',
+    models: { 'deepseek-flash': { offPeak: { cacheMiss: 0.1, cacheHit: 0.001, output: 0.2 } } },
+  }]
+  const meter = new UsageMeterService({
+    ledger,
+    config: { accountKind: 'enterprise', contractualSchedules, displayCurrency: 'CNY' },
+    now: () => NOW,
+  })
+  meter.recordUsage(fact())
+  // A second call on public prices lands in the same session, in CNY.
+  new UsageMeterService({ ledger, now: () => NOW }).recordUsage(fact({ callId: 'call-2' }))
+
+  const session = meter.view({ sessionId: 's1' }).usage.session
+  assert.equal(session.amountCurrency, 'CNY', 'the matching currency wins when the ledger holds more than one')
+  assert.equal(session.amountMicros, 1_000_000, 'one million uncached tokens at CNY 1.00/M')
+  assert.deepEqual(session.amountsMicrosByCurrency, { USD: 100_000, CNY: 1_000_000 })
+
+  const usd = new UsageMeterService({ ledger, config: { displayCurrency: 'USD' }, now: () => NOW })
+  assert.equal(usd.view({ sessionId: 's1' }).usage.session.amountMicros, 100_000, 'the agreement amount is reachable by preference')
+
+  const eur = new UsageMeterService({ ledger, config: { displayCurrency: 'EUR' }, now: () => NOW })
+  const eurSession = eur.view({ sessionId: 's1' }).usage.session
+  assert.equal(eurSession.amountMicros, undefined, 'two billed currencies and no matching preference name no single amount')
+  assert.deepEqual(eurSession.amountsMicrosByCurrency, { USD: 100_000, CNY: 1_000_000 }, 'both amounts stay available')
+  await ledger.close()
+})
+
+test('a sole non-matching currency is still shown as itself rather than hidden', async () => {
+  const ledger = await openedLedger('usd-only.json')
+  const contractualSchedules = [{
+    id: 'acme',
+    label: 'Acme agreement',
+    currency: 'USD',
+    models: { 'deepseek-flash': { offPeak: { cacheMiss: 0.1, cacheHit: 0.001, output: 0.2 } } },
+  }]
+  const meter = new UsageMeterService({
+    ledger,
+    config: { accountKind: 'enterprise', contractualSchedules, displayCurrency: 'CNY' },
+    now: () => NOW,
+  })
+  meter.recordUsage(fact())
+  const session = meter.view({ sessionId: 's1' }).usage.session
+  assert.equal(session.amountCurrency, 'USD', 'a USD agreement under a CNY preference still reports its money')
+  assert.equal(session.amountMicros, 100_000)
+  await ledger.close()
+})
+
 test('a configured agreement is reported in force only when it really prices the call', async () => {
   const ledger = await openedLedger()
   const contractualSchedules = [{
@@ -153,7 +205,7 @@ test('a configured agreement is reported in force only when it really prices the
     currency: 'USD',
     validFrom: '2026-01-01',
     validTo: '2026-12-31',
-    models: { 'deepseek-flash': { offPeak: { cacheMiss: 100_000, cacheHit: 1_000, output: 200_000 } } },
+    models: { 'deepseek-flash': { offPeak: { cacheMiss: 0.1, cacheHit: 0.001, output: 0.2 } } },
   }]
 
   const personal = new UsageMeterService({ ledger, config: { accountKind: 'personal', contractualSchedules }, now: () => NOW })

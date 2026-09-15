@@ -19,19 +19,28 @@ export const DEEPSEEK_BALANCE_TTL_MS = 5 * 60 * 1000
 
 /**
  * Build the browser-facing view of one aggregate.
+ *
+ * The displayed amount is the configured currency when the account spent in it.
+ * When it did not — an enterprise agreement billed in USD while the display
+ * currency is CNY, say — the sole currency actually spent is shown as itself.
+ * Amounts are never converted: an invented exchange rate would be a number
+ * nobody billed.
  * @param {object} summary
  * @param {object} config
  * @returns {object}
  */
 function viewOfAggregate(summary, config) {
-  const amountMicros = summary.amountMicrosByCurrency?.[config.displayCurrency]
+  const byCurrency = summary.amountMicrosByCurrency ?? {}
+  const currencies = Object.keys(byCurrency)
+  const chosen = byCurrency[config.displayCurrency] !== undefined
+    ? config.displayCurrency
+    : currencies.length === 1 ? currencies[0] : undefined
   return {
     calls: summary.calls,
     usage: summary.usage,
     cacheHitRatio: cacheHitRatio(summary.usage),
-    amountsMicrosByCurrency: summary.amountMicrosByCurrency,
-    ...(amountMicros === undefined ? {} : { amountMicros }),
-    amountCurrency: config.displayCurrency,
+    amountsMicrosByCurrency: byCurrency,
+    ...(chosen === undefined ? {} : { amountMicros: byCurrency[chosen], amountCurrency: chosen }),
   }
 }
 
