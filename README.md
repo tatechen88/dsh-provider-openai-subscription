@@ -146,6 +146,24 @@ Responses 的终止事件会携带 `usage`，插件在 finish 之前把它转换
 - 企业身份本身不会自动产生折扣；没有有效合同价时回退到公开价估算；
 - UI 会显示实际采用的是"公开价"还是"合同价"，以及合同表名称与有效期。
 
+### 从 dsh-cost-meter 迁移
+
+内置 meter 与 `dsh-cost-meter` 会计量同一批调用，因此不要长期同时启用。
+
+1. 在目标 profile 的 `package.json` 中，从 `dependencies` 与 `dsh.profile.bundles` 两处移除 `dsh-cost-meter`；
+2. 如果该 profile 的 `pnpm-workspace.yaml` 里有指向它的 `patchedDependencies`，一并移除——否则下一次 `pnpm install` 会因为补丁找不到目标包而失败（补丁文件本身可以留着）；
+3. 重启 profile。启动时 DSH 只解析 `bundles` 列表，不再解析的包不会被读取，因此残留的 `node_modules/dsh-cost-meter` 不影响启动；
+4. 旧账本 `$DSH_HOME/storages/cost-meter/ledger.json` 不会被读取、修改或删除，需要归档时自行移动；
+5. 想回滚就重新安装并启用 `dsh-cost-meter`，本插件的账本保留不动。
+
+想先确认改完的组合还能加载，可以在不启动服务的情况下打印组合结果：
+
+```sh
+dsh --profile web --dump-default-config
+```
+
+它只加载 bundle 层、不读用户 patch 层，所以输出里的 `state` 仍是 bundle 默认值 `bootstrap`，这不代表运行时未激活。
+
 ### 数据与隐私
 
 - 账本位于 `$DSH_HOME/storages/openai-subscription-meter/usage.json`，只保存调用事实与当时报价，不保存提示词、响应正文或密钥；
