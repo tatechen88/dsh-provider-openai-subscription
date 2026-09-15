@@ -19,13 +19,16 @@
 ## 最近在做什么
 
 ```
+3fab498 2026-09-15 test: render the connection surfaces and read the balance on open
+dd0e7d9 2026-09-15 docs: 增加 HANDOFF.md
 107df56 2026-09-15 chore: 接入 SkillsHub 工程流程约定
 d86c8e0 2026-09-15 feat: merge concurrent ledger writers and drop unreachable knobs
 cd686f7 2026-09-15 fix: correct metering, ledger and settings defects found by audit
-594cddc 2026-09-15 test: cover provider-scoped pricing and document the meter report
 ```
 
-近期主线是计量正确性：并发 ledger 写入合并、审计发现的 metering / settings 缺陷修复、provider 级定价的测试覆盖。
+近期主线是计量正确性：并发 ledger 写入合并（重读＋按 callId 合并，写前 fsync）、审计发现的 metering / settings 缺陷修复、provider 级定价的测试覆盖，以及连接链路的页面级渲染测试（`test/client-page-render.test.mjs`）——写这批测试时实测到一个缺陷：登录后的设置页从不做首次余额读取，只起了 5 分钟轮询，现已改为打开即读。
+
+待定的一个设计取舍：`meter.deepseekBalance` 开关已按用户要求撤掉，因此插件无法再从**配置层面**禁止向 `api.deepseek.com` 发余额请求（`hideBalance` 只隐藏显示）。若要恢复“绝不外呼”的能力，应把它做成设置页里可达的开关，而不是只写在配置层的死开关。
 
 ## 关键文件
 
