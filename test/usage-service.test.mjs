@@ -145,6 +145,39 @@ test('privacy hides money and balance while tokens stay visible', async () => {
   await ledger.close()
 })
 
+test('a configured agreement is reported in force only when it really prices the call', async () => {
+  const ledger = await openedLedger()
+  const contractualSchedules = [{
+    id: 'acme',
+    label: 'Acme agreement',
+    currency: 'USD',
+    validFrom: '2026-01-01',
+    validTo: '2026-12-31',
+    models: { 'deepseek-flash': { offPeak: { cacheMiss: 100_000, cacheHit: 1_000, output: 200_000 } } },
+  }]
+
+  const personal = new UsageMeterService({ ledger, config: { accountKind: 'personal', contractualSchedules }, now: () => NOW })
+  assert.deepEqual(personal.view().pricing.contractual, {
+    configured: true,
+    active: false,
+    label: 'Acme agreement',
+    currency: 'USD',
+    validTo: '2026-12-31',
+  }, 'a personal account may see the agreement but not be told it is billed at it')
+
+  const enterprise = new UsageMeterService({ ledger, config: { accountKind: 'enterprise', contractualSchedules }, now: () => NOW })
+  assert.equal(enterprise.view().pricing.contractual.active, true)
+  assert.equal(enterprise.view().pricing.contractual.scheduleId, 'acme')
+
+  const later = new UsageMeterService({ ledger, config: { accountKind: 'enterprise', contractualSchedules }, now: () => Date.UTC(2027, 0, 2) })
+  assert.equal(later.view().pricing.contractual.active, false, 'an expired agreement is not in force')
+
+  const none = new UsageMeterService({ ledger, now: () => NOW })
+  assert.deepEqual(none.view().pricing.contractual, { configured: false, active: false })
+  assert.equal(none.view().pricing.public.retrievedAt, '2026-09-15', 'the public snapshot is always named')
+  await ledger.close()
+})
+
 test('a failed balance refresh keeps the last known good reading', async () => {
   const ledger = await openedLedger()
   let fail = false

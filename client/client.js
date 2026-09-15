@@ -1724,6 +1724,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   /**
    * Detail line behind the indicator: provider-specific facts plus the price
    * provenance, so a cost shown in the sidebar is always explainable.
+   *
+   * Every period the meter keeps is stated here — session, today, month — since
+   * the one-line summary can only carry two of them.
    * @param {object} input - same inputs as {@link indicatorHeadline}.
    * @returns {string}
    */
@@ -1734,21 +1737,63 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         .filter((window) => window.id === 'primary' || window.id === 'secondary')
         .map((window) => `${windowLabel(t, window)} ${window.remainingPercent}%`)
         .join(' / ')
-      const session = meter?.usage?.session
-      const tokens = session === undefined ? undefined : `${t('meterSession')} ${formatTokens(session.usage?.promptTokens)} → ${formatTokens(session.usage?.outputTokens)}`
-      return [`OpenAI (ChatGPT OAuth)`, detail, tokens].filter((part) => typeof part === 'string' && part.length > 0).join(' · ')
+      return ['OpenAI (ChatGPT OAuth)', detail, ...tokenLines(meter, t)].filter(isFilled).join(' · ')
     }
     const balance = meter?.deepseek
     const account = meter?.account?.kind
-    const parts = [
-      `DeepSeek`,
+    const pricing = meter?.pricing
+    return [
+      'DeepSeek',
       balance?.primary === undefined ? undefined : `${balance.primary.currency} ${balance.primary.total}`,
       balance?.status === 'stale' ? t('meterUnavailable') : undefined,
       account === 'enterprise' ? t('meterAccountEnterprise') : account === 'personal' ? t('meterAccountPersonal') : t('meterAccountUnknown'),
-      `${t('meterToday')} ${amountTextOf(meter?.usage?.today) ?? '—'} (${t('meterEstimated')})`,
-      `${t('meterPriceSource')}: ${t('meterPublicPrice')} ${meter?.pricing?.retrievedAt ?? ''}`.trim(),
-    ]
-    return parts.filter((part) => typeof part === 'string' && part.length > 0).join(' · ')
+      ...tokenLines(meter, t),
+      amountTextOf(meter?.usage?.today) === undefined ? undefined : `${t('meterToday')} ${amountTextOf(meter?.usage?.today)}`,
+      amountTextOf(meter?.usage?.month) === undefined ? undefined : `${t('meterMonth')} ${amountTextOf(meter?.usage?.month)}`,
+      priceSourceLine(pricing, t),
+    ].filter(isFilled).join(' · ')
+  }
+
+  /**
+   * Token totals for the three periods the ledger keeps.
+   * @param {object|null} meter
+   * @param {(key: string) => string} t
+   * @returns {string[]}
+   */
+  function tokenLines(meter, t) {
+    const periods = [[t('meterSession'), 'session'], [t('meterToday'), 'today'], [t('meterMonth'), 'month']]
+    return periods
+      .map(([label, key]) => {
+        const summary = meter?.usage?.[key]
+        if (summary === undefined || summary.calls === 0) return undefined
+        return `${label} ${formatTokens(summary.usage?.promptTokens ?? 0)} → ${formatTokens(summary.usage?.outputTokens ?? 0)}`
+      })
+      .filter(isFilled)
+  }
+
+  /**
+   * Which price table a shown cost came from.
+   *
+   * A configured agreement is reported as in force only when it really is in
+   * force for this account; otherwise the public snapshot is named, so the user
+   * is never told they are billed at a contract rate they are not.
+   * @param {object|undefined} pricing - meter view `pricing` slice.
+   * @param {(key: string) => string} t
+   * @returns {string|undefined}
+   */
+  function priceSourceLine(pricing, t) {
+    if (pricing === undefined || pricing === null) return undefined
+    if (pricing.contractual?.active === true) {
+      const label = typeof pricing.contractual.label === 'string' ? ` ${pricing.contractual.label}` : ''
+      return `${t('meterPriceSource')}: ${t('meterContractPrice')}${label} ${t('meterEstimated')}`.trim()
+    }
+    const retrieved = pricing.public?.retrievedAt
+    return `${t('meterPriceSource')}: ${t('meterPublicPrice')}${typeof retrieved === 'string' ? ` ${retrieved}` : ''} ${t('meterEstimated')}`.trim()
+  }
+
+  /** Whether a composed tooltip fragment carries a fact. */
+  function isFilled(part) {
+    return typeof part === 'string' && part.length > 0
   }
 
   /**
@@ -1911,6 +1956,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       formatAmount,
       formatTokens,
       indicatorHeadline,
+      indicatorTooltip,
       // Mounted directly by tests: every slot component nests inside a page
       // component, and a shallow harness cannot drive a nested component's
       // effects, so this one is reachable only through the test surface.

@@ -29,7 +29,7 @@ const descriptor = captured.factory((specifier) => {
   throw new Error(`unexpected module require: ${specifier}`)
 })
 
-const { formatAmount, formatTokens, indicatorHeadline } = descriptor.pure
+const { formatAmount, formatTokens, indicatorHeadline, indicatorTooltip } = descriptor.pure
 /** Translator over the bundle's own zh dictionary. */
 const t = (key) => descriptor.pure.translate('zh', key)
 
@@ -45,7 +45,12 @@ function deepseekMeter(overrides = {}) {
       primary: { currency: 'CNY', total: 86.2, granted: 6.2, toppedUp: 80 },
       message: '',
     },
-    pricing: { scheduleId: 'deepseek-public-2026-09-15', currency: 'CNY', retrievedAt: '2026-09-15', estimated: true },
+    pricing: {
+      public: { scheduleId: 'deepseek-public-2026-09-15', currency: 'CNY', retrievedAt: '2026-09-15', sourceUrl: 'https://example.test/pricing' },
+      contractual: { configured: false, active: false },
+      estimated: true,
+      basis: 'request-start-assumption',
+    },
     usage: {
       session: { calls: 2, usage: { promptTokens: 1000, outputTokens: 100, inputTokens: 900, cacheReadTokens: 100, cacheWriteTokens: 0 }, cacheHitRatio: 0.1, amountMicros: 420_000, amountCurrency: 'CNY' },
       today: { calls: 2, usage: { promptTokens: 1000, outputTokens: 100 }, cacheHitRatio: 0.1, amountMicros: 420_000, amountCurrency: 'CNY' },
@@ -122,4 +127,32 @@ test('a working enterprise agreement is labelled, and an unknown account is not'
   const view = descriptor.pure.translate
   assert.equal(view('zh', 'meterAccountEnterprise'), '企业（用户声明）')
   assert.equal(view('zh', 'meterAccountHint'), '公开 API 不返回实名类型，企业身份始终是用户声明。')
+})
+
+test('the tooltip states every period and names the price table in force', () => {
+  const meter = deepseekMeter()
+  meter.usage.today = { calls: 9, usage: { promptTokens: 900_000, outputTokens: 4_000 }, cacheHitRatio: 0.2, amountMicros: 1_500_000, amountCurrency: 'CNY' }
+  meter.usage.month = { calls: 40, usage: { promptTokens: 3_000_000, outputTokens: 20_000 }, cacheHitRatio: 0.3, amountMicros: 7_000_000, amountCurrency: 'CNY' }
+
+  const publicLine = indicatorTooltip({ provider: 'deepseek-official', meter, quota: null, t })
+  assert.match(publicLine, /本会话 1\.0K → 100/)
+  assert.match(publicLine, /今日 900K → 4\.0K/)
+  assert.match(publicLine, /本月 3\.0M → 20\.0K/, 'the month total is stated, not only the session one')
+  assert.match(publicLine, /价格来源: 公开价 2026-09-15 估算/)
+  assert.doesNotMatch(publicLine, /合同价/, 'no agreement is active, so none is claimed')
+
+  meter.pricing.contractual = { configured: true, active: true, label: 'Acme agreement', currency: 'USD' }
+  const contractLine = indicatorTooltip({ provider: 'deepseek-official', meter, quota: null, t })
+  assert.match(contractLine, /价格来源: 合同价 Acme agreement 估算/)
+  assert.doesNotMatch(contractLine, /公开价/)
+})
+
+test('an OpenAI tooltip carries tokens for every period and never a price', () => {
+  const meter = deepseekMeter()
+  const quota = { windows: [{ id: 'primary', remainingPercent: 82, usedPercent: 18 }, { id: 'secondary', remainingPercent: 64, usedPercent: 36 }] }
+  const line = indicatorTooltip({ provider: 'openai-subscription', meter, quota, t })
+  assert.match(line, /OpenAI \(ChatGPT OAuth\)/)
+  assert.match(line, /5 小时额度 82% \/ 每周额度 64%/)
+  assert.match(line, /本会话 1\.0K → 100/)
+  assert.doesNotMatch(line, /¥|价格来源/, 'a subscription session has no cash price to name')
 })

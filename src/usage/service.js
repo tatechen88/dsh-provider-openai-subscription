@@ -10,7 +10,7 @@
  */
 
 import { assertUsageFact, cacheHitRatio } from './types.js'
-import { buildSchedules, quoteUsage, resolveSchedule, DEEPSEEK_PUBLIC_SCHEDULE } from './pricing.js'
+import { buildSchedules, quoteUsage, resolveSchedule, scheduleCovers, DEEPSEEK_PUBLIC_SCHEDULE } from './pricing.js'
 import { fetchDeepSeekBalance, DeepSeekBalanceError } from './deepseek-balance.js'
 import { normalizeMeterConfig } from './config.js'
 
@@ -170,6 +170,33 @@ export class UsageMeterService {
   }
 
   /**
+   * Which price table is actually in force right now.
+   *
+   * A configured agreement is only "active" when it is in force AND the account
+   * has been declared enterprise, because that is exactly the condition
+   * {@link resolveSchedule} applies. Reporting it any other way would tell the
+   * user a contract price they are not being billed at.
+   * @returns {object}
+   */
+  contractualStatus() {
+    const contracts = this.config.contractualSchedules
+    if (contracts.length === 0) return { configured: false, active: false }
+    const now = this.now()
+    const covered = contracts.find((schedule) => scheduleCovers(schedule, now))
+    const active = this.config.accountKind === 'enterprise' ? covered : undefined
+    return {
+      configured: true,
+      active: active !== undefined,
+      ...(covered === undefined ? {} : {
+        label: covered.label,
+        currency: covered.currency,
+        ...(covered.validTo === undefined ? {} : { validTo: covered.validTo }),
+      }),
+      ...(active === undefined ? {} : { scheduleId: active.id }),
+    }
+  }
+
+  /**
    * Build the browser view model.
    *
    * Tokens always survive: privacy hides money and balance, never the token
@@ -194,10 +221,13 @@ export class UsageMeterService {
       privacy: { hideBalance: this.config.hideBalance, hideCost },
       deepseek: this.balanceView(),
       pricing: {
-        scheduleId: DEEPSEEK_PUBLIC_SCHEDULE.id,
-        currency: DEEPSEEK_PUBLIC_SCHEDULE.currency,
-        retrievedAt: DEEPSEEK_PUBLIC_SCHEDULE.retrievedAt,
-        sourceUrl: DEEPSEEK_PUBLIC_SCHEDULE.sourceUrl,
+        public: {
+          scheduleId: DEEPSEEK_PUBLIC_SCHEDULE.id,
+          currency: DEEPSEEK_PUBLIC_SCHEDULE.currency,
+          retrievedAt: DEEPSEEK_PUBLIC_SCHEDULE.retrievedAt,
+          sourceUrl: DEEPSEEK_PUBLIC_SCHEDULE.sourceUrl,
+        },
+        contractual: this.contractualStatus(),
         estimated: true,
         basis: 'request-start-assumption',
       },

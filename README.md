@@ -118,9 +118,11 @@ Responses 的终止事件会携带 `usage`，插件在 finish 之前把它转换
 
 | 当前 Provider | 显示 |
 |---|---|
-| `openai-subscription` | `OpenAI 5小时 82% · 每周 64%`，悬停见本会话 token |
-| `deepseek-official` | `DeepSeek ¥86.20 · 今日 ¥0.42`，悬停见账号类型、价格来源与估算口径 |
+| `openai-subscription` | `OpenAI 5小时 82% · 每周 64%`，悬停见本会话/今日/本月 token |
+| `deepseek-official` | `DeepSeek ¥86.20 · 今日 ¥0.42`，悬停见账号类型、三个周期的 token 与金额、以及价格来源 |
 | 其他 | 不显示 |
+
+悬停还会说明这条金额是按**公开价**还是**合同价**估算的：只有账号已声明为企业、合同在有效期内时才会写「合同价」并给出合同名，否则一律写「公开价 + 快照日期」。
 
 切换 Provider 时同一个节点就地换内容；每次请求都带着发起时的 Provider 代号，迟到的响应会被丢弃，因此快速来回切换不会让旧账号的金额覆盖新账号。
 
