@@ -55,11 +55,24 @@ function fakeWebServer() {
 
 /** Route-under-test harness: one meter stub, one settings stub. */
 function harness() {
-  const calls = { refresh: 0, patches: [] }
+  const calls = { refresh: 0, zhipuRefresh: 0, patches: [], views: [] }
   const service = {
-    view: (options = {}) => ({ generatedAt: 1, sessionId: options.sessionId, deepseek: { status: 'ok' }, usage: { session: {}, today: {}, month: {} } }),
+    view: (options = {}) => {
+      calls.views.push(options)
+      return {
+        generatedAt: 1,
+        sessionId: options.sessionId,
+        deepseek: { status: 'ok' },
+        zhipu: { status: 'ok', packages: [] },
+        usage: { session: {}, today: {}, month: {} },
+      }
+    },
     refreshDeepSeekBalance: async () => {
       calls.refresh += 1
+      return { status: 'ok' }
+    },
+    refreshZhipuAccount: async () => {
+      calls.zhipuRefresh += 1
       return { status: 'ok' }
     },
     updateConfig: (config) => { calls.config = config },
@@ -161,6 +174,26 @@ test('a settings write without a revision is refused instead of overwriting', as
   assert.equal(response.state.status, 400)
   assert.match(JSON.parse(response.state.body).error, /expectedRevision/)
   assert.equal(calls.patches.length, 0, 'the store is never asked to overwrite blindly')
+  dispose()
+})
+
+test('the usage route hands the vendor hint through, and the Zhipu route reads its account', async () => {
+  const { web, calls, dispose } = harness()
+
+  const usage = fakeResponse()
+  await routeOf(web, '/meter/usage').handler(fakeRequest({ url: '/?sessionId=s1&provider=zai-coding-cn' }), usage)
+  assert.equal(usage.state.status, 200)
+  assert.deepEqual(
+    calls.views.at(-1),
+    { sessionId: 's1', provider: 'zai-coding-cn' },
+    'the route tells the service which vendor this read is about',
+  )
+  assert.deepEqual(JSON.parse(usage.state.body).data.zhipu, { status: 'ok', packages: [] })
+
+  const refresh = fakeResponse()
+  await routeOf(web, '/meter/zhipu/refresh').handler(fakeRequest({ method: 'POST' }), refresh)
+  assert.equal(refresh.state.status, 200)
+  assert.equal(calls.zhipuRefresh, 1)
   dispose()
 })
 

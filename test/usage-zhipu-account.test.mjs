@@ -194,28 +194,31 @@ test('an account with nothing to read reports no-data rather than an empty succe
   assert.deepEqual(snapshot.packages, [])
 })
 
-test('a station failure is reported as its own status', async () => {
-  const snapshot = await fetchZhipuAccount({
-    providerId: 'zai-coding-cn',
-    apiKey: 'secret-key',
-    fetchImpl: async () => new Response('nope', { status: 503 }),
-  })
-  assert.equal(snapshot.status, 'http')
-  assert.ok(snapshot.errors.includes('http'))
+test('a station failure is reported as a failed reading, not an empty account', async () => {
+  await assert.rejects(
+    () => fetchZhipuAccount({
+      providerId: 'zai-coding-cn',
+      apiKey: 'secret-key',
+      fetchImpl: async () => new Response('nope', { status: 503 }),
+    }),
+    (error) => error instanceof ZhipuAccountError && error.code === 'http' && /503/.test(error.message),
+  )
 })
 
 test('a stalled response is cut off by the bound, body included', async () => {
-  const snapshot = await fetchZhipuAccount({
-    providerId: 'zai-coding-cn',
-    apiKey: 'secret-key',
-    timeoutMs: 20,
-    fetchImpl: async (_url, init) => new Promise((_resolve, reject) => {
-      init.signal.addEventListener('abort', () => {
-        reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
-      }, { once: true })
+  await assert.rejects(
+    () => fetchZhipuAccount({
+      providerId: 'zai-coding-cn',
+      apiKey: 'secret-key',
+      timeoutMs: 20,
+      fetchImpl: async (_url, init) => new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => {
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        }, { once: true })
+      }),
     }),
-  })
-  assert.equal(snapshot.status, 'timeout')
+    (error) => error instanceof ZhipuAccountError && error.code === 'timeout',
+  )
 })
 
 test('an unknown route or a missing key is refused before any request', async () => {

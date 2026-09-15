@@ -300,16 +300,24 @@ export function mountRoutes(host, deps) {
           data: {
             status: 'unavailable',
             deepseek: { status: 'off', infos: [], message: '' },
+            zhipu: { status: 'off', packages: [], message: '' },
             ...(quota === undefined ? {} : { openaiQuota: quota }),
           },
         })
         return
       }
-      const sessionId = new URL(request.url ?? '/', 'http://localhost').searchParams.get('sessionId')
+      const query = new URL(request.url ?? '/', 'http://localhost').searchParams
+      const sessionId = query.get('sessionId')
+      const provider = query.get('provider')
       sendJson(response, 200, {
         ok: true,
         data: {
-          ...service.view(sessionId === null || sessionId.length === 0 ? {} : { sessionId }),
+          ...service.view({
+            ...(sessionId === null || sessionId.length === 0 ? {} : { sessionId }),
+            // Which route this read is about, so only that vendor's account is
+            // asked for a fresh reading.
+            ...(provider === null || provider.length === 0 ? {} : { provider }),
+          }),
           ...(quota === undefined ? {} : { openaiQuota: quota }),
         },
       })
@@ -322,6 +330,15 @@ export function mountRoutes(host, deps) {
       }
       const balance = await service.refreshDeepSeekBalance({ force: true })
       sendJson(response, 200, { ok: true, data: service.view().deepseek, status: balance.status })
+    })
+
+    route('POST', '/meter/zhipu/refresh', async (_request, response) => {
+      if (service === undefined) {
+        sendJson(response, 200, { ok: false, error: 'usage meter is unavailable', data: { status: 'off', packages: [], message: '' } })
+        return
+      }
+      const reading = await service.refreshZhipuAccount({ force: true })
+      sendJson(response, 200, { ok: true, data: service.view().zhipu, status: reading.status })
     })
 
     if (settings !== undefined) {

@@ -255,9 +255,10 @@ async function get({ host, path, apiKey, fetchImpl, timeoutMs, now }) {
  * Read one Zhipu account: plan windows when it has a plan, otherwise the cash
  * balance and the resource packages it does hold.
  *
- * A reading that fails is reported in `errors` while the readings that succeeded
- * still travel: an account whose plan endpoint is not applicable is not a broken
- * account.
+ * A partial result still travels: an account whose plan endpoint is not
+ * applicable is not a broken account. A round in which *nothing* could be read
+ * throws instead, so a caller's cached reading survives rather than being
+ * replaced by an empty one.
  *
  * @param {object} options
  * @param {string} options.providerId - the metered route, which picks the station.
@@ -277,26 +278,37 @@ export async function fetchZhipuAccount({ providerId, apiKey, fetchImpl = global
   }
   const request = (path) => get({ host, path, apiKey, fetchImpl, timeoutMs, now })
 
-  /** @type {string[]} */
-  const errors = []
+  /** @type {Error[]} */
+  const failures = []
+  const attempt = (path) => request(path).catch((error) => {
+    failures.push(error instanceof Error ? error : new Error(String(error)))
+    return undefined
+  })
   const [quotaBody, balanceBody, packageBody] = await Promise.all([
-    request(ZHIPU_PATHS.quota).catch((error) => { errors.push(error.code ?? 'error'); return undefined }),
-    request(ZHIPU_PATHS.accountReport).catch((error) => { errors.push(error.code ?? 'error'); return undefined }),
-    request(`${ZHIPU_PATHS.tokenAccounts}?pageNum=1&pageSize=100`).catch((error) => { errors.push(error.code ?? 'error'); return undefined }),
+    attempt(ZHIPU_PATHS.quota),
+    attempt(ZHIPU_PATHS.accountReport),
+    attempt(`${ZHIPU_PATHS.tokenAccounts}?pageNum=1&pageSize=100`),
   ])
   const quota = quotaBody === undefined ? undefined : parseQuota(quotaBody)
   const balance = balanceBody === undefined ? undefined : parseAccountReport(balanceBody)
   const packages = packageBody === undefined ? [] : parseTokenAccounts(packageBody)
 
   const hasReading = (quota?.applicable === true && quota.windows.length > 0) || balance !== undefined || packages.length > 0
+  if (!hasReading && failures.length > 0) {
+    // Nothing at all could be read. That is a failed reading, not an empty
+    // account, and it has to reach the caller as a failure so its own cached
+    // reading survives instead of being replaced by an empty one.
+    const first = failures[0]
+    throw first instanceof ZhipuAccountError ? first : new ZhipuAccountError('error', first.message)
+  }
   return {
-    status: hasReading ? 'ok' : errors.length > 0 ? errors[0] : 'no-data',
+    status: hasReading ? 'ok' : 'no-data',
     providerId,
     host,
     fetchedAt: now(),
     ...(quota === undefined ? {} : { plan: { applicable: quota.applicable, windows: quota.windows, reason: quota.reason } }),
     ...(balance === undefined ? {} : { balance }),
     packages,
-    errors,
+    errors: failures.map((error) => (error instanceof ZhipuAccountError ? error.code : 'error')),
   }
 }

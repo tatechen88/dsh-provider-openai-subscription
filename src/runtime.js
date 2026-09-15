@@ -238,6 +238,46 @@ export async function resolveDeepSeekCredential(ctx, credentials) {
 }
 
 /**
+ * Resolve the Zhipu API key for the meter's account reading.
+ *
+ * The pi-ai catalog authenticates its Z.AI routes from a named credential
+ * reference, and that is the same store model calls use, so the meter reads it
+ * through `ctx.credentials` rather than the process environment. Only the key is
+ * taken: `zhipu-account.js` owns the station, which is what keeps the key on the
+ * official host.
+ *
+ * A route's configured reference wins over the catalog default, exactly as the
+ * DeepSeek reader prefers `llm-deepseek.apiKeyEnv`, and it is re-resolved on
+ * every refresh so a rotated key reaches the next reading without a restart.
+ *
+ * @param {object|undefined} ctx
+ * @param {object|undefined} credentials
+ * @returns {Promise<{apiKey: string|undefined}>}
+ */
+export async function resolveZhipuCredential(ctx, credentials) {
+  // The reference pi-ai's installed catalog names for `zai-coding-cn`.
+  const fallbackName = 'ZAI_CODING_CN_API_KEY'
+  let configured
+  try {
+    const settings = typeof ctx?.get === 'function' ? ctx.get('settings') : undefined
+    const section = typeof settings?.get === 'function' ? settings.get('llm-pi-ai') : undefined
+    configured = section?.providers?.['zai-coding-cn']?.apiKeyEnv
+  } catch {
+    configured = undefined
+  }
+  const envName = typeof configured === 'string' && configured.length > 0 ? configured : fallbackName
+  let apiKey
+  try {
+    const hit = credentials === undefined ? undefined : await credentials.resolve(envName)
+    if (hit !== undefined && typeof hit.value === 'string' && hit.value.length > 0) apiKey = hit.value
+  } catch {
+    // A credential store that cannot answer falls through to the environment.
+  }
+  if (apiKey === undefined && typeof process.env[envName] === 'string') apiKey = process.env[envName]
+  return { apiKey }
+}
+
+/**
  * Assemble the usage meter: durable ledger, price book, settings file, and the
  * `llm/stream` listener that feeds them.
  *
@@ -287,11 +327,16 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
     // resolved view already states them in micro units.
     config: settings.raw(),
     readDeepSeekCredential: () => resolveDeepSeekCredential(ctx, credentials),
+    // The pi-ai catalog authenticates its Z.AI routes from this reference, so the
+    // meter reads the same account through the same store rather than looking at
+    // the process environment.
+    readZhipuCredential: () => resolveZhipuCredential(ctx, credentials),
   })
-  // Warm the reading once: the sidebar shows a balance only once one has been
-  // read, and leaving that to the panel's refresh button means an empty balance
-  // until somebody presses it. A failure already lands in the status.
+  // Warm the readings once: the sidebar shows an account only once one has been
+  // read, and leaving that to a manual refresh means an empty panel until
+  // somebody presses it. A failure already lands in the reading's status.
   void service.refreshDeepSeekBalance().catch(() => {})
+  void service.refreshZhipuAccount().catch(() => {})
   collector = createUsageCollector({
     record: (fact) => {
       const stored = service.recordUsage(fact)

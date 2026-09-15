@@ -1,22 +1,27 @@
 /**
  * Unified usage meter service.
  *
- * Owns the price book selection, the durable ledger, and the DeepSeek account
- * snapshot.  Everything the browser receives is built here as a small detached
- * view model: no credential, no raw fact, and no live DSH object crosses the
- * wire.
+ * Owns the price book selection, the durable ledger, and the per-vendor account
+ * readings — the DeepSeek balance and the Zhipu plan/balance/packages.
+ * Everything the browser receives is built here as a small detached view model:
+ * no credential, no raw fact, and no live DSH object crosses the wire.
  *
  * @module dsh-provider-openai-subscription/usage/service
  */
 
 import { assertUsageFact, cacheHitRatio } from './types.js'
 import { buildSchedules, quoteUsage, resolveSchedule, scheduleCovers, PUBLIC_SCHEDULES } from './pricing.js'
-import { fetchDeepSeekBalance, DeepSeekBalanceError } from './deepseek-balance.js'
+import { fetchDeepSeekBalance } from './deepseek-balance.js'
+import { fetchZhipuAccount } from './zhipu-account.js'
+import { ReadingSlot } from './reading-slot.js'
 import { normalizeMeterConfig } from './config.js'
-import { pricedVendors } from './vendors.js'
+import { pricedVendors, vendorFor } from './vendors.js'
 
-/** How long a DeepSeek balance reading stays fresh. */
-export const DEEPSEEK_BALANCE_TTL_MS = 5 * 60 * 1000
+/** How long an account reading stays fresh. */
+export const ACCOUNT_READING_TTL_MS = 5 * 60 * 1000
+
+/** The registry id of the vendor whose reading is the Zhipu account. */
+const ZHIPU_VENDOR_ID = 'zhipu'
 
 /**
  * Build the browser-facing view of one aggregate.
@@ -45,6 +50,13 @@ function viewOfAggregate(summary, config) {
   }
 }
 
+/**
+ * The Zhipu route this deployment serves. `zhipu-account.js` owns the station
+ * map keyed by route, and a test asserts the two agree, so this literal cannot
+ * drift away from the module that knows where the account lives.
+ */
+const ZHIPU_PROVIDER_ID = 'zai-coding-cn'
+
 /** Meter service for the built-in usage UI. */
 export class UsageMeterService {
   /**
@@ -54,24 +66,61 @@ export class UsageMeterService {
    * @param {() => number} [options.now]
    * @param {(url: string, init: object) => Promise<Response>} [options.fetchImpl]
    * @param {() => Promise<{baseURL: string|undefined, apiKey: string|undefined}>} [options.readDeepSeekCredential]
-   * @param {number} [options.balanceTtlMs]
+   * @param {() => Promise<{apiKey: string|undefined}>} [options.readZhipuCredential]
+   * @param {number} [options.balanceTtlMs] - how long one account reading stays fresh.
    */
-  constructor({ ledger, config, now = Date.now, fetchImpl = globalThis.fetch, readDeepSeekCredential, balanceTtlMs = DEEPSEEK_BALANCE_TTL_MS }) {
+  constructor({ ledger, config, now = Date.now, fetchImpl = globalThis.fetch, readDeepSeekCredential, readZhipuCredential, balanceTtlMs = ACCOUNT_READING_TTL_MS }) {
     if (ledger === undefined || ledger === null) throw new TypeError('UsageMeterService requires a ledger')
     this.ledger = ledger
     this.config = normalizeMeterConfig(config)
     this.now = now
     this.fetchImpl = fetchImpl
     this.readDeepSeekCredential = readDeepSeekCredential
-    this.balanceTtlMs = balanceTtlMs
-    /** @type {object} */
-    this.balance = { status: 'idle', infos: [], fetchedAt: 0, message: '' }
-    /** @type {Promise<object>|undefined} */
-    this.balanceInFlight = undefined
-    /** When the last attempt started, so a failing endpoint is not retried per read. */
-    this.balanceAttemptAt = 0
+    this.readZhipuCredential = readZhipuCredential
     /** Bumped whenever the configuration changes, so stale async work is dropped. */
     this.generation = 0
+    this.deepseek = new ReadingSlot({
+      now: () => this.now(),
+      ttlMs: balanceTtlMs,
+      enabled: () => this.config.deepseekBalance !== false,
+      generation: () => this.generation,
+      hasReading: (reading) => Array.isArray(reading.infos) && reading.infos.length > 0,
+      load: async () => {
+        const credential = this.readDeepSeekCredential === undefined
+          ? { apiKey: undefined }
+          : await this.readDeepSeekCredential()
+        // The balance is only ever read from the official host: a deployment that
+        // routes model calls through a gateway still has a DeepSeek account, and
+        // its key must not be sent to the gateway's own endpoint.
+        return fetchDeepSeekBalance({
+          baseURL: undefined,
+          apiKey: credential.apiKey,
+          fetchImpl: this.fetchImpl,
+          now: this.now,
+        })
+      },
+    })
+    this.zhipu = new ReadingSlot({
+      now: () => this.now(),
+      ttlMs: balanceTtlMs,
+      generation: () => this.generation,
+      // Any one of the three readings is worth keeping: an account without a plan
+      // still has packages, and an account without packages still has a balance.
+      hasReading: (reading) => (Array.isArray(reading.packages) && reading.packages.length > 0)
+        || reading.balance !== undefined
+        || reading.plan?.applicable === true,
+      load: async () => {
+        const credential = this.readZhipuCredential === undefined
+          ? { apiKey: undefined }
+          : await this.readZhipuCredential()
+        return fetchZhipuAccount({
+          providerId: ZHIPU_PROVIDER_ID,
+          apiKey: credential.apiKey,
+          fetchImpl: this.fetchImpl,
+          now: this.now,
+        })
+      },
+    })
   }
 
   /**
@@ -138,67 +187,22 @@ export class UsageMeterService {
   /**
    * Refresh the DeepSeek balance reading.
    * @param {object} [options]
-   * @param {boolean} [options.force]
-   * @returns {Promise<object>} the current balance view.
+   * @param {boolean} [options.force] - read even when the cached reading is fresh.
+   * @returns {Promise<object>} the current reading.
    */
   async refreshDeepSeekBalance({ force = false } = {}) {
-    if (!this.config.deepseekBalance) {
-      // The outbound request is switched off, and that is the state to report:
-      // showing a failure would invite the user to retry a disabled feature.
-      this.balance = { status: 'off', infos: [], fetchedAt: 0, message: '' }
-      return this.balance
-    }
-    const fresh = this.now() - this.balance.fetchedAt < this.balanceTtlMs
-    if (!force && (this.balance.status === 'ok' || this.balance.status === 'stale') && fresh) return this.balance
-    if (this.balanceInFlight !== undefined) return this.balanceInFlight
-    this.balanceAttemptAt = this.now()
-
-    const generation = this.generation
-    const task = (async () => {
-      try {
-        const credential = this.readDeepSeekCredential === undefined
-          ? { apiKey: undefined }
-          : await this.readDeepSeekCredential()
-        // The balance is only ever read from the official host: a deployment
-        // that routes model calls through a gateway still has a DeepSeek
-        // account, and its key must not be sent to the gateway's own endpoint.
-        const snapshot = await fetchDeepSeekBalance({
-          baseURL: undefined,
-          apiKey: credential.apiKey,
-          fetchImpl: this.fetchImpl,
-          now: this.now,
-        })
-        if (generation !== this.generation) return this.balance
-        this.balance = { status: 'ok', message: '', ...snapshot }
-      } catch (error) {
-        if (generation !== this.generation) return this.balance
-        const code = error instanceof DeepSeekBalanceError ? error.code : 'error'
-        const message = error instanceof Error ? error.message : String(error)
-        // A failed refresh keeps the last known good reading; only a reading
-        // that never succeeded shows the failure as the primary state.
-        this.balance = this.balance.infos.length > 0
-          ? { ...this.balance, status: 'stale', message }
-          : { status: code, infos: [], fetchedAt: 0, message }
-      }
-      return this.balance
-    })()
-    this.balanceInFlight = task
-    try {
-      return await task
-    } finally {
-      if (this.balanceInFlight === task) this.balanceInFlight = undefined
-    }
+    return this.deepseek.refresh({ force })
   }
 
   /**
-   * Whether a balance reading is due.
-   *
-   * Measured from the last attempt rather than the last success, so a failing
-   * endpoint is retried once per TTL instead of on every read.
-   * @returns {boolean}
+   * Refresh the Zhipu account reading: plan windows when the account has a plan,
+   * and otherwise its cash balance and resource packages.
+   * @param {object} [options]
+   * @param {boolean} [options.force] - read even when the cached reading is fresh.
+   * @returns {Promise<object>} the current reading.
    */
-  balanceDue() {
-    return this.now() - this.balanceAttemptAt >= this.balanceTtlMs
+  async refreshZhipuAccount({ force = false } = {}) {
+    return this.zhipu.refresh({ force })
   }
 
   /**
@@ -206,16 +210,38 @@ export class UsageMeterService {
    * @returns {object}
    */
   balanceView() {
+    const reading = this.deepseek.reading
     const hidden = this.config.hideBalance
     return {
-      status: this.balance.status,
-      available: this.balance.available === true,
-      fetchedAt: this.balance.fetchedAt ?? 0,
+      status: reading.status,
+      available: reading.available === true,
+      fetchedAt: reading.fetchedAt ?? 0,
       ...(hidden ? { infos: [], primary: undefined, hidden: true } : {
-        infos: this.balance.infos ?? [],
-        ...(this.balance.primary === undefined ? {} : { primary: this.balance.primary }),
+        infos: reading.infos ?? [],
+        ...(reading.primary === undefined ? {} : { primary: reading.primary }),
       }),
-      message: this.balance.message ?? '',
+      message: reading.message ?? '',
+    }
+  }
+
+  /**
+   * The Zhipu slice of the browser view model.
+   *
+   * `hideBalance` hides the cash amount only: a resource package states a token
+   * count, and a token count is never private data.
+   * @returns {object}
+   */
+  zhipuView() {
+    const reading = this.zhipu.reading
+    const hidden = this.config.hideBalance
+    return {
+      status: reading.status,
+      fetchedAt: reading.fetchedAt ?? 0,
+      ...(reading.plan === undefined ? {} : { plan: reading.plan }),
+      ...(hidden || reading.balance === undefined ? {} : { balance: reading.balance }),
+      packages: reading.packages ?? [],
+      message: reading.message ?? '',
+      ...(Array.isArray(reading.errors) && reading.errors.length > 0 ? { errors: reading.errors } : {}),
     }
   }
 
@@ -253,9 +279,11 @@ export class UsageMeterService {
    * accounting a user needs to reason about context.
    * @param {object} [options]
    * @param {string} [options.sessionId]
+   * @param {string} [options.provider] - the route this read is about, so only that
+   *   vendor's station is asked for a fresh reading.
    * @returns {object}
    */
-  view({ sessionId } = {}) {
+  view({ sessionId, provider } = {}) {
     const hideCost = this.config.hideCost
     // One deployment offers one priced public table today. Reading it from the
     // registry rather than importing the snapshot keeps the wire shape stable
@@ -273,13 +301,17 @@ export class UsageMeterService {
     // A read that finds no balance reading asks for one without waiting for it:
     // the sidebar polls this route, so the next poll shows the balance instead
     // of the reading waiting for somebody to press refresh.
-    if (this.config.deepseekBalance && this.balanceDue()) void this.refreshDeepSeekBalance()
+    if (this.config.deepseekBalance && this.deepseek.due()) void this.refreshDeepSeekBalance()
+    // The Zhipu station is only asked when this read is about a Zhipu route: a
+    // DeepSeek-only deployment must not pay for a Zhipu request on every poll.
+    if (vendorFor(provider)?.id === ZHIPU_VENDOR_ID && this.zhipu.due()) void this.refreshZhipuAccount()
     return {
       generatedAt: this.now(),
       account: { kind: this.config.accountKind, declared: this.config.accountKind !== 'unknown' },
       display: { currency: this.config.displayCurrency, timeZone: this.config.timeZone },
       privacy: { hideBalance: this.config.hideBalance, hideCost },
       deepseek: this.balanceView(),
+      zhipu: this.zhipuView(),
       pricing: {
         public: {
           scheduleId: publicPrice?.id,

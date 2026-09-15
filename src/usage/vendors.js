@@ -30,6 +30,17 @@ export const VENDORS = Object.freeze([
     readings: Object.freeze(['balance']),
   }),
   Object.freeze({
+    id: 'zhipu',
+    // pi-ai's installed catalog serves Z.AI under two routes. This deployment
+    // uses the China coding-plan route; the international `zai` route answers at
+    // a different station with its own credential reference, so it becomes its
+    // own entry here when a deployment actually uses it.
+    providers: Object.freeze(['zai-coding-cn']),
+    // A coding plan is billed by the plan, so it publishes no per-token price.
+    priceTableId: undefined,
+    readings: Object.freeze(['quota', 'balance', 'packages']),
+  }),
+  Object.freeze({
     id: 'openai-subscription',
     providers: Object.freeze(['openai-subscription']),
     // A ChatGPT subscription is billed by the plan, so it publishes no token
