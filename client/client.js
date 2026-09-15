@@ -1081,8 +1081,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
             signedIn
               ? h(SignedInPanel, { key: 'signed-in', flow, currentProvider, t })
               : h(LoginFlow, { key: 'login', flow, t }),
-            h(MeterSettingsPanel, { key: 'meter', t }),
-          ])
+            // Settings belong to the page: the compact card keeps the connection
+            // controls only, so a plugin card never grows a second settings form.
+            page === true ? h(MeterSettingsPanel, { key: 'meter', t }) : null,          ])
         : null,
     ])
   }
