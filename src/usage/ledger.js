@@ -128,10 +128,11 @@ export class UsageLedger {
     /** @type {Map<string, object>} */
     this.byCallId = new Map()
     this.timer = undefined
-    /** @type {Promise<void>|undefined} */
-    this.pending = undefined
+    /** Serializes overlapping writes so the newest snapshot lands last. */
+    this.writeChain = undefined
+    /** Names temp files, so two writes in one millisecond cannot collide. */
+    this.writeSequence = 0
     this.closed = false
-    this.dropped = 0
   }
 
   /**
@@ -193,7 +194,6 @@ export class UsageLedger {
     while (this.entries.length > USAGE_LEDGER_MAX_FACTS) {
       const dropped = this.entries.shift()
       this.byCallId.delete(dropped.fact.callId)
-      this.dropped += 1
     }
     this.schedule()
     return true
@@ -211,16 +211,30 @@ export class UsageLedger {
 
   /**
    * Write the current ledger atomically.
+   *
+   * Writes are serialized through one chain: a debounce-timer write can fire
+   * while a `flush()` is already in flight, and two overlapping renames would
+   * let the older snapshot land last. Chaining also keeps the temp names
+   * distinct, since a counter rather than a clock names them.
    * @returns {Promise<void>}
    */
   async write() {
+    const next = (this.writeChain ?? Promise.resolve()).then(() => this.#writeOnce())
+    // A failed write must not poison the chain for later ones.
+    this.writeChain = next.catch(() => {})
+    return next
+  }
+
+  /** Serialize and rename one snapshot. */
+  async #writeOnce() {
     const body = JSON.stringify({
       schemaVersion: USAGE_LEDGER_SCHEMA_VERSION,
       updatedAt: this.now(),
       entries: this.entries,
     })
     await mkdir(dirname(this.path), { recursive: true })
-    const temp = `${this.path}.tmp-${process.pid}-${this.now()}`
+    this.writeSequence += 1
+    const temp = `${this.path}.tmp-${process.pid}-${this.writeSequence}`
     await writeFile(temp, `${body}\n`, { encoding: 'utf8', mode: 0o600 })
     await rename(temp, this.path)
   }
@@ -234,12 +248,7 @@ export class UsageLedger {
       clearTimeout(this.timer)
       this.timer = undefined
     }
-    this.pending = this.write()
-    try {
-      await this.pending
-    } finally {
-      this.pending = undefined
-    }
+    await this.write()
   }
 
   /**
@@ -276,20 +285,12 @@ export class UsageLedger {
   }
 
   /**
-   * Facts of one session, newest last.
+   * Totals of one session, newest last. Used by the session-scoped surfaces and
+   * by tests that need the underlying facts rather than the totals.
    * @param {string} sessionId
    * @returns {object[]}
    */
   sessionFacts(sessionId) {
     return this.entries.filter((entry) => entry.fact.sessionId === sessionId)
   }
-}
-
-/**
- * Create a ledger for one ledger file.
- * @param {object} options - forwarded to {@link UsageLedger}.
- * @returns {UsageLedger}
- */
-export function createUsageLedger(options) {
-  return new UsageLedger(options)
 }

@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { UsageLedger, UsageLedgerCorruptError, calendarKey, createUsageLedger } from '../src/usage/ledger.js'
+import { UsageLedger, UsageLedgerCorruptError, calendarKey } from '../src/usage/ledger.js'
 
 /** A temporary ledger path plus its directory. */
 async function ledgerPath() {
@@ -35,7 +35,7 @@ const priced = { status: 'priced', currency: 'CNY', amountMicros: 1_000_000, sch
 
 test('ledger persists facts, deduplicates by call id and reloads them', async () => {
   const path = await ledgerPath()
-  const ledger = createUsageLedger({ path, debounceMs: 1 })
+  const ledger = new UsageLedger({ path, debounceMs: 1 })
   assert.deepEqual(await ledger.open(), { facts: 0 })
   assert.equal(ledger.record(fact(), priced), true)
   assert.equal(ledger.record(fact(), priced), false, 'a repeated call id is not billed twice')
@@ -110,6 +110,28 @@ test('flush writes pending facts and close stops further writes', async () => {
 
   await ledger.close()
   assert.equal(ledger.record(fact({ callId: 'late' }), priced), false, 'a closed ledger accepts nothing new')
+})
+
+test('overlapping writes serialize and leave no temporary file behind', async () => {
+  const path = await ledgerPath()
+  const ledger = new UsageLedger({ path, debounceMs: 1 })
+  await ledger.open()
+  ledger.record(fact({ callId: 'a' }), priced)
+  ledger.record(fact({ callId: 'b' }), priced)
+
+  // A debounce timer and a flush can both fire while a write is in flight; the
+  // write chain is what keeps the newest snapshot last and the temp names
+  // distinct.
+  const inFlight = Promise.all([ledger.write(), ledger.write(), ledger.write()])
+  ledger.record(fact({ callId: 'c' }), priced)
+  await inFlight
+  await ledger.flush()
+
+  const files = await readdir(join(path, '..'))
+  assert.deepEqual(files.filter((name) => name.includes('.tmp-')), [], 'every temp file is renamed, not left behind')
+  const stored = JSON.parse(await readFile(path, 'utf8'))
+  assert.deepEqual(stored.entries.map((entry) => entry.fact.callId), ['a', 'b', 'c'], 'the durable file carries every recorded fact')
+  await ledger.close()
 })
 
 test('unpriced facts count tokens without inventing money', async () => {

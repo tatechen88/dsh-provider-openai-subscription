@@ -170,14 +170,21 @@ try {
   if (entry.fact.sessionId !== 'smoke-session' || entry.fact.provider !== 'deepseek-official') {
     throw new Error(`metered fact lost its route: ${JSON.stringify(entry.fact)}`)
   }
-  if (entry.quote?.status !== 'priced' || entry.quote.amountMicros !== 1_000_000) {
+  if (entry.quote?.status !== 'priced') {
     throw new Error(`metered fact was not priced by the built-in snapshot: ${JSON.stringify(entry.quote)}`)
+  }
+  // The band depends on when this check runs — the meter prices a call by its
+  // start instant — so the expectation follows the band the quote reports
+  // instead of assuming one, which would fail every weekday peak window.
+  const expectedMicros = entry.quote.band === 'peak' ? 2_000_000 : 1_000_000
+  if (entry.quote.amountMicros !== expectedMicros) {
+    throw new Error(`1M uncached deepseek-flash tokens in the ${entry.quote.band} band should cost ${expectedMicros} micros, got ${JSON.stringify(entry.quote.amountMicros)}`)
   }
 
   console.log(`OK: plugin root ${pluginRoot}`)
   console.log(`OK: bootstrap state stays inactive`)
   console.log(`OK: active state registers provider openai-subscription`)
-  console.log(`OK: a real llm/stream call becomes a priced ledger fact (CNY 1.000000 for 1M uncached input tokens)`)
+  console.log(`OK: a real llm/stream call becomes a priced ledger fact (1M uncached input tokens = CNY ${(expectedMicros / 1_000_000).toFixed(2)} in the ${entry.quote.band} band)`)
 } finally {
   if (previousHome === undefined) delete process.env.DSH_HOME
   else process.env.DSH_HOME = previousHome

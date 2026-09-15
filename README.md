@@ -57,7 +57,17 @@ dsh plugin --profile web add ../dsh-provider-openai-subscription
     provider:
       defaultModel: ""
       reasoningEffort: ""
+    meter:
+      accountKind: unknown      # unknown | personal | enterprise
+      displayCurrency: CNY
+      timeZone: system          # system | UTC | Asia/Shanghai
+      deepseekBalance: true
+      hideBalance: false
+      hideCost: false
+      contractualSchedules: []  # 企业合同价，见「企业合同价」一节
 ```
+
+`meter` 是内置用量模块的默认层；运行时的设置页保存到 `$DSH_HOME/plugin-state/openai-subscription-meter.json`，该文件优先级更高。完整字段说明见「用量与费用（内置 meter）」。
 
 重新启动对应的 DSH profile，然后在 Web 设置页完成 ChatGPT OAuth 登录。
 
@@ -75,6 +85,7 @@ dsh-openai-subscription-rescue disable
 | `oauth.clientId` | OAuth Client ID。留空时不加载 Runtime。 |
 | `provider.defaultModel` | 默认模型 ID，可以留空。 |
 | `provider.reasoningEffort` | 默认 reasoning effort，可以留空。 |
+| `meter.*` | 内置用量模块的默认层；设置页里改的值存在插件状态文件中并覆盖这里。 |
 
 插件使用独立的 Provider ID、设置命名空间和凭据键，不会覆盖旧 `openai-codex` Provider 的配置或凭据。
 
@@ -145,6 +156,25 @@ Responses 的终止事件会携带 `usage`，插件在 finish 之前把它转换
 - 只有声明为企业、且配置了在有效期内、模型匹配的合同价时，合同价才生效；
 - 企业身份本身不会自动产生折扣；没有有效合同价时回退到公开价估算；
 - UI 会显示实际采用的是"公开价"还是"合同价"，以及合同表名称与有效期。
+
+合同价在设置页选择「企业」后出现，是一个 JSON 数组：
+
+```json
+[
+  {
+    "id": "acme-2026",
+    "label": "Acme agreement",
+    "currency": "USD",
+    "validFrom": "2026-01-01",
+    "validTo": "2026-12-31",
+    "models": {
+      "deepseek-flash": { "cacheMiss": 0.1, "cacheHit": 0.001, "output": 0.2 }
+    }
+  }
+]
+```
+
+单价是**每百万 token 的货币金额**（与官方价目表同一口径），三项缺一不可；缺项的条目会被整条丢弃，而不是按 0 计费。JSON 写坏时保存按钮禁用并就地报错。
 
 ### 从 dsh-cost-meter 迁移
 
@@ -268,9 +298,9 @@ src/
   stream/                  SSE parser
   web/                     本地同源 Web API 路由
 client/
-  client.js                设置页、首次启动引导、可拖拽的额度指示器
-test/                      Node.js 单元测试
-cordis.patch.yml           DSH bundle patch 定义
+  client.js                设置页、首次启动引导、统一用量指示器、会话用量行与拖拽
+test/                      Node.js 单元测试（*.e2e.mjs 为需要真实凭据的端到端）
+cordis.patch.yml           DSH bundle patch 定义，含 meter 默认层
 ```
 
 ## 已知限制

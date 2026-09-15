@@ -59,6 +59,19 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   const COLLISION_GAP_PX = 8
   /** Controls considered occupied when a floating panel settles nearby. */
   const COLLISION_SELECTOR = 'button, a[href], input, textarea, select, [role="button"], [role="link"], [role="dialog"], [role="menu"], [role="toolbar"]'
+  /** Placeholder showing the shape an enterprise price agreement takes. */
+  const METER_CONTRACT_EXAMPLE = `[
+  {
+    "id": "acme-2026",
+    "label": "Acme agreement",
+    "currency": "USD",
+    "validFrom": "2026-01-01",
+    "validTo": "2026-12-31",
+    "models": {
+      "deepseek-flash": { "cacheMiss": 0.1, "cacheHit": 0.001, "output": 0.2 }
+    }
+  }
+]`
 
   const API = {
     status: '/plugins/openai-subscription/status',
@@ -150,6 +163,8 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterAccountPersonal: '个人',
       meterAccountEnterprise: '企业（用户声明）',
       meterAccountHint: '公开 API 不返回实名类型，企业身份始终是用户声明。',
+      meterContractHint: '企业合同价：JSON 数组，每条含币种、有效期与各模型的每百万 token 单价。只有账号声明为企业且在有效期内才会生效。',
+      meterContractInvalid: '合同价 JSON 无法解析',
       meterHideBalance: '隐藏余额',
       meterHideCost: '隐藏费用',
       meterDisplayCurrency: '显示币种',
@@ -230,6 +245,8 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterAccountPersonal: 'Personal',
       meterAccountEnterprise: 'Enterprise (user-declared)',
       meterAccountHint: 'The public API does not report verification type; enterprise identity is always user-declared.',
+      meterContractHint: 'Enterprise price agreements: a JSON array; each entry carries a currency, a validity window, and per-million-token rates per model. One takes effect only for a declared enterprise account inside its window.',
+      meterContractInvalid: 'The agreement JSON could not be parsed',
       meterHideBalance: 'Hide balance',
       meterHideCost: 'Hide cost',
       meterDisplayCurrency: 'Display currency',
@@ -364,6 +381,21 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     })
   }
 
+  /**
+   * Partial update. The settings route merges a patch over the stored section
+   * under a revision, so it is a PATCH rather than a POST.
+   * @param {string} url
+   * @param {object} body
+   * @returns {Promise<object>}
+   */
+  function patchJson(url, body) {
+    return getJson(url, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    })
+  }
+
   function messageOf(error) {
     return error instanceof Error ? error.message : String(error)
   }
@@ -391,6 +423,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     cardTitle: { margin: '0 0 8px', fontSize: 14 },
     sessionDock: { textAlign: 'center', fontSize: 12, lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary, #9ca3af)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
     checkRow: { display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0' },
+    textarea: { width: '100%', boxSizing: 'border-box', background: '#111827', color: '#f9fafb', border: '1px solid #374151', borderRadius: 8, padding: 6, margin: '6px 0', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 },
   }
 
   function selectionFromStore(store) {
@@ -934,18 +967,21 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   }
 
   /**
-   * Meter settings: the account declaration, the display choices, and the two
-   * privacy switches.
+   * Meter settings: the account declaration, the display choices, the two
+   * privacy switches, and the enterprise price agreements.
    *
    * The account type is a declaration, never a detection: the panel says so
    * where the choice is made, so nobody reads the label as verified identity.
-   * @param {object} props - inject face plus the translator.
-   * @returns {object} element tree.
+   * @param {object} props
+   * @param {(key: string) => string} props.t - translator for the active locale.
+   * @returns {object|null} element tree, or null until the settings load.
    */
   function MeterSettingsPanel({ t }) {
     const [state, setState] = useState(null)
     const [draft, setDraft] = useState(null)
     const [notice, setNotice] = useState(null)
+    const [contracts, setContracts] = useState('')
+    const [contractsError, setContractsError] = useState(null)
 
     useEffect(() => {
       let cancelled = false
@@ -955,6 +991,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
           if (cancelled) return
           setState({ revision: payload.data.revision, config: payload.data.config })
           setDraft(payload.data.config)
+          setContracts(JSON.stringify(payload.data.config.contractualSchedules ?? [], null, 2))
         } catch {
           if (!cancelled) setNotice('unavailable')
         }
@@ -968,12 +1005,44 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const patch = (next) => setDraft({ ...draft, ...next })
     const save = async () => {
       try {
-        const payload = await postJson(API.meterSettings, { patch: draft, expectedRevision: state.revision })
+        const payload = await patchJson(API.meterSettings, { patch: draft, expectedRevision: state.revision })
         setState({ revision: payload.data.revision, config: payload.data.config })
         setDraft(payload.data.config)
+        setContracts(JSON.stringify(payload.data.config.contractualSchedules ?? [], null, 2))
+        setNotice('saved')
+      } catch (error) {
+        // A conflict or a rejected value is something the user must see; a
+        // silent failure would look like the save worked.
+        setNotice(messageOf(error))
+      }
+    }
+    const refreshBalance = async () => {
+      setNotice(null)
+      try {
+        await postJson(API.meterRefresh)
         setNotice('saved')
       } catch (error) {
         setNotice(messageOf(error))
+      }
+    }
+    /**
+     * Parse the agreement text and stage it, reporting a malformed document
+     * instead of dropping it silently.
+     */
+    const applyContracts = (text) => {
+      setContracts(text)
+      if (text.trim().length === 0) {
+        setContractsError(null)
+        patch({ contractualSchedules: [] })
+        return
+      }
+      try {
+        const parsed = JSON.parse(text)
+        if (!Array.isArray(parsed)) throw new Error('an array of agreements is required')
+        setContractsError(null)
+        patch({ contractualSchedules: parsed })
+      } catch (error) {
+        setContractsError(messageOf(error))
       }
     }
     const toggle = (key) => h('label', { style: s.checkRow, key }, [
@@ -1020,11 +1089,32 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
           h('option', { key: 'Asia/Shanghai', value: 'Asia/Shanghai' }, 'Asia/Shanghai'),
         ]),
       ]),
+      draft.accountKind === 'enterprise'
+        ? h('div', { key: 'contracts' }, [
+            h('p', { style: s.note }, t('meterContractHint')),
+            h('textarea', {
+              style: s.textarea,
+              rows: 6,
+              spellCheck: false,
+              value: contracts,
+              placeholder: METER_CONTRACT_EXAMPLE,
+              onChange: (event) => applyContracts(event.target.value),
+            }),
+            contractsError === null ? null : h('p', { style: s.error, role: 'alert' }, `${t('meterContractInvalid')}: ${contractsError}`),
+          ])
+        : null,
       toggle('hideBalance'),
       toggle('hideCost'),
-      h('div', { key: 'actions', style: { display: 'flex', gap: 8, alignItems: 'center' } }, [
-        h(ActionButton, { key: 'save', label: t('meterSave'), onClick: () => { void save() } }),
-        notice === 'saved' ? h('span', { key: 'saved', style: s.success }, t('meterSaved')) : null,
+      h('div', { key: 'actions', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } }, [
+        h(ActionButton, { key: 'save', label: t('meterSave'), disabled: contractsError !== null, onClick: () => { void save() } }),
+        h(ActionButton, { key: 'balance', label: t('meterRefresh'), onClick: () => { void refreshBalance() } }),
+        notice === null || notice === 'unavailable'
+          ? null
+          : h('span', {
+              key: 'notice',
+              style: notice === 'saved' ? s.success : s.error,
+              role: notice === 'saved' ? undefined : 'alert',
+            }, notice === 'saved' ? t('meterSaved') : notice),
       ]),
     ])
   }
@@ -1083,7 +1173,8 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
               : h(LoginFlow, { key: 'login', flow, t }),
             // Settings belong to the page: the compact card keeps the connection
             // controls only, so a plugin card never grows a second settings form.
-            page === true ? h(MeterSettingsPanel, { key: 'meter', t }) : null,          ])
+            page === true ? h(MeterSettingsPanel, { key: 'meter', t }) : null,
+          ])
         : null,
     ])
   }
@@ -1213,6 +1304,17 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     return formatAmount(aggregate.amountMicros, aggregate.amountCurrency)
   }
 
+  /** Whether the meter tracks this provider at all. */
+  function isMeteredProvider(provider) {
+    return provider === PROVIDER_ID || provider === DEEPSEEK_PROVIDER_ID
+  }
+
+  /** The two quota windows the indicator summarises, in display order. */
+  function summaryWindows(quota) {
+    const windows = quota !== null && quota !== undefined && Array.isArray(quota.windows) ? quota.windows : []
+    return windows.filter((window) => window.id === 'primary' || window.id === 'secondary')
+  }
+
   /**
    * Headline text of the unified indicator for one provider view.
    *
@@ -1226,12 +1328,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
    * @returns {{provider: string, text: string}|null} null when nothing should render.
    */
   function indicatorHeadline({ provider, meter, quota, t }) {
-    if (provider !== PROVIDER_ID && provider !== DEEPSEEK_PROVIDER_ID) return null
+    if (!isMeteredProvider(provider)) return null
     if (provider === PROVIDER_ID) {
-      const windows = quota !== null && quota !== undefined && Array.isArray(quota.windows) ? quota.windows : []
-      const parts = windows
-        .filter((window) => window.id === 'primary' || window.id === 'secondary')
-        .map((window) => `${windowShortLabel(t, window)} ${window.remainingPercent}%`)
+      const parts = summaryWindows(quota).map((window) => `${windowShortLabel(t, window)} ${window.remainingPercent}%`)
       return { provider, text: parts.length > 0 ? `OpenAI ${parts.join(' · ')}` : 'OpenAI …' }
     }
     // Without a reading there is nothing to say about a DeepSeek account, and a
@@ -1240,12 +1339,14 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const balance = meter.deepseek
     const hidden = balance !== undefined && balance.hidden === true
     const primary = hidden ? undefined : balance?.primary
-    const today = meter?.usage?.today
-    const spent = amountTextOf(today)
+    const spent = amountTextOf(meter?.usage?.today)
     const pieces = []
     if (primary !== undefined) pieces.push(formatAmount(Math.round(primary.total * 1_000_000), primary.currency))
     if (spent !== undefined) pieces.push(`${t('meterToday')} ${spent}`)
-    return { provider, text: pieces.length > 0 ? `DeepSeek ${pieces.join(' · ')}` : 'DeepSeek …' }
+    // An account whose balance cannot be read and that has spent nothing has
+    // nothing to show either; the reason lives in the tooltip.
+    if (pieces.length === 0) return null
+    return { provider, text: `DeepSeek ${pieces.join(' · ')}` }
   }
 
   /**
@@ -1484,7 +1585,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const summary = headline === null ? '' : headline.text
 
     useEffect(() => {
-      if (currentProvider !== PROVIDER_ID && currentProvider !== DEEPSEEK_PROVIDER_ID) {
+      if (!isMeteredProvider(currentProvider)) {
         generationRef.current += 1
         setMeter(null)
         setQuota(null)
@@ -1509,7 +1610,11 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
           // would make the sidebar flicker on every poll.
           nextMeter = undefined
         }
-        if (metered === false) {
+        // The meter already answers with the subscription quota, so one poll
+        // covers both accounts. The separate read stays as the fallback for a
+        // host whose meter route is not mounted yet.
+        nextQuota = nextMeter?.openaiQuota
+        if (nextQuota === undefined && metered === false) {
           try {
             const payload = await getJson(`${API.balance}?provider=${encodeURIComponent(PROVIDER_ID)}`)
             nextQuota = payload.data
@@ -1519,7 +1624,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         }
         if (cancelled || generationRef.current !== generation) return
         if (nextMeter !== undefined) setMeter(nextMeter)
-        if (metered === false) setQuota(nextQuota ?? null)
+        if (metered === false && nextQuota !== undefined) setQuota(nextQuota)
       }
       load()
       const timer = setInterval(() => { void load() }, cadence)
@@ -1732,9 +1837,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
    */
   function indicatorTooltip({ provider, meter, quota, t }) {
     if (provider === PROVIDER_ID) {
-      const windows = quota !== null && quota !== undefined && Array.isArray(quota.windows) ? quota.windows : []
-      const detail = windows
-        .filter((window) => window.id === 'primary' || window.id === 'secondary')
+      const detail = summaryWindows(quota)
         .map((window) => `${windowLabel(t, window)} ${window.remainingPercent}%`)
         .join(' / ')
       return ['OpenAI (ChatGPT OAuth)', detail, ...tokenLines(meter, t)].filter(isFilled).join(' · ')
@@ -1742,10 +1845,11 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const balance = meter?.deepseek
     const account = meter?.account?.kind
     const pricing = meter?.pricing
+    const balanceUnavailable = balance !== undefined && balance.status !== 'ok' && balance.status !== 'idle'
     return [
       'DeepSeek',
       balance?.primary === undefined ? undefined : `${balance.primary.currency} ${balance.primary.total}`,
-      balance?.status === 'stale' ? t('meterUnavailable') : undefined,
+      balanceUnavailable ? balance.message || t('meterUnavailable') : undefined,
       account === 'enterprise' ? t('meterAccountEnterprise') : account === 'personal' ? t('meterAccountPersonal') : t('meterAccountUnknown'),
       ...tokenLines(meter, t),
       amountTextOf(meter?.usage?.today) === undefined ? undefined : `${t('meterToday')} ${amountTextOf(meter?.usage?.today)}`,
@@ -1809,7 +1913,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
    * @returns {{text: string, detail: string}|null}
    */
   function sessionUsageLine({ provider, meter, t }) {
-    if (provider !== PROVIDER_ID && provider !== DEEPSEEK_PROVIDER_ID) return null
+    if (!isMeteredProvider(provider)) return null
     const session = meter?.usage?.session
     if (session === undefined || session === null || session.calls === 0) return null
     const usage = session.usage ?? {}
@@ -1839,7 +1943,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const generationRef = useRef(0)
 
     useEffect(() => {
-      if (currentProvider !== PROVIDER_ID && currentProvider !== DEEPSEEK_PROVIDER_ID) {
+      if (!isMeteredProvider(currentProvider)) {
         generationRef.current += 1
         setMeter(null)
         return undefined

@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createUsageLedger } from '../src/usage/ledger.js'
+import { UsageLedger } from '../src/usage/ledger.js'
 import { UsageMeterService } from '../src/usage/service.js'
 import { normalizeMeterConfig, priceToMicros, toContractualSchedule } from '../src/usage/config.js'
 
@@ -19,7 +19,7 @@ const NOW = Date.UTC(2026, 8, 15, 20, 30)
 /** An opened ledger in a fresh directory, on the shared clock. */
 async function openedLedger(name = 'usage.json') {
   const dir = await mkdtemp(join(tmpdir(), 'usage-service-'))
-  const ledger = createUsageLedger({ path: join(dir, name), debounceMs: 1, now: () => NOW })
+  const ledger = new UsageLedger({ path: join(dir, name), debounceMs: 1, now: () => NOW })
   await ledger.open()
   return ledger
 }
@@ -38,8 +38,8 @@ function fact(overrides = {}) {
   }
 }
 
-/** A resolvable DeepSeek credential, as the credential service would return it. */
-const readDeepSeekCredential = async () => ({ baseURL: undefined, apiKey: 'sk-test' })
+/** A resolvable DeepSeek key, as the credential service would return it. */
+const readDeepSeekCredential = async () => ({ apiKey: 'sk-test' })
 
 test('meter configuration falls back per field instead of failing', () => {
   assert.equal(normalizeMeterConfig(undefined).accountKind, 'unknown')

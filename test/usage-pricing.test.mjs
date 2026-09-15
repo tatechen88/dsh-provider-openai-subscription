@@ -128,6 +128,31 @@ test('an unknown model is unpriced instead of inheriting a default rate', () => 
   assert.equal(quote.amountMicros, undefined)
 })
 
+test('a retired model name is billed at its documented successor rate', () => {
+  // The official price page states both retired names stay callable, are served
+  // by DeepSeek-V4.1-Flash, and are billed at Flash prices.
+  const retired = ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp']
+  const reference = quoteUsage(fact({
+    startedAt: Date.UTC(2026, 8, 15, 20, 0),
+    usage: { inputTokens: 1_000_000, outputTokens: 0 },
+  }), DEEPSEEK_PUBLIC_SCHEDULE)
+
+  for (const model of retired) {
+    const quote = quoteUsage(fact({
+      model,
+      startedAt: Date.UTC(2026, 8, 15, 20, 0),
+      usage: { inputTokens: 1_000_000, outputTokens: 0 },
+    }), DEEPSEEK_PUBLIC_SCHEDULE)
+    assert.equal(quote.status, 'priced', `${model} is served, so it is priced rather than reported unknown`)
+    assert.equal(quote.amountMicros, reference.amountMicros)
+    assert.equal(quote.billedModel, 'deepseek-flash', 'the quote names the model whose rates were used')
+  }
+
+  const unknown = quoteUsage(fact({ model: 'deepseek-v9-imaginary' }), DEEPSEEK_PUBLIC_SCHEDULE)
+  assert.equal(unknown.status, 'unpriced', 'an alias map does not make every unknown name priced')
+  assert.equal(unknown.reason, UNPRICED_UNKNOWN_MODEL)
+})
+
 test('a contractual rate is reachable only for a declared enterprise account', () => {
   const contractual = {
     id: 'acme-2026',

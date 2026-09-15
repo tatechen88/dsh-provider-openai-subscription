@@ -25,10 +25,11 @@ export function dshHome() {
 
 /**
  * Directory for non-secret plugin state files.
+ * @param {string} [home] - DSH home; injectable so callers and tests can aim it.
  * @returns {string}
  */
-export function pluginStateDir() {
-  return join(dshHome(), 'plugin-state')
+export function pluginStateDir(home = dshHome()) {
+  return join(home, 'plugin-state')
 }
 
 /**

@@ -1,5 +1,10 @@
 # Safe install: the plugin is inserted in bootstrap state.
 # Runtime is activated only after compatibility validation has passed.
+#
+# `meter` is the composition-level default layer for the built-in usage meter.
+# Everything it accepts is also editable at runtime from the plugin's settings
+# page (stored in $DSH_HOME/plugin-state/openai-subscription-meter.json), which
+# is the layer that wins; this block only states the shape and the safe default.
 - insert:
     - id: llm-openai-subscription
       name: dsh-provider-openai-subscription
@@ -10,3 +15,33 @@
         provider:
           defaultModel: ""
           reasoningEffort: ""
+        meter:
+          # Account type is a user declaration, never a detection: the DeepSeek
+          # public API does not report verification type. Values: unknown |
+          # personal | enterprise.
+          accountKind: unknown
+          # Currency a cost is displayed in when the ledger has an amount in it.
+          displayCurrency: CNY
+          # 'system' | 'UTC' | 'Asia/Shanghai' — the zone "today" and "month" use.
+          timeZone: system
+          # Read the official DeepSeek balance. Turning it off makes no request.
+          deepseekBalance: true
+          # Hide money / balance on shared screens; token counts stay visible.
+          hideBalance: false
+          hideCost: false
+          # Enterprise price agreements. Each entry takes effect only for a
+          # declared enterprise account, inside its validity window, for the
+          # models it names. Rates are per 1,000,000 tokens in `currency`.
+          #
+          # contractualSchedules:
+          #   - id: acme-2026
+          #     label: Acme agreement
+          #     currency: USD
+          #     validFrom: "2026-01-01"
+          #     validTo: "2026-12-31"
+          #     models:
+          #       deepseek-flash:
+          #         cacheMiss: 0.1
+          #         cacheHit: 0.001
+          #         output: 0.2
+          contractualSchedules: []

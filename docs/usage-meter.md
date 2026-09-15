@@ -30,6 +30,8 @@
 
 阶梯时段用固定 `+08:00` 偏移实现（中国自 1991 年起无夏令时），区间为半开 `[start, end)`。`resolveSchedule` 的优先级是合同价 > 当前官方快照 > 历史快照，且合同价只对企业声明可见。
 
+已下线的模型名走 alias 而不是复制一份费率：官方价页写明 `deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp` 仍可调用、由 DeepSeek-V4.1-Flash 提供服务、并按 Flash 价格计费，因此它们解析到 flash 的费率，报价里用 `billedModel` 说明实际采用的是谁的价。alias 之外的未知模型仍然 unpriced。
+
 ### `usage/collector.js`
 
 `createUsageCollector` 返回一个 `llm/stream` 监听器：
@@ -74,7 +76,7 @@
 - `conversation.composer.dock`：会话用量一行，与侧栏共用同一数据源，避免两处数字不一致。
 - `settings.section`：账号类型、显示币种、统计时区、隐藏余额/隐藏费用。
 
-侧栏与输入框下方的两个席位分别在 `ui-sidebar` 和 `ui-conversation` 中声明，但它们的包名**不**进 `package.json` 的 `dsh.client.inject`：该字段列出的是 bundle 通过模块表 `require` 的包，而席位是在运行时查表、并由 `attempt()` 包住失败。往里塞席位所属包只会多出一条加载期依赖。
+侧栏与输入框下方的两个席位分别在 `ui-sidebar` 和 `ui-conversation` 中声明，但它们的包名**不**进 `package.json` 的 `dsh.client.inject`：`inject` 声明的是「本 bundle 执行前必须已 materialize 的包行」，属于加载顺序与预取元数据；bundle 通过模块表 `require` 的包才写在 `dsh.client.external` 里。席位既不是前者也不是后者——它是运行时查表，且失败被 `attempt()` 包住，所以两个字段都不该出现它。
 
 ## 测试策略
 

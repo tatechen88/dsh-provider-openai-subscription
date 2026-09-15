@@ -174,13 +174,15 @@ test('a meter without a service reports itself unavailable instead of failing th
     clientId: 'cid',
     exchange: async () => ({ access: 'a', expires: 1 }),
     // Exactly what createMeter returns when its ledger cannot be opened.
-    meter: { service: undefined, settings, openaiQuota: undefined },
+    meter: { service: undefined, settings, openaiQuota: async () => ({ status: 'ready', windows: [] }) },
   })
 
   const usage = fakeResponse()
   await routeOf(web, '/meter/usage').handler(fakeRequest(), usage)
   assert.equal(usage.state.status, 200)
-  assert.equal(JSON.parse(usage.state.body).data.status, 'unavailable')
+  const payload = JSON.parse(usage.state.body).data
+  assert.equal(payload.status, 'unavailable')
+  assert.deepEqual(payload.openaiQuota, { status: 'ready', windows: [] }, 'the subscription quota does not depend on the ledger')
 
   const refresh = fakeResponse()
   await routeOf(web, '/meter/deepseek/refresh').handler(fakeRequest({ method: 'POST' }), refresh)

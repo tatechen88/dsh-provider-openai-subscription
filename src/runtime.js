@@ -10,6 +10,7 @@
  * @module dsh-provider-openai-subscription/runtime
  */
 
+import { join } from 'node:path'
 import { PACKAGE_NAME, PROVIDER_ID, SETTINGS_NAMESPACE } from './constants.js'
 import { readConflictReport } from './conflicts.js'
 import { CredentialRepository } from './credentials/repository.js'
@@ -24,11 +25,10 @@ import { OpenAISubscriptionAdapter } from './provider/adapter.js'
 import { mountRoutes } from './web/routes.js'
 import { inspectLegacy, backupLegacyCredential } from './migration/backup.js'
 import { createUsageCollector } from './usage/collector.js'
-import { createUsageLedger } from './usage/ledger.js'
+import { UsageLedger } from './usage/ledger.js'
 import { MeterSettingsStore } from './usage/settings-store.js'
 import { UsageMeterService } from './usage/service.js'
 import { dshHome, pluginStateDir } from './state.js'
-import { join } from 'node:path'
 
 /** How long the runtime waits for a DSH service to become available. */
 export const SERVICE_WAIT_TIMEOUT_MS = 30_000
@@ -201,17 +201,22 @@ export function usageLedgerPath(home = dshHome()) {
 
 /** Meter settings path under the DSH home. */
 export function meterSettingsPath(home = dshHome()) {
-  return join(home, 'plugin-state', 'openai-subscription-meter.json')
+  return join(pluginStateDir(home), 'openai-subscription-meter.json')
 }
 
 /**
- * Resolve the DeepSeek API key and base URL for the meter.
+ * Resolve the DeepSeek API key for the meter's balance query.
+ *
+ * Only the key is taken from the DeepSeek configuration: the balance is read
+ * from the official host regardless of where model calls are routed, so a
+ * gateway deployment keeps its official balance and no key is ever sent to a
+ * third-party endpoint.
  *
  * The key is re-resolved on every refresh, exactly like a model request, so a
  * rotated credential reaches the next query without a restart.
  * @param {object|undefined} ctx
  * @param {object|undefined} credentials
- * @returns {Promise<{baseURL: string|undefined, apiKey: string|undefined}>}
+ * @returns {Promise<{apiKey: string|undefined}>}
  */
 export async function resolveDeepSeekCredential(ctx, credentials) {
   let section
@@ -222,7 +227,6 @@ export async function resolveDeepSeekCredential(ctx, credentials) {
     section = undefined
   }
   const envName = typeof section?.apiKeyEnv === 'string' && section.apiKeyEnv.length > 0 ? section.apiKeyEnv : 'DEEPSEEK_API_KEY'
-  const baseURL = typeof section?.baseURL === 'string' && section.baseURL.length > 0 ? section.baseURL : undefined
   let apiKey
   try {
     const hit = credentials === undefined ? undefined : await credentials.resolve(envName)
@@ -231,7 +235,7 @@ export async function resolveDeepSeekCredential(ctx, credentials) {
     // A provider that cannot answer falls through to the process environment.
   }
   if (apiKey === undefined && typeof process.env[envName] === 'string') apiKey = process.env[envName]
-  return { baseURL, apiKey }
+  return { apiKey }
 }
 
 /**
@@ -261,7 +265,7 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
   }
   const resolved = settings.resolved()
 
-  const ledger = createUsageLedger({ path: usageLedgerPath(home), timeZone: resolved.timeZone })
+  const ledger = new UsageLedger({ path: usageLedgerPath(home), timeZone: resolved.timeZone })
   const passthrough = (_options, next) => next()
   let collector = passthrough
   try {

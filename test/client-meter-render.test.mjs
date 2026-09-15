@@ -42,7 +42,8 @@ function createHookRuntime() {
   let cursor = 0
   let slots = []
   let pending = []
-  let cleanups = []
+  const cleanups = new Map()
+  const seenDeps = new Map()
   return {
     begin() { cursor = 0; pending = [] },
     useState(initial) {
@@ -55,12 +56,27 @@ function createHookRuntime() {
       if (!(index in slots)) slots[index] = { current: initial }
       return slots[index]
     },
-    useEffect(fn) { pending.push(fn) },
-    drain() {
-      for (const cleanup of cleanups) if (typeof cleanup === 'function') cleanup()
-      cleanups = pending.map((fn) => fn())
+    useEffect(fn, deps) {
+      const index = cursor++
+      pending.push({ index, fn, deps })
     },
-    cleanups() { return cleanups },
+    drain() {
+      for (const entry of pending) {
+        const previous = seenDeps.get(entry.index)
+        const changed = entry.deps === undefined
+          || previous === undefined
+          || entry.deps.length !== previous.length
+          || entry.deps.some((value, position) => !Object.is(value, previous[position]))
+        if (!changed) continue
+        const cleanup = cleanups.get(entry.index)
+        if (typeof cleanup === 'function') cleanup()
+        const next = entry.fn()
+        if (typeof next === 'function') cleanups.set(entry.index, next)
+        else cleanups.delete(entry.index)
+        seenDeps.set(entry.index, entry.deps)
+      }
+    },
+    cleanups() { return [...cleanups.values()] },
   }
 }
 
@@ -70,7 +86,7 @@ const react = {
   createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
   useState: (initial) => hooks.useState(initial),
   useRef: (initial) => hooks.useRef(initial),
-  useEffect: (fn) => hooks.useEffect(fn),
+  useEffect: (fn, deps) => hooks.useEffect(fn, deps),
   useCallback: (fn) => fn,
 }
 
@@ -138,6 +154,24 @@ function unmountAll() {
   for (const runtime of mounted.splice(0)) {
     for (const cleanup of runtime.cleanups()) if (typeof cleanup === 'function') cleanup()
   }
+}
+
+/**
+ * Re-render the currently mounted component, keeping its hook state.
+ * @param {Function} component
+ * @param {object} props
+ * @param {number} [passes]
+ * @returns {Promise<object|null>}
+ */
+async function rerender(component, props, passes = 3) {
+  let node = null
+  for (let pass = 0; pass < passes; pass += 1) {
+    hooks.begin()
+    node = component(props)
+    hooks.drain()
+    await new Promise((resolve) => { setTimeout(resolve, 0) })
+  }
+  return node
 }
 
 /** Walk a rendered tree collecting text, invoking nested function components. */
@@ -223,8 +257,9 @@ test('the session dock renders nothing for an unmetered provider or an empty ses
 })
 
 /**
- * Collect every element in a rendered tree, descending through arrays. Function
- * components are left as leaves so a structural check stays structural.
+ * Collect every element in a rendered tree, descending through arrays and
+ * invoking function components so their host elements are reachable — a button
+ * built by a shared component is otherwise invisible to a structural check.
  * @param {unknown} node
  * @param {object[]} [out]
  * @returns {object[]}
@@ -235,33 +270,67 @@ function collectNodes(node, out = []) {
     for (const child of node) collectNodes(child, out)
     return out
   }
+  if (typeof node.type === 'function') {
+    collectNodes(node.type(node.props), out)
+    return out
+  }
   out.push(node)
   collectNodes(node.children, out)
   return out
 }
 
-test('the meter settings panel renders its controls, and an old host leaves it silent', async () => {
+test('the meter settings panel edits an enterprise agreement, and an old host leaves it silent', async () => {
   const panel = descriptor.pure.MeterSettingsPanel
   assert.equal(typeof panel, 'function', 'the settings panel is exposed for mounting')
 
-  const restore = stubFetch({
-    '/plugins/openai-subscription/meter/settings': () => ({
+  const posted = []
+  const original = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    const path = String(url).split('?')[0]
+    if (init?.method === 'PATCH' || init?.method === 'POST') {
+      posted.push({ path, body: init.body === undefined ? undefined : JSON.parse(init.body) })
+      return new Response(JSON.stringify({ ok: true, data: { revision: 3, config: { accountKind: 'enterprise', contractualSchedules: [] } } }), { status: 200 })
+    }
+    return new Response(JSON.stringify({
       ok: true,
-      data: { revision: 2, config: { accountKind: 'enterprise', displayCurrency: 'CNY', timeZone: 'Asia/Shanghai', hideBalance: true, hideCost: false } },
-    }),
-  })
+      data: { revision: 2, config: { accountKind: 'enterprise', displayCurrency: 'CNY', timeZone: 'Asia/Shanghai', contractualSchedules: [] } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
   try {
-    const node = await render(panel, { t: (key) => key })
-    const text = textOf(node)
-    assert.match(text, /meterTitle/, 'the panel titles itself')
-    assert.match(text, /meterAccountHint/, 'the declaration caveat is shown where the choice is made')
-    assert.match(text, /meterHideBalance/)
-    assert.match(text, /meterHideCost/)
+    const props = { t: (key) => descriptor.pure.translate('zh', key) }
+    const node = await render(panel, props)
     const nodes = collectNodes(node)
-    assert.equal(nodes.filter((entry) => entry.type === 'select').length, 3, 'account type, display currency and accounting time zone')
-    assert.equal(nodes.filter((entry) => entry.type === 'label').length, 2, 'two privacy switches')
+    const textarea = nodes.find((entry) => entry.type === 'textarea')
+    assert.notEqual(textarea, undefined, 'a declared enterprise account gets the agreement editor')
+    assert.match(textarea.props.placeholder, /acme-2026/)
+
+    // A malformed document is reported and blocks the save rather than being
+    // silently dropped.
+    textarea.props.onChange({ target: { value: '{ not json' } })
+    const broken = collectNodes(await rerender(panel, props))
+    assert.ok(broken.some((entry) => entry.type === 'p' && String(entry.children?.[0] ?? '').includes('无法解析')), 'the parse failure is shown')
+    assert.equal(broken.find((entry) => entry.type === 'button' && entry.children?.[0] === '保存').props.disabled, true, 'an unparseable document cannot be saved')
+
+    // A valid document is staged and saved through the settings route.
+    broken.find((entry) => entry.type === 'textarea').props.onChange({
+      target: { value: JSON.stringify([{ id: 'acme', currency: 'USD', models: { 'deepseek-flash': { cacheMiss: 0.1, cacheHit: 0.001, output: 0.2 } } }]) },
+    })
+    const ready = collectNodes(await rerender(panel, props))
+    const save = ready.find((entry) => entry.type === 'button' && entry.children?.[0] === '保存')
+    assert.equal(save.props.disabled, false, 'a parseable document can be saved')
+    save.props.onClick()
+    await new Promise((resolve) => { setTimeout(resolve, 25) })
+    const patch = posted.find((entry) => entry.body?.patch !== undefined)
+    assert.equal(patch.body.patch.contractualSchedules.length, 1, 'the agreement reaches the settings route')
+    assert.equal(patch.body.expectedRevision, 2, 'the save carries the revision it read')
+
+    // The refresh action uses the route it is meant to.
+    const refresh = ready.find((entry) => entry.type === 'button' && entry.children?.[0] === '刷新余额')
+    refresh.props.onClick()
+    await new Promise((resolve) => { setTimeout(resolve, 25) })
+    assert.ok(posted.some((entry) => entry.path.endsWith('/meter/deepseek/refresh')), 'the refresh button hits the balance route')
   } finally {
-    restore()
+    globalThis.fetch = original
     unmountAll()
   }
 

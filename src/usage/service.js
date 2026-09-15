@@ -130,10 +130,13 @@ export class UsageMeterService {
     const task = (async () => {
       try {
         const credential = this.readDeepSeekCredential === undefined
-          ? { baseURL: this.config.deepseekBaseURL, apiKey: undefined }
+          ? { apiKey: undefined }
           : await this.readDeepSeekCredential()
+        // The balance is only ever read from the official host: a deployment
+        // that routes model calls through a gateway still has a DeepSeek
+        // account, and its key must not be sent to the gateway's own endpoint.
         const snapshot = await fetchDeepSeekBalance({
-          baseURL: this.config.deepseekBaseURL.length > 0 ? this.config.deepseekBaseURL : credential.baseURL,
+          baseURL: undefined,
           apiKey: credential.apiKey,
           fetchImpl: this.fetchImpl,
           now: this.now,

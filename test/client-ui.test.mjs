@@ -48,16 +48,17 @@ await import(`${pathToFileURL(clientFile).href}`)
 assert.notEqual(captured, null, 'bundle must register through window.__ModuleLoader__.load')
 
 /**
- * Minimal hook runtime: index-keyed slots that survive re-renders, an effect
- * queue drained after each render, and cleanups run before the next effect so a
- * pending timer is cancelled the way React cancels it.
+ * Minimal hook runtime: index-keyed slots that survive re-renders, plus effects
+ * that run only when their dependencies changed — re-running a mount effect on
+ * every pass would reset state a test had just staged, which React never does.
  * @returns {object} the runtime `renderOnce` drives.
  */
 function createHookRuntime() {
   let cursor = 0
   let slots = []
   let pending = []
-  let cleanups = []
+  const cleanups = new Map()
+  const seenDeps = new Map()
   return {
     begin() { cursor = 0; pending = [] },
     useState(initial) {
@@ -70,13 +71,28 @@ function createHookRuntime() {
       if (!(index in slots)) slots[index] = { current: initial }
       return slots[index]
     },
-    useEffect(fn) { pending.push(fn) },
-    drain() {
-      for (const cleanup of cleanups) if (typeof cleanup === 'function') cleanup()
-      cleanups = pending.map((fn) => fn())
-      return cleanups
+    useEffect(fn, deps) {
+      const index = cursor++
+      pending.push({ index, fn, deps })
     },
-    cleanups() { return cleanups },
+    drain() {
+      for (const entry of pending) {
+        const previous = seenDeps.get(entry.index)
+        const changed = entry.deps === undefined
+          || previous === undefined
+          || entry.deps.length !== previous.length
+          || entry.deps.some((value, position) => !Object.is(value, previous[position]))
+        if (!changed) continue
+        const cleanup = cleanups.get(entry.index)
+        if (typeof cleanup === 'function') cleanup()
+        const next = entry.fn()
+        if (typeof next === 'function') cleanups.set(entry.index, next)
+        else cleanups.delete(entry.index)
+        seenDeps.set(entry.index, entry.deps)
+      }
+      return [...cleanups.values()]
+    },
+    cleanups() { return [...cleanups.values()] },
   }
 }
 
@@ -84,7 +100,7 @@ let hooks = createHookRuntime()
 
 const reactShim = {
   createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
-  useEffect: (fn) => hooks.useEffect(fn),
+  useEffect: (fn, deps) => hooks.useEffect(fn, deps),
   useState: (initial) => hooks.useState(initial),
   useCallback: (fn) => fn,
   useRef: (initial) => hooks.useRef(initial),

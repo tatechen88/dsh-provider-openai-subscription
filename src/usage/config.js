@@ -1,10 +1,12 @@
 /**
  * Configuration for the built-in usage meter.
  *
- * The meter's own settings live in the plugin's DSH settings namespace, not in
- * the bootstrap config, so a user can change them without restarting DSH.  All
- * parsing is tolerant: an unknown value falls back to a documented default
- * rather than disabling the meter.
+ * The meter's settings are this plugin's own, so they live in its state
+ * directory behind {@link ./settings-store.js} rather than in a DSH settings
+ * registry namespace: registering one would require a schemastery schema, and
+ * this plugin declares no dependencies on purpose so that a failed load can
+ * never stop DSH from starting. All parsing is tolerant: an unknown value falls
+ * back to a documented default rather than disabling the meter.
  *
  * @module dsh-provider-openai-subscription/usage/config
  */
@@ -30,7 +32,6 @@ export const DEFAULT_METER_CONFIG = Object.freeze({
   hideBalance: false,
   hideCost: false,
   deepseekBalance: true,
-  deepseekBaseURL: '',
   contractualSchedules: Object.freeze([]),
 })
 
@@ -126,7 +127,6 @@ export function normalizeMeterConfig(raw) {
     hideBalance: record.hideBalance === true,
     hideCost: record.hideCost === true,
     deepseekBalance: record.deepseekBalance !== false,
-    deepseekBaseURL: typeof record.deepseekBaseURL === 'string' ? record.deepseekBaseURL.trim() : '',
     contractualSchedules: contracts
       .map((entry, index) => toContractualSchedule(entry, index))
       .filter((entry) => entry !== undefined),

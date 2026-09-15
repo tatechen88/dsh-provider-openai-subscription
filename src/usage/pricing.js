@@ -62,6 +62,19 @@ export const DEEPSEEK_PUBLIC_SCHEDULE = Object.freeze({
       peak: Object.freeze({ cacheHit: 300_000, cacheMiss: 9_000_000, output: 27_000_000 }),
     }),
   }),
+  /**
+   * Retired names the vendor still serves.
+   *
+   * The official price page states that `deepseek-v4-flash` and
+   * `deepseek-v4-flash-vision-exp` remain callable, are served by
+   * DeepSeek-V4.1-Flash, and are billed at Flash prices. Calling them aliases
+   * keeps that sourced relationship in one place instead of duplicating rates
+   * that could drift apart.
+   */
+  aliases: Object.freeze({
+    'deepseek-v4-flash': 'deepseek-flash',
+    'deepseek-v4-flash-vision-exp': 'deepseek-flash',
+  }),
 })
 
 /** Charge quoting failed for a reason the caller shows to the user. */
@@ -97,6 +110,10 @@ export function isPeakAt(atMs, windows = PEAK_WINDOWS) {
 
 /**
  * Look one model up in a schedule's rate table.
+ *
+ * A match is exact, case-insensitive, or through a vendor-documented alias, so a
+ * retired name that is still served is billed at the successor's rate instead of
+ * being reported as unpriced.
  * @param {object} schedule
  * @param {string} model
  * @returns {object|undefined}
@@ -105,12 +122,39 @@ export function ratesFor(schedule, model) {
   if (schedule === null || typeof schedule !== 'object') return undefined
   const models = schedule.models
   if (models === null || typeof models !== 'object') return undefined
-  if (Object.prototype.hasOwnProperty.call(models, model)) return models[model]
-  const normalized = String(model).trim().toLowerCase()
-  for (const key of Object.keys(models)) {
-    if (key.toLowerCase() === normalized) return models[key]
+  const direct = lookup(models, model)
+  if (direct !== undefined) return direct
+  const aliases = schedule.aliases
+  if (aliases === null || typeof aliases !== 'object') return undefined
+  const target = lookup(aliases, model)
+  return typeof target === 'string' ? lookup(models, target) : undefined
+}
+
+/**
+ * One rate-table lookup: exact key, then a case-insensitive match.
+ * @param {object} table
+ * @param {string} key
+ * @returns {unknown}
+ */
+function lookup(table, key) {
+  if (Object.prototype.hasOwnProperty.call(table, key)) return table[key]
+  const normalized = String(key).trim().toLowerCase()
+  for (const candidate of Object.keys(table)) {
+    if (candidate.toLowerCase() === normalized) return table[candidate]
   }
   return undefined
+}
+
+/**
+ * The model whose rates actually priced a call, when the schedule names a
+ * different successor for a retired request name.
+ * @param {object} schedule
+ * @param {string} model
+ * @returns {string} the requested model, or the successor it is billed as.
+ */
+export function billedModelOf(schedule, model) {
+  const alias = schedule.aliases === undefined || schedule.aliases === null ? undefined : lookup(schedule.aliases, model)
+  return typeof alias === 'string' ? alias : model
 }
 
 /**
@@ -206,6 +250,7 @@ export function quoteUsage(fact, schedule, options = {}) {
   if (rates === undefined) {
     return { status: 'unpriced', reason: UNPRICED_UNKNOWN_MODEL, scheduleId: schedule.id, basis: 'request-start-assumption' }
   }
+  const billedModel = billedModelOf(schedule, fact.model)
   const peak = schedule.windows === undefined || schedule.windows === null
     ? false
     : isPeakAt(fact.startedAt, schedule.windows)
@@ -224,6 +269,7 @@ export function quoteUsage(fact, schedule, options = {}) {
     band,
     estimated: true,
     basis: 'request-start-assumption',
+    billedModel,
     amountMicros: Number(rounded),
     breakdown: {
       cacheMissMicros: Number((miss + BigInt(RATE_UNIT_TOKENS / 2)) / BigInt(RATE_UNIT_TOKENS)),

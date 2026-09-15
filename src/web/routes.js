@@ -278,15 +278,23 @@ export function mountRoutes(host, deps) {
     const { service, settings, openaiQuota } = deps.meter
 
     route('GET', '/meter/usage', async (request, response) => {
+      const quota = openaiQuota === undefined ? undefined : await openaiQuota().catch(() => undefined)
       // A meter whose ledger could not be opened stays installed but reports
-      // itself unavailable: the client hides the surface instead of showing a
-      // request failure it cannot act on.
+      // itself unavailable: the client hides the usage surfaces instead of
+      // showing a request failure it cannot act on. The subscription quota is
+      // independent of the ledger and keeps working.
       if (service === undefined) {
-        sendJson(response, 200, { ok: true, data: { status: 'unavailable', usage: undefined, deepseek: { status: 'off', infos: [], message: '' } } })
+        sendJson(response, 200, {
+          ok: true,
+          data: {
+            status: 'unavailable',
+            deepseek: { status: 'off', infos: [], message: '' },
+            ...(quota === undefined ? {} : { openaiQuota: quota }),
+          },
+        })
         return
       }
       const sessionId = new URL(request.url ?? '/', 'http://localhost').searchParams.get('sessionId')
-      const quota = openaiQuota === undefined ? undefined : await openaiQuota().catch(() => undefined)
       sendJson(response, 200, {
         ok: true,
         data: {
