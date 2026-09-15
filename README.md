@@ -217,6 +217,9 @@ Rescue CLI 不依赖插件 Runtime，可在 Web 设置页或 DSH 启动异常时
 # 查看脱敏状态
 dsh-openai-subscription-rescue status
 
+# 只读检查内置 meter 的落盘状态（ledger schema 版本与事实条数、设置 revision、新旧 ledger 是否并存）
+dsh-openai-subscription-rescue meter
+
 # 检查依赖和激活条件
 dsh-openai-subscription-rescue doctor --profile path/to/profile/package.json
 

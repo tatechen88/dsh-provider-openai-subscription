@@ -12,6 +12,7 @@ import { join } from 'node:path'
 import { UsageLedger } from '../src/usage/ledger.js'
 import { UsageMeterService } from '../src/usage/service.js'
 import { normalizeMeterConfig, priceToMicros, toContractualSchedule } from '../src/usage/config.js'
+import { UNPRICED_NO_SCHEDULE } from '../src/usage/pricing.js'
 
 /** Frozen clock shared by the ledger and the meter, so periods are comparable. */
 const NOW = Date.UTC(2026, 8, 15, 20, 30)
@@ -110,6 +111,48 @@ test('an invalid fact or an unknown model never breaks the call it observes', as
   const view = meter.view({ sessionId: 's1' })
   assert.equal(view.usage.session.calls, 1, 'tokens are still counted')
   assert.equal(view.usage.session.amountMicros, undefined, 'no money is invented')
+  await ledger.close()
+})
+
+test('an OpenAI call shares the window but never carries DeepSeek money', async () => {
+  const ledger = await openedLedger()
+  const meter = new UsageMeterService({ ledger, now: () => NOW })
+
+  const subscription = meter.recordUsage(fact({
+    callId: 'call-openai',
+    provider: 'openai-subscription',
+    model: 'gpt-5',
+    usage: { inputTokens: 500, outputTokens: 100 },
+  }))
+  assert.equal(subscription.stored, true)
+  assert.equal(subscription.quote.status, 'unpriced', 'a subscription call is not billed by the DeepSeek table')
+
+  assert.equal(meter.recordUsage(fact({ callId: 'call-deepseek' })).quote.amountMicros, 1_000_000)
+
+  const view = meter.view({ sessionId: 's1' })
+  assert.equal(view.usage.session.calls, 2, 'both providers count into one session window')
+  assert.equal(view.usage.session.usage.inputTokens, 1_000_500)
+  assert.equal(view.usage.session.usage.outputTokens, 100)
+  assert.deepEqual(view.usage.session.amountsMicrosByCurrency, { CNY: 1_000_000 }, 'only the priced call carries money')
+  assert.equal(view.usage.session.amountMicros, 1_000_000)
+  await ledger.close()
+})
+
+test('a rate table never prices another provider, even on a matching model name', async () => {
+  const ledger = await openedLedger()
+  const meter = new UsageMeterService({ ledger, now: () => NOW })
+
+  const quote = meter.recordUsage(fact({
+    callId: 'call-collision',
+    provider: 'openai-subscription',
+    model: 'deepseek-flash',
+  })).quote
+  assert.equal(quote.status, 'unpriced', 'a schedule belongs to the provider that published it')
+  assert.equal(quote.reason, UNPRICED_NO_SCHEDULE)
+
+  const view = meter.view({ sessionId: 's1' })
+  assert.equal(view.usage.session.calls, 1, 'the call is still counted')
+  assert.equal(view.usage.session.amountMicros, undefined)
   await ledger.close()
 })
 
