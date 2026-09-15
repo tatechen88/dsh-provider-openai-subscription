@@ -1234,7 +1234,10 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         .map((window) => `${windowShortLabel(t, window)} ${window.remainingPercent}%`)
       return { provider, text: parts.length > 0 ? `OpenAI ${parts.join(' · ')}` : 'OpenAI …' }
     }
-    const balance = meter === null || meter === undefined ? undefined : meter.deepseek
+    // Without a reading there is nothing to say about a DeepSeek account, and a
+    // placeholder would occupy the sidebar seat while saying nothing.
+    if (meter === null || meter === undefined) return null
+    const balance = meter.deepseek
     const hidden = balance !== undefined && balance.hidden === true
     const primary = hidden ? undefined : balance?.primary
     const today = meter?.usage?.today
@@ -1501,7 +1504,10 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
           const payload = await getJson(url)
           nextMeter = payload.data
         } catch {
-          nextMeter = null
+          // A failed read keeps the last good view: a transient error must not
+          // blank a number the user is reading, and flipping to a placeholder
+          // would make the sidebar flicker on every poll.
+          nextMeter = undefined
         }
         if (metered === false) {
           try {
@@ -1512,8 +1518,8 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
           }
         }
         if (cancelled || generationRef.current !== generation) return
-        setMeter(nextMeter)
-        setQuota(nextQuota ?? null)
+        if (nextMeter !== undefined) setMeter(nextMeter)
+        if (metered === false) setQuota(nextQuota ?? null)
       }
       load()
       const timer = setInterval(() => { void load() }, cadence)

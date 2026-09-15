@@ -92,11 +92,12 @@ test('an unmetered or unknown provider renders nothing', () => {
   assert.equal(indicatorHeadline({ provider: 'anthropic', meter: null, quota: null, t }), null)
 })
 
-test('a provider with no data yet still shows a self-describing placeholder', () => {
-  const loading = indicatorHeadline({ provider: 'deepseek-official', meter: null, quota: null, t })
-  assert.equal(loading.text, 'DeepSeek …')
+test('the seat shows a self-describing placeholder before the first reading', () => {
+  // DeepSeek has nothing to say until its first reading arrives, so it renders
+  // nothing rather than occupying the seat with a placeholder.
+  assert.equal(indicatorHeadline({ provider: 'deepseek-official', meter: null, quota: null, t }), null)
   const waiting = indicatorHeadline({ provider: 'openai-subscription', meter: null, quota: null, t })
-  assert.equal(waiting.text, 'OpenAI …')
+  assert.equal(waiting.text, 'OpenAI …', 'the subscription line owns this seat and can say it is waiting')
 })
 
 test('a hidden balance leaves the spend, and a hidden spend leaves the balance', () => {
