@@ -9,8 +9,8 @@
  * @module dsh-provider-openai-subscription/usage/service
  */
 
-import { assertUsageFact, cacheHitRatio } from './types.js'
-import { buildSchedules, quoteUsage, resolveSchedule, scheduleCovers, PUBLIC_SCHEDULES, UNPRICED_UNKNOWN_MODEL } from './pricing.js'
+import { assertUsageFact, cacheHitRatio, promptTokensOf } from './types.js'
+import { buildSchedules, bandTransition, quoteUsage, resolveSchedule, scheduleCovers, PUBLIC_SCHEDULES, UNPRICED_UNKNOWN_MODEL } from './pricing.js'
 import { fetchDeepSeekBalance } from './deepseek-balance.js'
 import { fetchZhipuAccount } from './zhipu-account.js'
 import { ReadingSlot } from './reading-slot.js'
@@ -53,6 +53,24 @@ const ZHIPU_VENDOR_ID = 'zhipu'
 const PRICED_PROVIDER_IDS = Object.freeze(pricedVendors().flatMap((vendor) => vendor.providers))
 
 /**
+ * The heaviest models of one aggregate, for the card's breakdown line.
+ * @param {Record<string, {calls: number, usage: object}>|undefined} byModel
+ * @returns {Array<{model: string, promptTokens: number, outputTokens: number, calls: number}>}
+ */
+function topModels(byModel) {
+  return Object.entries(byModel ?? {})
+    .filter(([model, slot]) => typeof model === 'string' && slot !== null && typeof slot === 'object')
+    .map(([model, slot]) => ({
+      model,
+      promptTokens: promptTokensOf(slot.usage),
+      outputTokens: slot.usage.outputTokens ?? 0,
+      calls: slot.calls,
+    }))
+    .sort((left, right) => (right.promptTokens + right.outputTokens) - (left.promptTokens + left.outputTokens))
+    .slice(0, 3)
+}
+
+/**
  * Build the browser-facing view of one aggregate.
  *
  * The displayed amount is the configured currency when the account spent in it.
@@ -75,6 +93,9 @@ function viewOfAggregate(summary, config) {
     usage: summary.usage,
     cacheHitRatio: cacheHitRatio(summary.usage),
     amountsMicrosByCurrency: byCurrency,
+    // Which model spent it, heaviest first: a session that switched models is
+    // otherwise one opaque number.
+    models: topModels(summary.byModel),
     ...(chosen === undefined ? {} : { amountMicros: byCurrency[chosen], amountCurrency: chosen }),
   }
 }
@@ -419,6 +440,22 @@ export class UsageMeterService {
   }
 
   /**
+   * Which price band the hinted route is in right now, and when it flips.
+   *
+   * Only a vendor whose table states peak windows has bands at all; every other
+   * route costs the same at every hour, and reports nothing here. This stays
+   * outside the view cache deliberately: the band is a function of the wall
+   * clock, not of the ledger.
+   * @param {string|undefined} provider
+   * @returns {{active: string, until: number}|undefined}
+   */
+  bandView(provider) {
+    const schedule = this.publicSchedules().find((candidate) => candidate.provider === provider)
+    if (schedule === undefined || schedule.windows === undefined || schedule.windows === null) return undefined
+    return bandTransition(this.now(), schedule.windows)
+  }
+
+  /**
    * Build the browser view model.
    *
    * Tokens always survive: privacy hides money and balance, never the token
@@ -491,6 +528,7 @@ export class UsageMeterService {
         contractual: this.contractualStatus(),
         estimated: true,
         basis: 'request-start-assumption',
+        band: this.bandView(provider),
         // Models this deployment has no rate for: the list a newly shipped model
         // appears in, instead of quietly costing nothing.
         unpricedModels: this.unpricedCache.value,

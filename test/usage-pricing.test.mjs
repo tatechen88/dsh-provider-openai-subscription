@@ -15,6 +15,7 @@ import {
 import {
   DEEPSEEK_PUBLIC_SCHEDULE,
   UNPRICED_UNKNOWN_MODEL,
+  bandTransition,
   buildSchedules,
   isPeakAt,
   quoteUsage,
@@ -81,6 +82,42 @@ test('peak windows follow the Beijing weekday scheme as half-open ranges', () =>
   assert.equal(isPeakAt(Date.UTC(2026, 8, 15, 10, 0)), false, '18:00 Beijing closes the afternoon window')
   // 2026-09-19 is a Saturday.
   assert.equal(isPeakAt(Date.UTC(2026, 8, 19, 2, 0)), false, 'weekends are off-peak all day')
+})
+
+test('the band names the window it is in and the instant that window ends', () => {
+  // Tuesday 09:30 Beijing: inside the morning window, which closes at 12:00.
+  const morning = bandTransition(Date.UTC(2026, 8, 15, 1, 30))
+  assert.equal(morning.active, 'peak')
+  assert.equal(morning.until, Date.UTC(2026, 8, 15, 4, 0))
+
+  // Tuesday 12:30 Beijing: the gap between the two windows, which 14:00 closes.
+  const gap = bandTransition(Date.UTC(2026, 8, 15, 4, 30))
+  assert.equal(gap.active, 'offPeak')
+  assert.equal(gap.until, Date.UTC(2026, 8, 15, 6, 0))
+
+  // 08:59 Beijing: off-peak for exactly one more minute.
+  const justBefore = bandTransition(Date.UTC(2026, 8, 15, 0, 59))
+  assert.equal(justBefore.until, Date.UTC(2026, 8, 15, 1, 0))
+
+  // Friday 18:30 Beijing: the next peak opens on Monday morning.
+  const friday = bandTransition(Date.UTC(2026, 8, 18, 10, 30))
+  assert.equal(friday.active, 'offPeak')
+  assert.equal(friday.until, Date.UTC(2026, 8, 21, 1, 0))
+
+  // Sunday night: still Monday morning.
+  const sunday = bandTransition(Date.UTC(2026, 8, 20, 15, 50))
+  assert.equal(sunday.until, Date.UTC(2026, 8, 21, 1, 0))
+})
+
+test('the band always agrees with the pricing the call would get', () => {
+  // Sweep a week in half-hour steps: the two readers must never disagree about
+  // which band an instant is in, or the card would promise half-price calls the
+  // ledger then bills at full rate.
+  for (let at = Date.UTC(2026, 8, 14, 0, 0); at < Date.UTC(2026, 8, 21, 0, 0); at += 1_800_000) {
+    const band = bandTransition(at)
+    assert.equal(band.active === 'peak', isPeakAt(at), `disagree at ${new Date(at).toISOString()}`)
+    assert.ok(band.until > at, 'the band always states a future end')
+  }
 })
 
 test('a charge is the exact fixed-point sum of the three billed buckets', () => {

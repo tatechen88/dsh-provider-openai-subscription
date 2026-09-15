@@ -326,3 +326,50 @@ test('a card says when the price table could not be refreshed', () => {
     'and a switch that is simply off is not an error',
   )
 })
+
+test('reasoning tokens are named as part of the output, not on top of it', () => {
+  const meter = deepseekMeter()
+  meter.usage.today = { calls: 2, usage: { promptTokens: 900_000, outputTokens: 20_000, reasoningTokens: 12_000 }, cacheHitRatio: 0.2 }
+  meter.usage.session = { calls: 1, usage: { promptTokens: 1_000, outputTokens: 5 }, cacheHitRatio: 0 }
+  const line = indicatorTooltip({ provider: 'deepseek-official', meter, quota: null, t })
+  assert.match(line, /今日 900K → 20\.0K（含思考 12\.0K）/, 'the thinking subset explains an output that bills like a big one')
+  assert.doesNotMatch(line, /本会话[^·]*含思考/, 'a call with no reasoning reports none')
+
+  const plain = indicatorHeadline({ provider: 'deepseek-official', meter: deepseekMeter(), quota: null, t })
+  assert.doesNotMatch(plain.text, /含思考/, 'an account with no reasoning tokens says nothing about them')
+})
+
+test('the card breaks a mixed-model session down by model', () => {
+  const meter = deepseekMeter()
+  // The host already caps this list at the three heaviest; the card renders
+  // exactly what it receives.
+  meter.usage.session.models = [
+    { model: 'glm-5.3', promptTokens: 1_200_000, outputTokens: 30_000, calls: 4 },
+    { model: 'deepseek-flash', promptTokens: 200_000, outputTokens: 5_000, calls: 1 },
+    { model: 'third', promptTokens: 10, outputTokens: 1, calls: 1 },
+  ]
+  const line = indicatorTooltip({ provider: 'deepseek-official', meter, quota: null, t })
+  assert.match(line, /会话构成: glm-5\.3 1\.2M→30\.0K · deepseek-flash 200K→5\.0K · third 10→1/)
+})
+
+test('the card shows which price band is active and when it flips', () => {
+  const meter = deepseekMeter()
+  meter.pricing.band = { active: 'peak', until: Date.now() + 42 * 60_000 }
+  const peak = indicatorTooltip({ provider: 'deepseek-official', meter, quota: null, t })
+  assert.match(peak, /高峰时段 · 42 分钟后转空闲时段（半价）/, 'the countdown is the actionable part')
+
+  const cheap = deepseekMeter()
+  cheap.pricing.band = { active: 'offPeak', until: Date.now() + 3 * 86_400_000 }
+  assert.match(
+    indicatorTooltip({ provider: 'deepseek-official', meter: cheap, quota: null, t }),
+    /空闲时段（半价） · 3 天 0 小时后转高峰时段/,
+  )
+
+  const banded = deepseekMeter()
+  banded.pricing.band = { active: 'peak', until: Date.now() + 60_000 }
+  assert.doesNotMatch(
+    indicatorTooltip({ provider: 'zai-coding-cn', meter: { ...banded, zhipu: { status: 'ok', packages: [] } }, quota: null, t }),
+    /高峰时段 ·/,
+    'a route without peak windows states none',
+  )
+})

@@ -116,6 +116,42 @@ export function isPeakAt(atMs, windows = PEAK_WINDOWS) {
 }
 
 /**
+ * Which band one instant is in, and when that band ends.
+ *
+ * The end instant is what makes the bands actionable: off-peak bills at half
+ * the peak rate, and the only way to use that is to know when it opens. The
+ * active half agrees with {@link isPeakAt} by construction — both read the same
+ * clock.
+ * @param {number} atMs - epoch milliseconds.
+ * @param {{offsetMinutes: number, weekdays: readonly number[], ranges: readonly (readonly number[])[]}} [windows]
+ * @returns {{active: 'peak'|'offPeak', until: number}} the band and the instant it switches.
+ */
+export function bandTransition(atMs, windows = PEAK_WINDOWS) {
+  const { weekday, minutes } = fixedZoneClock(atMs, windows.offsetMinutes)
+  const toReal = (shiftedMs) => shiftedMs - windows.offsetMinutes * 60_000
+  const dayStart = atMs + windows.offsetMinutes * 60_000 - minutes * 60_000
+  if (windows.weekdays.includes(weekday)) {
+    for (const [start, end] of windows.ranges) {
+      if (minutes >= start && minutes < end) {
+        return { active: 'peak', until: toReal(dayStart + end * 60_000) }
+      }
+    }
+    const nextStartToday = windows.ranges.find(([start]) => start > minutes)
+    if (nextStartToday !== undefined) {
+      return { active: 'offPeak', until: toReal(dayStart + nextStartToday[0] * 60_000) }
+    }
+  }
+  // Outside every window: the next band opens on the first peak day that
+  // follows, which is at most a week away.
+  for (let step = 1; step <= 7; step += 1) {
+    if (windows.weekdays.includes((weekday + step) % 7)) {
+      return { active: 'offPeak', until: toReal(dayStart + step * 86_400_000 + windows.ranges[0][0] * 60_000) }
+    }
+  }
+  return { active: isPeakAt(atMs, windows) ? 'peak' : 'offPeak', until: atMs + 86_400_000 }
+}
+
+/**
  * Look one model up in a schedule's rate table.
  *
  * A match is exact, case-insensitive, or through a vendor-documented alias, so a

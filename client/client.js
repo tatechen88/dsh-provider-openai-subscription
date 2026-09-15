@@ -200,6 +200,15 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterQuotaTimes: '次数额度',
       meterReadingUnavailable: '部分数据不可用',
       meterPriceRefreshFailed: '价格表刷新失败',
+      meterReasoning: '含思考',
+      meterByModel: '会话构成',
+      meterBandPeak: '高峰时段',
+      meterBandOffPeak: '空闲时段（半价）',
+      meterBandNextPeak: '后转高峰时段',
+      meterBandNextOffPeak: '后转空闲时段（半价）',
+      meterDay: '天',
+      meterHour: '小时',
+      meterMinute: '分钟',
     },
     en: {
       nav: 'OpenAI Connect',
@@ -286,6 +295,15 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterQuotaTimes: 'uses quota',
       meterReadingUnavailable: 'Some readings unavailable',
       meterPriceRefreshFailed: 'Price table refresh failed',
+      meterReasoning: 'incl. reasoning',
+      meterByModel: 'Session by model',
+      meterBandPeak: 'Peak window',
+      meterBandOffPeak: 'Off-peak (half price)',
+      meterBandNextPeak: ' to peak',
+      meterBandNextOffPeak: ' to off-peak (half price)',
+      meterDay: 'd',
+      meterHour: 'h',
+      meterMinute: 'min',
     },
   }
 
@@ -2118,6 +2136,49 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   }
 
   /**
+   * The models of one session, heaviest first.
+   *
+   * A session that switched models is otherwise one opaque number: this says
+   * where its tokens actually went.
+   * @param {object|undefined} meter
+   * @param {(key: string) => string} t
+   * @returns {string|undefined}
+   */
+  function modelsLine(meter, t) {
+    const models = meter?.usage?.session?.models
+    if (!Array.isArray(models) || models.length === 0) return undefined
+    const named = models
+      .filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.model === 'string')
+      .map((entry) => `${entry.model} ${formatTokens(entry.promptTokens)}→${formatTokens(entry.outputTokens)}`)
+    if (named.length === 0) return undefined
+    return `${t('meterByModel')}: ${named.join(' · ')}`
+  }
+
+  /**
+   * The price band the route is in right now, and how long until it flips.
+   *
+   * Off-peak bills at half the peak rate, so the countdown is the actionable
+   * part: batch work can be moved into the cheap hours.
+   * @param {object|undefined} pricing - meter view `pricing` slice.
+   * @param {(key: string) => string} t
+   * @returns {string|undefined}
+   */
+  function bandLine(pricing, t) {
+    const band = pricing?.band
+    if (band === null || band === undefined || typeof band.until !== 'number' || typeof band.active !== 'string') return undefined
+    const minutes = Math.max(0, Math.ceil((band.until - Date.now()) / 60_000))
+    const days = Math.floor(minutes / 1440)
+    const hours = Math.floor((minutes % 1440) / 60)
+    const rest = minutes % 60
+    const duration = days > 0
+      ? `${days} ${t('meterDay')} ${hours} ${t('meterHour')}`
+      : hours > 0 ? `${hours} ${t('meterHour')} ${rest} ${t('meterMinute')}` : `${rest} ${t('meterMinute')}`
+    return band.active === 'peak'
+      ? `${t('meterBandPeak')} · ${duration}${t('meterBandNextOffPeak')}`
+      : `${t('meterBandOffPeak')} · ${duration}${t('meterBandNextPeak')}`
+  }
+
+  /**
    * The indicator's details, one fact per line.
    *
    * The card behind the icon renders these as lines and the hover tooltip joins
@@ -2173,6 +2234,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
           ? `${t('meterReadingUnavailable')} (${slice.errors.join(', ')})`
           : undefined,
         ...tokenLines(meter, t),
+        modelsLine(meter, t),
       ].filter(isFilled)
     }
     if (provider === DEEPSEEK_PROVIDER_ID) {
@@ -2189,13 +2251,20 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         amountTextOf(meter?.usage?.today) === undefined ? undefined : `${t('meterToday')} ${amountTextOf(meter?.usage?.today)}`,
         amountTextOf(meter?.usage?.month) === undefined ? undefined : `${t('meterMonth')} ${amountTextOf(meter?.usage?.month)}`,
         priceSourceLine(pricing, t),
+        bandLine(pricing, t),
         unpricedModelsLine(pricing, provider, t),
         priceRefreshLine(pricing, t),
+        modelsLine(meter, t),
       ].filter(isFilled)
     }
     // A route the host meters without an account reading of its own: the card
     // states the route and its token totals, and claims nothing about money.
-    return [provider, ...tokenLines(meter, t), unpricedModelsLine(meter?.pricing, provider, t)].filter(isFilled)
+    return [
+      provider,
+      ...tokenLines(meter, t),
+      unpricedModelsLine(meter?.pricing, provider, t),
+      modelsLine(meter, t),
+    ].filter(isFilled)
   }
 
   /**
@@ -2219,7 +2288,11 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       .map(([label, key]) => {
         const summary = meter?.usage?.[key]
         if (summary === undefined || summary.calls === 0) return undefined
-        return `${label} ${formatTokens(summary.usage?.promptTokens ?? 0)} → ${formatTokens(summary.usage?.outputTokens ?? 0)}`
+        // Reasoning is a subset of the output, not extra: naming it explains a
+        // bill that looks too large for the answer it produced.
+        const reasoning = summary.usage?.reasoningTokens ?? 0
+        const reasoningPart = reasoning > 0 ? `（${t('meterReasoning')} ${formatTokens(reasoning)}）` : ''
+        return `${label} ${formatTokens(summary.usage?.promptTokens ?? 0)} → ${formatTokens(summary.usage?.outputTokens ?? 0)}${reasoningPart}`
       })
       .filter(isFilled)
   }

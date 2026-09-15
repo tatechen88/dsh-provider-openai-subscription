@@ -7,6 +7,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp } from 'node:fs/promises'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { UsageLedger } from '../src/usage/ledger.js'
@@ -551,6 +552,45 @@ test('repeat views reuse the scan cache until the ledger or the scope changes', 
   assert.equal(meter.view({ sessionId: 's1', provider: 'deepseek-official' }).usage.session.amountMicros, undefined)
   await ledger.close()
 })
+
+test('the view states the price band for the route that has one', () => {
+  const ledger = openedLedgerSync()
+  const meter = new UsageMeterService({ ledger, now: () => Date.UTC(2026, 8, 15, 1, 30) })
+  try {
+    // Tuesday 09:30 Beijing: inside the morning peak, which closes at 12:00.
+    const deepseek = meter.view({ provider: 'deepseek-official' }).pricing.band
+    assert.deepEqual(deepseek, { active: 'peak', until: Date.UTC(2026, 8, 15, 4, 0) })
+    // A route with no price table has no bands to state.
+    assert.equal(meter.view({ provider: 'zai-coding-cn' }).pricing.band, undefined)
+    assert.equal(meter.view({ provider: 'openai-subscription' }).pricing.band, undefined)
+  } finally {
+    ledger.close()
+  }
+})
+
+test('the session breakdown names at most the three heaviest models', () => {
+  const ledger = openedLedgerSync()
+  const meter = new UsageMeterService({ ledger, now: () => NOW })
+  try {
+    const weights = { m1: 5_000, m2: 4_000, m3: 3_000, m4: 2_000, m5: 1_000 }
+    for (const [model, inputTokens] of Object.entries(weights)) {
+      meter.recordUsage(fact({ callId: model, model, usage: { inputTokens, outputTokens: 0 } }))
+    }
+    const models = meter.view({ sessionId: 's1', provider: 'deepseek-official' }).usage.session.models
+    assert.deepEqual(models.map((entry) => entry.model), ['m1', 'm2', 'm3'], 'heaviest first, three at most')
+    assert.equal(models[0].promptTokens, 5_000)
+  } finally {
+    ledger.close()
+  }
+})
+
+/** A ledger over a fresh directory, without awaiting its open. */
+function openedLedgerSync() {
+  const dir = mkdtempSync(join(tmpdir(), 'usage-service-band-'))
+  const ledger = new UsageLedger({ path: join(dir, 'usage.json'), debounceMs: 60_000, now: () => NOW })
+  ledger.open()
+  return ledger
+}
 
 test('the view names the models its price table does not cover', async () => {
   const ledger = await openedLedger()
