@@ -736,6 +736,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     useEffect(() => {
       if (view.kind !== 'signedIn') return undefined
       void refreshModels()
+      // The first reading is taken on open: leaving it to the poll interval
+      // shows an empty balance block for five minutes after every page load.
+      void refreshBalance(false)
       const timer = setInterval(() => { void refreshBalance(false) }, BALANCE_POLL_MS)
       return () => clearInterval(timer)
     }, [view.kind, provider])
