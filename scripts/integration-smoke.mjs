@@ -17,9 +17,10 @@
  *   DSH_NODE_MODULES="/path/to/dsh/profiles/node_modules" \
  *     node scripts/integration-smoke.mjs
  *
- * If DSH_NODE_MODULES is omitted, the script checks DSH_PROFILE and DSH_HOME
- * before the standard source-checkout locations.  No machine-specific path is
- * used as a default.
+ * If DSH_NODE_MODULES is omitted, the script derives the profile's
+ * `node_modules` from DSH_PROFILE, then from DSH_HOME's profiles.  No
+ * machine-specific path is used as a default, and a missing or partial install
+ * is reported as SKIP rather than a failure.
  */
 
 import { createRequire } from 'node:module'
@@ -67,9 +68,19 @@ if (dshModules.path === undefined) {
 const dshNodeModules = dshModules.path
 
 const require = createRequire(join(dshNodeModules, 'noop.js'))
-const { Context } = require('@deepseek-ai/cordis')
-const { LocalCredentialProvider } = require('@deepseek-ai/dsh-credentials-local')
-const { LlmRuntime } = require('@deepseek-ai/dsh-llm')
+let Context
+let LocalCredentialProvider
+let LlmRuntime
+try {
+  ;({ Context } = require('@deepseek-ai/cordis'))
+  ;({ LocalCredentialProvider } = require('@deepseek-ai/dsh-credentials-local'))
+  ;({ LlmRuntime } = require('@deepseek-ai/dsh-llm'))
+} catch (error) {
+  // A partial install is a skip, not a crash: the point of the script is to
+  // exercise a real composition when one is available.
+  console.log(`SKIP: DSH packages are incomplete under ${dshNodeModules} (${error instanceof Error ? error.message : String(error)})`)
+  process.exit(0)
+}
 
 /** One stream of chunks for the fake adapter below. */
 function fakeStream() {

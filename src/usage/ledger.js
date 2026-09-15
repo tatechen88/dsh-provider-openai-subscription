@@ -12,7 +12,7 @@
  * @module dsh-provider-openai-subscription/usage/ledger
  */
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, rename } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { addBuckets, emptyBuckets, promptTokensOf, validateUsageFact } from './types.js'
 
@@ -266,8 +266,17 @@ export class UsageLedger {
     return next
   }
 
-  /** Serialize and rename one snapshot. */
+  /**
+   * Fold in what another instance appended since this one last wrote, then
+   * serialize and rename one snapshot.
+   *
+   * Two DSH instances can share one home, and whichever wrote second would
+   * otherwise drop every fact the other recorded. A duplicate call id keeps the
+   * entry this instance already priced and showed. A file this build cannot read
+   * is moved aside rather than overwritten.
+   */
   async #writeOnce() {
+    await this.#mergeFromDisk()
     const body = JSON.stringify({
       schemaVersion: USAGE_LEDGER_SCHEMA_VERSION,
       updatedAt: this.now(),
@@ -276,8 +285,52 @@ export class UsageLedger {
     await mkdir(dirname(this.path), { recursive: true })
     this.writeSequence += 1
     const temp = `${this.path}.tmp-${process.pid}-${this.writeSequence}`
-    await writeFile(temp, `${body}\n`, { encoding: 'utf8', mode: 0o600 })
+    const handle = await open(temp, 'w', 0o600)
+    try {
+      await handle.writeFile(`${body}\n`, { encoding: 'utf8' })
+      // Renaming before the bytes reach the disk can leave a truncated file
+      // behind after a power loss, which the loader then has to quarantine.
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
     await rename(temp, this.path)
+  }
+
+  /** Merge the on-disk ledger into this instance's entries, by call id. */
+  async #mergeFromDisk() {
+    let raw
+    try {
+      raw = await readFile(this.path, 'utf8')
+    } catch {
+      // No file yet is the ordinary first write.
+      return
+    }
+    let parsed
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      parsed = undefined
+    }
+    if (parsed === null || typeof parsed !== 'object' || !Array.isArray(parsed.entries)
+      || parsed.schemaVersion !== USAGE_LEDGER_SCHEMA_VERSION) {
+      await rename(this.path, `${this.path}.corrupt-${this.now()}`)
+      return
+    }
+    const known = new Set(this.entries.map((entry) => entry.fact.callId))
+    const foreign = []
+    for (const entry of parsed.entries) {
+      if (!isReadableEntry(entry) || known.has(entry.fact.callId)) continue
+      foreign.push(entry)
+    }
+    if (foreign.length === 0) return
+    // Their facts happened before ours was the newest, so they lead the list.
+    this.entries = [...foreign, ...this.entries]
+    for (const entry of foreign) this.byCallId.set(entry.fact.callId, entry)
+    while (this.entries.length > USAGE_LEDGER_MAX_FACTS) {
+      const dropped = this.entries.shift()
+      if (this.byCallId.get(dropped.fact.callId) === dropped) this.byCallId.delete(dropped.fact.callId)
+    }
   }
 
   /**

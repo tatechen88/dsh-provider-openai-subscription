@@ -185,6 +185,73 @@ test('provider and model names cannot reach the prototype', async () => {
   await ledger.close()
 })
 
+test('two instances sharing one home keep each other’s facts', async () => {
+  const dir = await freshDir()
+  const path = join(dir, 'usage.json')
+  const quote = { status: 'priced', currency: 'CNY', amountMicros: 1 }
+
+  // Both open the same empty file, so neither snapshot can contain the other's
+  // fact. A long debounce keeps every write explicit.
+  const first = new UsageLedger({ path, debounceMs: 60_000, now: () => 1 })
+  const second = new UsageLedger({ path, debounceMs: 60_000, now: () => 2 })
+  await first.open()
+  await second.open()
+
+  first.record(fact({ callId: 'first-1' }), quote)
+  await first.flush()
+  second.record(fact({ callId: 'second-1' }), quote)
+  await second.flush()
+
+  const reopened = new UsageLedger({ path, debounceMs: 60_000, now: () => 3 })
+  const loaded = await reopened.open()
+  assert.equal(loaded.facts, 2, 'the second writer merges instead of replacing the file')
+  assert.equal(reopened.summary('all').calls, 2)
+
+  await first.close()
+  await second.close()
+  await reopened.close()
+})
+
+test('a call id recorded by both instances stays a single fact', async () => {
+  const dir = await freshDir()
+  const path = join(dir, 'usage.json')
+  const quote = { status: 'priced', currency: 'CNY', amountMicros: 1 }
+  const first = new UsageLedger({ path, debounceMs: 60_000, now: () => 1 })
+  const second = new UsageLedger({ path, debounceMs: 60_000, now: () => 2 })
+  await first.open()
+  await second.open()
+
+  first.record(fact({ callId: 'shared' }), quote)
+  await first.flush()
+  second.record(fact({ callId: 'shared' }), quote)
+  await second.flush()
+
+  const reopened = new UsageLedger({ path, debounceMs: 60_000, now: () => 3 })
+  assert.equal((await reopened.open()).facts, 1, 'a duplicate call id is not billed twice')
+  await first.close()
+  await second.close()
+  await reopened.close()
+})
+
+test('a ledger that becomes unreadable under a writer is moved aside, not overwritten', async () => {
+  const dir = await freshDir()
+  const path = join(dir, 'usage.json')
+
+  const ledger = new UsageLedger({ path, debounceMs: 60_000, now: () => 7 })
+  await ledger.open()
+  // Another instance leaves something this build cannot parse between our open
+  // and our write; the merge must preserve it rather than clobber it.
+  await writeFile(path, 'not json at all')
+
+  ledger.record(fact({ callId: 'after-foreign' }), { status: 'priced', currency: 'CNY', amountMicros: 1 })
+  await ledger.flush()
+
+  const names = await readdir(dir)
+  assert.equal(names.some((name) => name.includes('corrupt')), true, 'the unreadable file is preserved')
+  const written = JSON.parse(await readFile(path, 'utf8'))
+  assert.equal(written.entries.length, 1, 'this instance still writes what it holds')
+  await ledger.close()
+})
 test('dispatch runs inside the meter-depth marker, so a router re-entry is not billed twice', () => {
   const collector = createUsageCollector({ record: () => {} })
   const plain = () => (async function* () {})()

@@ -27,11 +27,8 @@ export const DEFAULT_METER_CONFIG = Object.freeze({
   accountKind: 'unknown',
   displayCurrency: 'CNY',
   timeZone: 'system',
-  showSidebar: true,
-  showSessionDock: true,
   hideBalance: false,
   hideCost: false,
-  deepseekBalance: true,
   contractualSchedules: Object.freeze([]),
 })
 
@@ -164,11 +161,8 @@ export function normalizeMeterConfig(raw) {
       ? record.displayCurrency
       : DEFAULT_METER_CONFIG.displayCurrency,
     timeZone: METER_TIME_ZONES.includes(record.timeZone) ? record.timeZone : DEFAULT_METER_CONFIG.timeZone,
-    showSidebar: record.showSidebar !== false,
-    showSessionDock: record.showSessionDock !== false,
     hideBalance: record.hideBalance === true,
     hideCost: record.hideCost === true,
-    deepseekBalance: record.deepseekBalance !== false,
     contractualSchedules: contracts
       .map((entry, index) => toContractualSchedule(entry, index))
       .filter((entry) => entry !== undefined),

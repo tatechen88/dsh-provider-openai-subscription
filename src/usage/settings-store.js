@@ -9,7 +9,7 @@
  * @module dsh-provider-openai-subscription/usage/settings-store
  */
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, rename } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { normalizeMeterConfig } from './config.js'
 
@@ -165,7 +165,15 @@ export class MeterSettingsStore {
     })
     this.writeSequence += 1
     const temp = `${this.path}.tmp-${process.pid}-${this.writeSequence}`
-    await writeFile(temp, `${body}\n`, { encoding: 'utf8', mode: 0o600 })
+    const handle = await open(temp, 'w', 0o600)
+    try {
+      await handle.writeFile(`${body}\n`, { encoding: 'utf8' })
+      // Without this a rename can reach the disk before the bytes do, and a
+      // power loss leaves a truncated settings file where a valid one was.
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
     await rename(temp, this.path)
   }
 }

@@ -3,14 +3,14 @@
  *
  * Renders four UI surfaces:
  * - a dedicated settings page (slot `settings.section`) where the user
- *   completes the OpenAI/ChatGPT OAuth connection;
+ *   completes the OpenAI/ChatGPT OAuth connection and edits the meter;
  * - a first-run onboarding step (slot `settings.onboarding`) that prompts a
  *   blank session to connect while the plugin is active and signed out;
- * - the settings card (slot `settings.plugin.item`) kept as the original
- *   entry surface;
  * - the sidebar balance indicator (slot `sidebar.footer.action`), which the
  *   user can drag out of the sidebar into a floating panel whose position the
- *   browser remembers.
+ *   browser remembers;
+ * - a per-session usage line (slot `conversation.composer.dock`) that shares
+ *   the indicator's data source.
  *
  * The browser never contacts OpenAI directly; all data flows through the
  * plugin's same-origin Host routes, which are already redacted.  UI copy is
@@ -40,7 +40,6 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   const PROVIDER_ID = 'openai-subscription'
   /** DSH's official DeepSeek route, the second account the indicator follows. */
   const DEEPSEEK_PROVIDER_ID = 'deepseek-official'
-  const CARD_KEY = 'llm-openai-subscription'
   const SECTION_ID = 'openai-subscription'
   const ONBOARDING_STEP_ID = 'openai-subscription-connect'
   const SIDEBAR_ID = 'dsh-provider-openai-subscription-balance'
@@ -487,6 +486,31 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       }
     }, [sessionsService, modelDirectories])
     return provider
+  }
+
+  /**
+   * Identity of the session the page currently shows, as reactive state.
+   *
+   * The per-session usage line has to reload when the session changes even if
+   * both sessions resolve to the same provider: the provider is not the key its
+   * numbers belong to, and a provider-only dependency would leave the previous
+   * session's totals on screen until the next poll.
+   *
+   * @param {object|undefined} sessionsService
+   * @returns {string|null}
+   */
+  function useCurrentSessionId(sessionsService) {
+    const [sessionId, setSessionId] = useState(null)
+    useEffect(() => {
+      if (!sessionsService || !sessionsService.list || typeof sessionsService.list.subscribe !== 'function') return undefined
+      const sync = () => setSessionId(currentSessionId(sessionsService) ?? null)
+      sync()
+      const stop = sessionsService.list.subscribe(sync)
+      return () => {
+        if (typeof stop === 'function') stop()
+      }
+    }, [sessionsService])
+    return sessionId
   }
 
   /**
@@ -1198,18 +1222,6 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     ])
   }
 
-  function OpenAISubscriptionCard(props) {
-    const { sessionsService, modelDirectories, getLocale } = props
-    const t = useT(getLocale)
-    const currentProvider = useCurrentProvider(sessionsService, modelDirectories)
-    const flow = useOpenAISubscriptionFlow({ provider: currentProvider })
-    return h('div', { style: s.card }, [
-      h('h3', { style: s.cardTitle }, t('heading')),
-      h(OpenAISubscriptionContent, { flow, currentProvider, t, page: false }),
-      h('p', { style: s.note }, t('cardFullPanelHint')),
-    ])
-  }
-
   function OpenAISubscriptionPage(props) {
     const { sessionsService, modelDirectories, getLocale } = props
     const t = useT(getLocale)
@@ -1293,11 +1305,18 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
    */
   function formatAmount(micros, currency) {
     if (typeof micros !== 'number' || !Number.isFinite(micros)) return undefined
-    const symbol = CURRENCY_SYMBOLS[currency] ?? (typeof currency === 'string' && currency.length > 0 ? `${currency} ` : '')
+    // An own-property lookup: a currency name like `constructor` would otherwise
+    // reach the prototype and print a function where a symbol belongs.
+    const symbol = Object.hasOwn(CURRENCY_SYMBOLS, currency)
+      ? CURRENCY_SYMBOLS[currency]
+      : (typeof currency === 'string' && currency.length > 0 ? `${currency} ` : '')
     const units = micros / 1_000_000
-    // Below one unit the useful precision is finer than a cent; above it two
-    // decimals match how the provider's own console prints money.
-    const text = units >= 1 ? units.toFixed(2) : units.toFixed(4).replace(/0+$/, '').replace(/\.$/, '.00')
+    // Above one unit two decimals match how the provider's own console prints
+    // money; below it the useful precision is finer than a cent, and rounding a
+    // real charge to "0.00" would read as a free call.
+    const text = units >= 1 || units === 0
+      ? units.toFixed(2)
+      : units.toFixed(6).replace(/0+$/, '')
     return `${symbol}${text}`
   }
 
@@ -1589,6 +1608,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const { sessionsService, modelDirectories, getLocale } = props
     const t = useT(getLocale)
     const currentProvider = useCurrentProvider(sessionsService, modelDirectories)
+    const sessionId = useCurrentSessionId(sessionsService)
     const [meter, setMeter] = useState(null)
     const [quota, setQuota] = useState(null)
     const [panel, setPanel] = useState(readStoredPanel)
@@ -1616,8 +1636,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       const cadence = metered ? METER_POLL_MS : BALANCE_POLL_MS
       let cancelled = false
       async function load() {
-        const sessionId = currentSessionId(sessionsService)
-        const url = `${API.meterUsage}${sessionId === undefined ? '' : `?sessionId=${encodeURIComponent(sessionId)}`}`
+        // The session window is keyed by the session, so the poll reloads when
+        // it changes; a provider-only dependency would keep the old totals.
+        const url = `${API.meterUsage}${sessionId === null ? '' : `?sessionId=${encodeURIComponent(sessionId)}`}`
         let nextMeter
         let nextQuota
         try {
@@ -1651,7 +1672,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         cancelled = true
         clearInterval(timer)
       }
-    }, [currentProvider, sessionsService])
+    }, [currentProvider, sessionId, sessionsService])
 
     // Persist once the panel settles, so a drag writes after the last move
     // instead of on every pointer event.
@@ -1958,6 +1979,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const { sessionsService, modelDirectories, getLocale } = props
     const t = useT(getLocale)
     const currentProvider = useCurrentProvider(sessionsService, modelDirectories)
+    const sessionId = useCurrentSessionId(sessionsService)
     const [meter, setMeter] = useState(null)
     const generationRef = useRef(0)
 
@@ -1971,8 +1993,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       generationRef.current = generation
       let cancelled = false
       async function load() {
-        const sessionId = currentSessionId(sessionsService)
-        if (sessionId === undefined) return
+        // The session, not just the provider: two sessions can share a provider,
+        // and reloading only on the provider would keep the old totals visible.
+        if (!sessionId) return
         try {
           const payload = await getJson(`${API.meterUsage}?sessionId=${encodeURIComponent(sessionId)}`)
           if (!cancelled && generationRef.current === generation) setMeter(payload.data)
@@ -1986,7 +2009,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         cancelled = true
         clearInterval(timer)
       }
-    }, [currentProvider, sessionsService])
+    }, [currentProvider, sessionId, sessionsService])
 
     const line = sessionUsageLine({ provider: currentProvider, meter, t })
     if (line === null) return null
@@ -2045,11 +2068,6 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       label: navLabel(ctx),
       inject: baseInject(ctx),
     }, OpenAISubscriptionOnboardingStep))
-    attempt('settings.plugin.item', () => ctx.slots.register({
-      name: 'settings.plugin.item',
-      key: CARD_KEY,
-      inject: baseInject(ctx),
-    }, OpenAISubscriptionCard))
     attempt('sidebar.footer.action', () => ctx.slots.register({
       name: 'sidebar.footer.action',
       id: SIDEBAR_ID,

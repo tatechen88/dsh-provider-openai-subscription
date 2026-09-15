@@ -58,12 +58,16 @@ export function resolveOfficialEndpoint(baseURL) {
 
 /**
  * Read one decimal amount from the wire without trusting its type.
+ *
+ * The sign is kept: a negative total is a real account state (arrears), and
+ * dropping the row would hide money. Only a value that is not a finite number
+ * is unreadable.
  * @param {unknown} value
  * @returns {number|undefined}
  */
 function amount(value) {
   const parsed = typeof value === 'string' ? Number(value) : typeof value === 'number' ? value : Number.NaN
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined
+  return Number.isFinite(parsed) ? parsed : undefined
 }
 
 /**

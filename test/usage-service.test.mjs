@@ -48,7 +48,6 @@ test('meter configuration falls back per field instead of failing', () => {
   assert.equal(normalizeMeterConfig({ accountKind: 'root' }).accountKind, 'unknown')
   assert.equal(normalizeMeterConfig({ timeZone: 'Mars/Olympus' }).timeZone, 'system')
   assert.equal(normalizeMeterConfig({ timeZone: 'Asia/Shanghai' }).timeZone, 'Asia/Shanghai')
-  assert.equal(normalizeMeterConfig({ deepseekBalance: false }).deepseekBalance, false)
   assert.equal(normalizeMeterConfig({ hideBalance: true }).hideBalance, true)
 })
 
@@ -320,19 +319,12 @@ test('concurrent balance refreshes share one request', async () => {
   await ledger.close()
 })
 
-test('a disabled balance reading never calls the network', async () => {
-  const ledger = await openedLedger()
-  let called = false
-  const meter = new UsageMeterService({
-    ledger,
-    config: { deepseekBalance: false },
-    fetchImpl: async () => {
-      called = true
-      return new Response('{}', { status: 200 })
-    },
-  })
-  const balance = await meter.refreshDeepSeekBalance({ force: true })
-  assert.equal(balance.status, 'off')
-  assert.equal(called, false)
-  await ledger.close()
+test('the configuration carries no switch the settings page cannot reach', () => {
+  // `showSidebar` and `showSessionDock` were accepted and never read, and
+  // `deepseekBalance` was readable but had no control in the panel. All three
+  // are gone on purpose: a knob nobody can turn is worse than no knob.
+  const config = normalizeMeterConfig({ showSidebar: false, showSessionDock: false, deepseekBalance: false })
+  assert.equal('showSidebar' in config, false)
+  assert.equal('showSessionDock' in config, false)
+  assert.equal('deepseekBalance' in config, false)
 })

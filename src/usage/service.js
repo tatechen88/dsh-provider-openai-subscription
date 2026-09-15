@@ -127,10 +127,6 @@ export class UsageMeterService {
    * @returns {Promise<object>} the current balance view.
    */
   async refreshDeepSeekBalance({ force = false } = {}) {
-    if (!this.config.deepseekBalance) {
-      this.balance = { status: 'off', infos: [], fetchedAt: 0, message: '' }
-      return this.balance
-    }
     const fresh = this.now() - this.balance.fetchedAt < this.balanceTtlMs
     if (!force && (this.balance.status === 'ok' || this.balance.status === 'stale') && fresh) return this.balance
     if (this.balanceInFlight !== undefined) return this.balanceInFlight
@@ -232,7 +228,9 @@ export class UsageMeterService {
     const aggregate = (summary) => {
       const base = viewOfAggregate(summary, this.config)
       if (!hideCost) return base
-      const { amountsMicrosByCurrency, amountMicros, ...tokensOnly } = base
+      // The billed currency goes with the amounts: naming it still says which
+      // money the account is spending.
+      const { amountsMicrosByCurrency, amountMicros, amountCurrency, ...tokensOnly } = base
       return tokensOnly
     }
     return {

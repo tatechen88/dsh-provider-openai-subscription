@@ -242,8 +242,8 @@ test('apply registers the four UI surfaces with stable identities', () => {
 
   assert.deepEqual(
     injected.map((entry) => entry.name),
-    ['settings.section', 'settings.onboarding', 'settings.plugin.item', 'sidebar.footer.action', 'conversation.composer.dock'],
-    'apply must wire section, onboarding, plugin-item card, sidebar action, and session dock',
+    ['settings.section', 'settings.onboarding', 'sidebar.footer.action', 'conversation.composer.dock'],
+    'apply must wire the settings section, the onboarding step, the sidebar action and the session dock',
   )
 
   for (const entry of injected) entry.factory()
@@ -261,10 +261,6 @@ test('apply registers the four UI surfaces with stable identities', () => {
   assert.equal(onboarding.length, 1)
   assert.equal(onboarding[0].options.id, 'openai-subscription-connect')
   assert.equal(onboarding[0].options.order, 100)
-
-  const card = bySlot('settings.plugin.item')
-  assert.equal(card.length, 1)
-  assert.equal(card[0].options.key, 'llm-openai-subscription')
 
   const sidebar = bySlot('sidebar.footer.action')
   assert.equal(sidebar.length, 1)
