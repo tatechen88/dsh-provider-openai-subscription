@@ -29,6 +29,15 @@ export const ACCOUNT_READING_TTL_MS = 5 * 60 * 1000
  */
 export const PUBLIC_PRICE_TTL_MS = 24 * 60 * 60 * 1000
 
+/**
+ * Smallest spacing between two price-page reads, including explicit ones.
+ *
+ * A forced refresh bypasses the day-long TTL, so without this floor a same-origin
+ * caller hammering the refresh route would turn into a hammer on the vendor's
+ * page. An operator waiting out a minute loses nothing.
+ */
+export const PUBLIC_PRICE_MIN_INTERVAL_MS = 60_000
+
 /** The route whose vendor publishes a per-token price table. */
 const DEEPSEEK_PROVIDER_ID = 'deepseek-official'
 
@@ -213,9 +222,14 @@ export class UsageMeterService {
    */
   async refreshPublicPrices({ force = false } = {}) {
     if (this.pricingStore === undefined) return { status: 'off', reason: 'no price store' }
+    const lastAttemptAt = this.pricingStore.lastAttemptAt
     if (force !== true) {
       if (this.config.refreshPublicPrices !== true) return { status: 'off', reason: 'disabled' }
       if (!this.pricingStore.due(PUBLIC_PRICE_TTL_MS)) return { status: 'not-due' }
+    } else if (lastAttemptAt !== 0 && this.now() - lastAttemptAt < PUBLIC_PRICE_MIN_INTERVAL_MS) {
+      // Even an explicit refresh waits out a short cooldown, so a caller that
+      // repeats the route cannot turn into a hammer on the vendor's page.
+      return { status: 'cooldown', reason: `the last attempt was less than ${PUBLIC_PRICE_MIN_INTERVAL_MS / 1000}s ago` }
     }
     if (this.pricingRefresh !== undefined) return this.pricingRefresh
     const generation = this.generation

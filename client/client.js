@@ -386,11 +386,25 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     return translate(currentLanguage(getLocale), key, params)
   }
 
+  /**
+   * How long a same-origin request may take before this surface stops waiting
+   * on it.
+   *
+   * The slowest server-side path is the model catalogue's own 30s upstream
+   * timeout, so the client bound has to sit above that: the point is to stop a
+   * hung connection from piling up pending polls forever, not to race the
+   * server's own bound.
+   */
+  const REQUEST_TIMEOUT_MS = 45_000
+
   async function getJson(url, options) {
     const response = await fetch(url, {
       ...(options || {}),
       headers: { accept: 'application/json', ...((options && options.headers) || {}) },
       cache: 'no-store',
+      // A caller-supplied signal keeps priority; the timeout is only the floor
+      // that stops a wedged connection from holding a poll open forever.
+      signal: options?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
     const payload = await response.json().catch(() => ({}))
     // A degraded route answers 200 with `ok:false` instead of failing the

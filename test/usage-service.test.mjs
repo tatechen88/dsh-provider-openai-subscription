@@ -474,6 +474,32 @@ test('an unpriced model asks for the page once, and the attempt backs off', asyn
   await ledger.close()
 })
 
+test('an explicit refresh waits out a short cooldown before reading again', async () => {
+  const ledger = await openedLedger()
+  const store = await priceStoreFor(ledger)
+  let calls = 0
+  const meter = new UsageMeterService({
+    ledger,
+    now: () => NOW,
+    pricingStore: store,
+    config: { refreshPublicPrices: true },
+    fetchImpl: async () => { calls += 1; return new Response(pricePage('deepseek-v5', '3元'), { status: 200 }) },
+  })
+
+  assert.equal((await meter.refreshPublicPrices({ force: true })).status, 'ok')
+  assert.equal(calls, 1)
+
+  // A repeated explicit call inside the cooldown is answered without touching
+  // the vendor's page: `force` skips the day-long TTL, not this floor, or the
+  // refresh route would become a hammer by way of the flag meant to bypass one.
+  assert.deepEqual(
+    await meter.refreshPublicPrices({ force: true }),
+    { status: 'cooldown', reason: 'the last attempt was less than 60s ago' },
+  )
+  assert.equal(calls, 1)
+  await ledger.close()
+})
+
 test('the view names the models its price table does not cover', async () => {
   const ledger = await openedLedger()
   const meter = new UsageMeterService({ ledger, now: () => NOW })
