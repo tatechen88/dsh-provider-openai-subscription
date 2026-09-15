@@ -522,6 +522,36 @@ test('an explicit refresh waits out a short cooldown before reading again', asyn
   await ledger.close()
 })
 
+test('repeat views reuse the scan cache until the ledger or the scope changes', async () => {
+  const ledger = await openedLedger()
+  const meter = new UsageMeterService({ ledger, now: () => NOW })
+  meter.recordUsage(fact({ callId: 'a' }))
+
+  meter.view({ sessionId: 's1', provider: 'deepseek-official' })
+  const key = meter.usageCache.key
+  const again = meter.view({ sessionId: 's1', provider: 'deepseek-official' })
+  assert.equal(meter.usageCache.key, key, 'an unchanged ledger and scope reuse the cached slices')
+  assert.equal(again.usage.session.calls, 1)
+
+  // A different scope is a different question, even over the same ledger.
+  meter.view({ sessionId: 's1', provider: 'openai-subscription' })
+  assert.notEqual(meter.usageCache.key, key)
+
+  meter.recordUsage(fact({ callId: 'b', model: 'deepseek-v5' }))
+  assert.notEqual(meter.usageCache.key, key, 'a new fact invalidates the cached slices')
+  assert.equal(
+    meter.view({ sessionId: 's1', provider: 'deepseek-official' }).usage.session.calls,
+    2,
+    'and the next read sees it',
+  )
+
+  // A configuration change moves the amounts the slices carry, so it must
+  // invalidate even over an untouched ledger.
+  meter.updateConfig({ hideCost: true })
+  assert.equal(meter.view({ sessionId: 's1', provider: 'deepseek-official' }).usage.session.amountMicros, undefined)
+  await ledger.close()
+})
+
 test('the view names the models its price table does not cover', async () => {
   const ledger = await openedLedger()
   const meter = new UsageMeterService({ ledger, now: () => NOW })

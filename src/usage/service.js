@@ -116,6 +116,14 @@ export class UsageMeterService {
     this.pricingRefresh = undefined
     /** Bumped whenever the configuration changes, so stale async work is dropped. */
     this.generation = 0
+    /**
+     * Cache for the four ledger scans a view needs. Both polling surfaces read
+     * every 30s whether or not a call happened, and each read scans the whole
+     * ledger four times; the key carries everything those scans depend on, so a
+     * repeat poll reuses them instead of re-reading.
+     */
+    this.usageCache = undefined
+    this.unpricedCache = undefined
     this.deepseek = new ReadingSlot({
       now: () => this.now(),
       ttlMs: balanceTtlMs,
@@ -443,6 +451,25 @@ export class UsageMeterService {
     // The Zhipu station is only asked when this read is about a Zhipu route: a
     // DeepSeek-only deployment must not pay for a Zhipu request on every poll.
     if (vendorFor(provider)?.id === ZHIPU_VENDOR_ID && this.zhipu.due()) void this.refreshZhipuAccount()
+    // The scan-heavy slices, cached on everything they depend on: the config
+    // generation, the ledger's own mutation counter, and the two scopes of this
+    // read. The account slices above stay outside the cache — they change when a
+    // background reading lands, which the ledger never sees.
+    const usageKey = `${this.generation}:${this.ledger.mutations}:${sessionId ?? ''}:${provider ?? ''}`
+    if (this.usageCache?.key !== usageKey) {
+      this.usageCache = {
+        key: usageKey,
+        value: {
+          session: aggregate(sessionId === undefined ? emptySummary : this.ledger.sessionSummary(sessionId, provider)),
+          today: aggregate(this.ledger.summary('today', provider)),
+          month: aggregate(this.ledger.summary('month', provider)),
+        },
+      }
+    }
+    const unpricedKey = `${this.generation}:${this.ledger.mutations}`
+    if (this.unpricedCache?.key !== unpricedKey) {
+      this.unpricedCache = { key: unpricedKey, value: this.ledger.unpricedModels(PRICED_PROVIDER_IDS) }
+    }
     return {
       generatedAt: this.now(),
       account: { kind: this.config.accountKind, declared: this.config.accountKind !== 'unknown' },
@@ -466,21 +493,14 @@ export class UsageMeterService {
         basis: 'request-start-assumption',
         // Models this deployment has no rate for: the list a newly shipped model
         // appears in, instead of quietly costing nothing.
-        unpricedModels: this.ledger.unpricedModels(PRICED_PROVIDER_IDS),
+        unpricedModels: this.unpricedCache.value,
         refresh: {
           enabled: this.config.refreshPublicPrices === true,
           ...(this.pricingStore === undefined ? {} : { lastAttemptAt: this.pricingStore.lastAttemptAt }),
           ...(this.pricingStore === undefined || this.pricingStore.lastError === undefined ? {} : { lastError: this.pricingStore.lastError }),
         },
       },
-      usage: {
-        // The route is part of the read, not a filter the caller applies later:
-        // the indicator follows the model the session runs, so another route's
-        // tokens must not appear in these totals.
-        session: aggregate(sessionId === undefined ? emptySummary : this.ledger.sessionSummary(sessionId, provider)),
-        today: aggregate(this.ledger.summary('today', provider)),
-        month: aggregate(this.ledger.summary('month', provider)),
-      },
+      usage: this.usageCache.value,
       hideCost,
     }
   }

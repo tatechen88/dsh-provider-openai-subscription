@@ -13,6 +13,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { createHookRuntime } from './helpers.mjs'
 
 const clientFile = join(dirname(fileURLToPath(import.meta.url)), '..', 'client', 'client.js')
 
@@ -28,57 +29,6 @@ globalThis.window = {
 }
 
 await import(`${pathToFileURL(clientFile).href}`)
-
-/**
- * Minimal hook runtime: index-keyed slots that survive re-renders plus an
- * effect queue drained after each render.
- *
- * One runtime serves one mounted component. Sharing slots between different
- * components would hand a component another component's state, which is how a
- * harness silently stops testing what it claims to test.
- * @returns {object}
- */
-function createHookRuntime() {
-  let cursor = 0
-  let slots = []
-  let pending = []
-  const cleanups = new Map()
-  const seenDeps = new Map()
-  return {
-    begin() { cursor = 0; pending = [] },
-    useState(initial) {
-      const index = cursor++
-      if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial
-      return [slots[index], (next) => { slots[index] = typeof next === 'function' ? next(slots[index]) : next }]
-    },
-    useRef(initial) {
-      const index = cursor++
-      if (!(index in slots)) slots[index] = { current: initial }
-      return slots[index]
-    },
-    useEffect(fn, deps) {
-      const index = cursor++
-      pending.push({ index, fn, deps })
-    },
-    drain() {
-      for (const entry of pending) {
-        const previous = seenDeps.get(entry.index)
-        const changed = entry.deps === undefined
-          || previous === undefined
-          || entry.deps.length !== previous.length
-          || entry.deps.some((value, position) => !Object.is(value, previous[position]))
-        if (!changed) continue
-        const cleanup = cleanups.get(entry.index)
-        if (typeof cleanup === 'function') cleanup()
-        const next = entry.fn()
-        if (typeof next === 'function') cleanups.set(entry.index, next)
-        else cleanups.delete(entry.index)
-        seenDeps.set(entry.index, entry.deps)
-      }
-    },
-    cleanups() { return [...cleanups.values()] },
-  }
-}
 
 const mounted = []
 let hooks = createHookRuntime()
