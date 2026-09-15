@@ -212,7 +212,8 @@ Runtime 由 DSH profile 加载。修改源码后需要重新启动对应 profile
 ```sh
 npm test                  # 运行全部单元测试
 npm run check             # 语法检查并运行全部单元测试
-npm run test:integration  # 运行真实 DSH 组合 smoke；缺少依赖时安全跳过
+npm run test:integration  # 真实 DSH 组合 smoke：装进真实 Cordis 上下文驱动一次 llm/stream，
+                          # 验证它变成一条已计价账本记录；缺少 DSH 依赖时安全跳过
 ```
 
 ## 目录结构

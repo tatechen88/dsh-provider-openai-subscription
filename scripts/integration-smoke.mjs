@@ -4,8 +4,14 @@
  *
  * This script composes the plugin into a real Cordis context using the DSH
  * packages from an installed profile.  It does not require OAuth credentials
- * and does not touch a real profile.  It proves the plugin can be activated
- * inside DSH without breaking provider registration.
+ * and does not touch a real profile: every path it writes lives inside a
+ * temporary directory that is removed at the end.
+ *
+ * It proves three things the unit tests cannot:
+ *   1. the plugin activates inside a real DSH context and registers its provider;
+ *   2. the usage meter's `llm/stream` listener is reached by the real waterfall,
+ *      so a completed call becomes a priced fact in the ledger;
+ *   3. a bootstrap-state plugin still loads no runtime at all.
  *
  * Usage:
  *   DSH_NODE_MODULES="/path/to/dsh/profiles/node_modules" \
@@ -17,7 +23,7 @@
  */
 
 import { createRequire } from 'node:module'
-import { mkdtemp, rm, access } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, access } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -65,7 +71,38 @@ const { Context } = require('@deepseek-ai/cordis')
 const { LocalCredentialProvider } = require('@deepseek-ai/dsh-credentials-local')
 const { LlmRuntime } = require('@deepseek-ai/dsh-llm')
 
+/** One stream of chunks for the fake adapter below. */
+function fakeStream() {
+  return (async function* generate() {
+    yield { type: 'text-delta', index: 0, text: 'hello' }
+    yield { type: 'usage', usage: { inputTokens: 1_000_000, outputTokens: 0 } }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })()
+}
+
+/**
+ * A minimal adapter for the DeepSeek route so the real waterfall can be driven
+ * without a network call or a credential.
+ * @param {string} provider
+ * @returns {object} the adapter surface LlmRuntime dispatches to.
+ */
+function fakeAdapter(provider) {
+  const model = (id) => ({ provider, id, name: id })
+  return {
+    providerInfo: () => ({ id: provider, name: 'smoke' }),
+    providerRetryPolicy: () => undefined,
+    listModels: async () => [],
+    resolveModel: async (_provider, id) => model(id),
+    prepareCall: async (_provider, id) => ({ model: model(id), stream: () => fakeStream() }),
+    stream: () => fakeStream(),
+  }
+}
+
 const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-integration-'))
+// The meter resolves its ledger and settings through DSH_HOME; pointing that at
+// the temporary directory is what keeps this check away from a real install.
+const previousHome = process.env.DSH_HOME
+process.env.DSH_HOME = dir
 try {
   const ctx = new Context()
   await ctx.plugin(LocalCredentialProvider, { path: join(dir, '.credentials.yaml'), watch: false })
@@ -94,9 +131,55 @@ try {
     throw new Error('openai-subscription configurable directory entry was not registered')
   }
 
+  // Drive one metered call through the real waterfall: the adapter reports a
+  // million uncached input tokens, which the built-in snapshot prices at CNY 1.
+  const adapterHandle = ctx.llm.registerAdapter(['deepseek-official'], fakeAdapter('deepseek-official'))
+  try {
+    for await (const _chunk of ctx.llm.stream({
+      provider: 'deepseek-official',
+      model: 'deepseek-flash',
+      messages: [],
+      sessionId: 'smoke-session',
+    })) {
+      // Drain: metering happens as the stream is consumed.
+    }
+  } finally {
+    adapterHandle()
+  }
+
+  const ledgerPath = join(dir, 'storages', 'openai-subscription-meter', 'usage.json')
+  // The ledger debounces its write, so poll for the durable file rather than
+  // assuming a fixed delay.
+  let ledger
+  let lastError
+  for (let attempt = 0; attempt < 60 && ledger === undefined; attempt += 1) {
+    try {
+      ledger = JSON.parse(await readFile(ledgerPath, 'utf8'))
+    } catch (error) {
+      lastError = error
+      await new Promise((resolve) => { setTimeout(resolve, 100) })
+    }
+  }
+  if (ledger === undefined) {
+    throw new Error(`meter ledger was not written at ${ledgerPath}: ${lastError?.message}`)
+  }
+  if (!Array.isArray(ledger.entries) || ledger.entries.length !== 1) {
+    throw new Error(`expected exactly one metered call, got ${JSON.stringify(ledger.entries?.length)}`)
+  }
+  const entry = ledger.entries[0]
+  if (entry.fact.sessionId !== 'smoke-session' || entry.fact.provider !== 'deepseek-official') {
+    throw new Error(`metered fact lost its route: ${JSON.stringify(entry.fact)}`)
+  }
+  if (entry.quote?.status !== 'priced' || entry.quote.amountMicros !== 1_000_000) {
+    throw new Error(`metered fact was not priced by the built-in snapshot: ${JSON.stringify(entry.quote)}`)
+  }
+
   console.log(`OK: plugin root ${pluginRoot}`)
   console.log(`OK: bootstrap state stays inactive`)
   console.log(`OK: active state registers provider openai-subscription`)
+  console.log(`OK: a real llm/stream call becomes a priced ledger fact (CNY 1.000000 for 1M uncached input tokens)`)
 } finally {
+  if (previousHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = previousHome
   await rm(dir, { recursive: true, force: true })
 }
