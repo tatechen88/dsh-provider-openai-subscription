@@ -105,7 +105,7 @@ test('flush writes pending facts and close stops further writes', async () => {
   ledger.record(fact(), priced)
   await ledger.flush()
   const stored = JSON.parse(await readFile(path, 'utf8'))
-  assert.equal(stored.schemaVersion, 1)
+  assert.equal(stored.schemaVersion, 2)
   assert.equal(stored.entries.length, 1)
 
   await ledger.close()
@@ -167,5 +167,119 @@ test('the ledger names the models it had no rate for, and only those', async () 
     ['deepseek-v5', 'glm-5.3'],
     'and a caller that names no route sees every unpriced model, with its reason',
   )
+  await ledger.close()
+})
+
+const DAY = 86_400_000
+/** 2026-06-01 12:00 UTC, far outside a 90-day window from the shared clock. */
+const OLD = Date.UTC(2026, 5, 1, 12, 0)
+/** The shared "now": 2026-09-15 20:00 UTC. */
+const TODAY = Date.UTC(2026, 8, 15, 20, 0)
+
+/**
+ * A ledger worth compacting: old calls across two routes, two models and two
+ * currencies, plus calls inside the window.
+ */
+async function compactableLedger(retentionDays = 90) {
+  const path = await ledgerPath()
+  let sequence = 0
+  const ledger = new UsageLedger({ path, now: () => TODAY, retentionDays })
+  await ledger.open()
+  const add = (overrides, quote) => {
+    sequence += 1
+    ledger.record(fact({
+      callId: `fact-${sequence}`,
+      sessionId: overrides.startedAt === TODAY ? 's1' : 'old-session',
+      usage: { inputTokens: 1_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100 },
+      ...overrides,
+    }), quote)
+  }
+  add({ startedAt: OLD, provider: 'deepseek-official', model: 'deepseek-flash' }, priced)
+  add({ startedAt: OLD + 1, provider: 'deepseek-official', model: 'deepseek-flash' }, priced)
+  add({ startedAt: OLD + 2, provider: 'deepseek-official', model: 'deepseek-v5' }, { status: 'unpriced', reason: 'unknown-model' })
+  // One old call billed in another currency, so a rollup has to keep amounts
+  // per currency instead of one blended number.
+  add({ startedAt: OLD + 3, provider: 'deepseek-official', model: 'deepseek-flash' }, { status: 'priced', currency: 'USD', amountMicros: 500 })
+  add({ startedAt: TODAY, provider: 'deepseek-official', model: 'deepseek-flash' }, priced)
+  return { ledger, path }
+}
+
+test('compaction folds old days without moving a single total', async () => {
+  const { ledger, path } = await compactableLedger()
+  const before = {
+    all: ledger.summary('all'),
+    scoped: ledger.summary('all', 'deepseek-official'),
+    today: ledger.summary('today'),
+    todayScoped: ledger.summary('today', 'deepseek-official'),
+  }
+  await ledger.close()
+
+  const reopened = new UsageLedger({ path, now: () => TODAY, retentionDays: 90 })
+  await reopened.open()
+  const after = {
+    all: reopened.summary('all'),
+    scoped: reopened.summary('all', 'deepseek-official'),
+    today: reopened.summary('today'),
+    todayScoped: reopened.summary('today', 'deepseek-official'),
+  }
+  assert.deepEqual(after.all, before.all, 'every total survives the fold: calls, buckets, reasoning, per-currency money')
+  assert.deepEqual(after.scoped, before.scoped)
+  assert.deepEqual(after.today, before.today)
+  assert.deepEqual(after.todayScoped, before.todayScoped)
+
+  const rollups = reopened.entries.filter((entry) => entry.rollup === true)
+  assert.equal(rollups.length, 2, 'one rollup per day and route: the priced flash pair and the unpriced v5 call')
+  const flash = rollups.find((entry) => entry.model === 'deepseek-flash')
+  assert.equal(flash.calls, 3, 'three old flash calls, two CNY and one USD')
+  assert.equal(flash.usage.inputTokens, 3_000)
+  assert.deepEqual(flash.amountMicrosByCurrency, { CNY: 2 * 1_000_000, USD: 500 }, 'amounts stay per currency, summed as integers')
+  assert.equal(rollups.find((entry) => entry.model === 'deepseek-v5').calls, 1)
+  await reopened.close()
+})
+
+test('the retention boundary keeps the newest side, and 0 keeps everything', () => {
+  // A compactable ledger whose oldest fact sits exactly on the boundary.
+  const boundary = TODAY - 90 * DAY
+  const ledger = new UsageLedger({ path: join(tmpdir(), `usage-ledger-boundary-${Math.random()}.json`), now: () => TODAY, retentionDays: 90 })
+  ledger.open()
+  ledger.record(fact({ callId: 'on-boundary', startedAt: boundary }), priced)
+  ledger.record(fact({ callId: 'older', startedAt: boundary - 1 }), priced)
+  const rolled = ledger.compact()
+  assert.equal(rolled.rolled, 1, 'a fact exactly retentionDays old is still raw')
+  assert.ok(ledger.entries.some((entry) => entry.fact?.callId === 'on-boundary'))
+  assert.equal(ledger.compact().rolled, 0, 'compacting twice folds nothing more')
+
+  const forever = new UsageLedger({ path: join(tmpdir(), `usage-ledger-forever-${Math.random()}.json`), now: () => TODAY, retentionDays: 0 })
+  forever.open()
+  forever.record(fact({ callId: 'ancient', startedAt: OLD }), priced)
+  assert.equal(forever.compact().rolled, 0, '0 means every fact stays exactly as it happened')
+})
+
+test('a rolled session loses its detail, and unpriced naming follows the raw window', async () => {
+  const { ledger, path } = await compactableLedger()
+  assert.equal(ledger.sessionSummary('old-session').calls, 4)
+  await ledger.close()
+
+  const reopened = new UsageLedger({ path, now: () => TODAY, retentionDays: 90 })
+  await reopened.open()
+  assert.equal(reopened.sessionSummary('old-session').calls, 0, 'rollups carry no session: detail has the window as its horizon')
+  assert.deepEqual(reopened.unpricedModels(['deepseek-official']), [], 'an old unpriced call is history, not a gap the operator can still close')
+  assert.deepEqual(reopened.summary('all').byModel['deepseek-v5'].calls, 1, 'but its tokens stay in every window total')
+  await reopened.close()
+})
+
+test('a v1 file still loads, and the next write upgrades it', async () => {
+  const path = await ledgerPath()
+  await writeFile(path, JSON.stringify({
+    schemaVersion: 1,
+    updatedAt: 1,
+    entries: [{ callId: 'legacy', fact: fact({ callId: 'legacy' }), quote: priced }],
+  }))
+  const ledger = new UsageLedger({ path, now: () => TODAY, retentionDays: 90 })
+  await ledger.open()
+  assert.equal(ledger.summary('all').calls, 1, 'a v1 file is read exactly as v1 read it')
+  ledger.record(fact({ callId: 'fresh', startedAt: TODAY }), priced)
+  await ledger.flush()
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 2, 'the next write lands as v2')
   await ledger.close()
 })

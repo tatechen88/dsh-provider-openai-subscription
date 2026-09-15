@@ -37,6 +37,11 @@
           # meter makes that is not about the account's own state, and a table that
           # does not parse completely is rejected whole.
           refreshPublicPrices: false
+          # Raw facts older than this many days fold into one rollup per day and
+          # route at startup, so the ledger file stays bounded while every total
+          # survives. Per-session detail keeps this window as its horizon.
+          # 0 keeps every fact exactly as it happened.
+          retentionDays: 90
           # Hide money / balance on shared screens; token counts stay visible.
           hideBalance: false
           hideCost: false

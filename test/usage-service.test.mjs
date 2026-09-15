@@ -338,6 +338,28 @@ test('the configuration exposes exactly the switches the settings page renders',
   // the account's own state, so it stays off unless a deployment asks for it.
   assert.equal(normalizeMeterConfig({}).refreshPublicPrices, false)
   assert.equal(normalizeMeterConfig({ refreshPublicPrices: true }).refreshPublicPrices, true)
+  // The retention window defaults to 90 days and never accepts a negative one.
+  assert.equal(normalizeMeterConfig({}).retentionDays, 90)
+  assert.equal(normalizeMeterConfig({ retentionDays: 7 }).retentionDays, 7)
+  assert.equal(normalizeMeterConfig({ retentionDays: -1 }).retentionDays, 90)
+})
+
+test('a shorter retention window folds old facts as soon as it is set', async () => {
+  const ledger = await openedLedger()
+  const meter = new UsageMeterService({ ledger, now: () => NOW, config: { retentionDays: 90 } })
+  // 100 days before the shared clock: outside a 30-day window, inside 90.
+  const old = Date.UTC(2026, 8, 15, 20, 0) - 100 * 86_400_000
+  meter.recordUsage(fact({ callId: 'ancient', model: 'deepseek-flash', startedAt: old }))
+
+  meter.updateConfig({ retentionDays: 30 })
+  const rollups = ledger.entries.filter((entry) => entry.rollup === true)
+  assert.equal(rollups.length, 1, 'setting the window folds the facts it just cut loose')
+  assert.equal(rollups[0].calls, 1)
+  // The rollup keeps its day, which is not in this month: the total is intact
+  // over the whole ledger, and the month window correctly no longer sees it.
+  assert.equal(ledger.summary('all').calls, 1)
+  assert.equal(meter.view().usage.month.calls, 0)
+  await ledger.close()
 })
 
 /**

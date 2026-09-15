@@ -376,7 +376,11 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
     logger?.warn?.(`${PACKAGE_NAME}: learned price table was ignored (${priceState.reason})`)
   }
 
-  const ledger = new UsageLedger({ path: usageLedgerPath(home), timeZone: resolved.timeZone })
+  const ledger = new UsageLedger({
+    path: usageLedgerPath(home),
+    timeZone: resolved.timeZone,
+    retentionDays: resolved.retentionDays,
+  })
   const passthrough = (_options, next) => next()
   let collector = passthrough
   try {

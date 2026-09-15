@@ -42,6 +42,13 @@ export const DEFAULT_METER_CONFIG = Object.freeze({
    * meter makes that does not answer with the account's own state.
    */
   refreshPublicPrices: false,
+  /**
+   * Raw facts older than this many days are folded into one rollup per day and
+   * route at startup, so the file stays bounded while every window total
+   * survives the fold. Per-session detail keeps this window as its horizon.
+   * 0 keeps every fact exactly as it happened.
+   */
+  retentionDays: 90,
   contractualSchedules: Object.freeze([]),
 })
 
@@ -179,6 +186,9 @@ export function normalizeMeterConfig(raw) {
     deepseekBalance: record.deepseekBalance !== false,
     autoProviders: record.autoProviders !== false,
     refreshPublicPrices: record.refreshPublicPrices === true,
+    retentionDays: Number.isSafeInteger(record.retentionDays) && record.retentionDays >= 0
+      ? record.retentionDays
+      : DEFAULT_METER_CONFIG.retentionDays,
     contractualSchedules: contracts
       .map((entry, index) => toContractualSchedule(entry, index))
       .filter((entry) => entry !== undefined),

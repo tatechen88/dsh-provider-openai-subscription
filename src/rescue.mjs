@@ -100,8 +100,8 @@ async function commandMeter() {
   const ledger = await describeJson(ledgerPath, (parsed) => ({
     schemaVersion: parsed.schemaVersion,
     facts: Array.isArray(parsed.entries) ? parsed.entries.length : undefined,
-    oldestFactAt: Array.isArray(parsed.entries) && parsed.entries.length > 0 ? parsed.entries[0]?.fact?.startedAt : undefined,
-    newestFactAt: Array.isArray(parsed.entries) && parsed.entries.length > 0 ? parsed.entries[parsed.entries.length - 1]?.fact?.startedAt : undefined,
+    oldestFactAt: entryInstant(Array.isArray(parsed.entries) ? parsed.entries[0] : undefined),
+    newestFactAt: entryInstant(Array.isArray(parsed.entries) ? parsed.entries[parsed.entries.length - 1] : undefined),
     // The models a price table does not cover yet, so a newly shipped model is
     // something the operator can see here instead of guessing from a bare count.
     unpricedModels: unpricedFromEntries(parsed.entries, PRICED_PROVIDER_IDS),
@@ -123,6 +123,19 @@ async function commandMeter() {
     retiredCostMeterLedger: { path: legacyPath, present: await exists(legacyPath), note: 'read by this plugin: never' },
     note: 'Read-only report: no ledger entry, credential or account number is printed.',
   }, null, 2))
+}
+
+/**
+ * When an entry's calls happened. A rollup states the instant directly; a raw
+ * entry carries it on its fact.
+ * @param {unknown} entry
+ * @returns {number|undefined}
+ */
+function entryInstant(entry) {
+  if (entry === null || typeof entry !== 'object') return undefined
+  if (entry.rollup === true) return entry.startedAt
+  const fact = entry.fact
+  return fact === null || typeof fact !== 'object' ? undefined : fact.startedAt
 }
 
 /**

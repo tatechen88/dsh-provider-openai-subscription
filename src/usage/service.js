@@ -174,8 +174,11 @@ export class UsageMeterService {
   updateConfig(raw) {
     this.config = normalizeMeterConfig(raw)
     // "Today" and "month" are calendar windows, so the ledger follows a
-    // time-zone change at once instead of at the next start.
+    // time-zone change at once instead of at the next start. The retention
+    // window is the same kind of setting: a shorter one folds at once.
     this.ledger.timeZone = this.config.timeZone
+    this.ledger.retentionDays = this.config.retentionDays
+    this.ledger.compact()
     this.generation += 1
     return this.config
   }

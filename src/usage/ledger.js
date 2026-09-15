@@ -17,7 +17,16 @@ import { dirname } from 'node:path'
 import { addBuckets, emptyBuckets, promptTokensOf, validateUsageFact } from './types.js'
 
 /** Storage schema revision; a successor reads older files through a migration. */
-export const USAGE_LEDGER_SCHEMA_VERSION = 1
+export const USAGE_LEDGER_SCHEMA_VERSION = 2
+
+/**
+ * File versions this build reads.
+ *
+ * A v2 file may hold rollup entries alongside raw ones; a v1 file holds only raw
+ * facts, which every v2 rule reads exactly as v1 did. Anything else is preserved
+ * beside the file and raised, never overwritten.
+ */
+const READABLE_SCHEMA_VERSIONS = Object.freeze([1, USAGE_LEDGER_SCHEMA_VERSION])
 
 /** Facts retained before the oldest are dropped. */
 export const USAGE_LEDGER_MAX_FACTS = 20_000
@@ -71,6 +80,7 @@ export function calendarKey(atMs, timeZone = 'system') {
 function aggregate(entries) {
   const usage = emptyBuckets()
   let reasoningTokens = 0
+  let calls = 0
   // Provider, model and currency all reach these maps as keys, and all three
   // come from upstream data: a null prototype keeps `__proto__` an ordinary key
   // instead of the prototype of every bucket.
@@ -81,30 +91,31 @@ function aggregate(entries) {
   /** @type {Record<string, {calls: number, usage: object, amountMicros: Record<string, number>}>} */
   const byModel = Object.create(null)
   for (const entry of entries) {
-    const fact = entry.fact
-    const merged = addBuckets(usage, fact.usage)
+    const factUsage = entryUsageOf(entry)
+    const merged = addBuckets(usage, factUsage)
     usage.inputTokens = merged.inputTokens
     usage.cacheReadTokens = merged.cacheReadTokens
     usage.cacheWriteTokens = merged.cacheWriteTokens
     usage.outputTokens = merged.outputTokens
-    reasoningTokens += fact.usage.reasoningTokens ?? 0
-    const currency = entry.quote?.currency
-    if (entry.quote?.status === 'priced' && typeof currency === 'string' && Number.isFinite(entry.quote.amountMicros)) {
-      byCurrency[currency] = (byCurrency[currency] ?? 0) + entry.quote.amountMicros
+    reasoningTokens += factUsage.reasoningTokens ?? 0
+    calls += entryCalls(entry)
+    const amounts = entryAmounts(entry)
+    for (const [currency, micros] of Object.entries(amounts)) {
+      byCurrency[currency] = (byCurrency[currency] ?? 0) + micros
     }
-    for (const [key, bucket] of [[fact.provider, byProvider], [fact.model, byModel]]) {
+    for (const [key, bucket] of [[entryProvider(entry), byProvider], [entryModel(entry), byModel]]) {
       const slot = bucket[key] ?? { calls: 0, usage: emptyBuckets(), amountMicros: {} }
-      slot.calls += 1
-      const next = addBuckets(slot.usage, fact.usage)
+      slot.calls += entryCalls(entry)
+      const next = addBuckets(slot.usage, factUsage)
       slot.usage = next
-      if (entry.quote?.status === 'priced' && typeof currency === 'string') {
-        slot.amountMicros[currency] = (slot.amountMicros[currency] ?? 0) + entry.quote.amountMicros
+      for (const [currency, micros] of Object.entries(amounts)) {
+        slot.amountMicros[currency] = (slot.amountMicros[currency] ?? 0) + micros
       }
       bucket[key] = slot
     }
   }
   return {
-    calls: entries.length,
+    calls,
     usage: { ...usage, reasoningTokens, promptTokens: promptTokensOf(usage) },
     // Ordinary objects on the way out. The null prototype above exists to keep
     // the lookups safe while keys arrive; callers compare and serialize these
@@ -127,22 +138,86 @@ function aggregate(entries) {
  */
 function ofProvider(entries, provider) {
   if (typeof provider !== 'string' || provider.length === 0) return entries
-  return entries.filter((entry) => entry.fact.provider === provider)
+  return entries.filter((entry) => entryProvider(entry) === provider)
+}
+
+/**
+ * Field accessors over the two entry shapes.
+ *
+ * A raw entry is `{ fact, quote }` as the collector produced it. A rollup is the
+ * compaction of many raw entries into one day of one route: it states its totals
+ * directly instead of carrying a fact that never happened, and it carries no
+ * quote — pricing already happened per call before the fold.
+ * @param {object} entry
+ * @returns {number}
+ */
+function entryStartedAt(entry) {
+  return entry.rollup === true ? entry.startedAt : entry.fact.startedAt
+}
+
+/** @param {object} entry */
+function entryProvider(entry) {
+  return entry.rollup === true ? entry.provider : entry.fact.provider
+}
+
+/** @param {object} entry */
+function entryModel(entry) {
+  return entry.rollup === true ? entry.model : entry.fact.model
+}
+
+/** @param {object} entry */
+function entryCalls(entry) {
+  return entry.rollup === true ? entry.calls : 1
+}
+
+/** @param {object} entry */
+function entryUsageOf(entry) {
+  return entry.rollup === true ? entry.usage : entry.fact.usage
+}
+
+/**
+ * Amounts one entry contributes, per currency in integer micro units.
+ * @param {object} entry
+ * @returns {Record<string, number>}
+ */
+function entryAmounts(entry) {
+  if (entry.rollup === true) return entry.amountMicrosByCurrency ?? {}
+  const quote = entry.quote
+  if (quote?.status !== 'priced' || typeof quote.currency !== 'string' || !Number.isFinite(quote.amountMicros)) return {}
+  return { [quote.currency]: quote.amountMicros }
 }
 
 /**
  * Whether one stored entry can be read back.
  *
  * `aggregate` reads the fact's token buckets and the quote's status, so an
- * entry missing either fails every later summary rather than one call.
+ * entry missing either fails every later summary rather than one call. A rollup
+ * is read by its own contract instead, because it states totals rather than a
+ * fact that never happened.
  * @param {unknown} entry
  * @returns {boolean}
  */
 function isReadableEntry(entry) {
   if (entry === null || typeof entry !== 'object') return false
+  if (entry.rollup === true) return isReadableRollup(entry)
   const candidate = /** @type {{fact?: unknown, quote?: unknown}} */ (entry)
   if (candidate.quote === null || typeof candidate.quote !== 'object') return false
   return validateUsageFact(candidate.fact).ok
+}
+
+/**
+ * Whether a stored rollup carries everything a summary reads.
+ * @param {object} entry
+ * @returns {boolean}
+ */
+function isReadableRollup(entry) {
+  return typeof entry.day === 'string'
+    && typeof entry.provider === 'string'
+    && typeof entry.model === 'string'
+    && Number.isFinite(entry.startedAt)
+    && Number.isSafeInteger(entry.calls) && entry.calls > 0
+    && entry.usage !== null && typeof entry.usage === 'object'
+    && entry.amountMicrosByCurrency !== null && typeof entry.amountMicrosByCurrency === 'object'
 }
 
 /** Ledger for the built-in usage meter. */
@@ -153,12 +228,15 @@ export class UsageLedger {
    * @param {() => number} [options.now]
    * @param {number} [options.debounceMs]
    * @param {string} [options.timeZone] - 'system' | 'UTC' | 'Asia/Shanghai'.
+   * @param {number} [options.retentionDays] - raw facts older than this many days
+   *   are folded into day rollups at open; 0 keeps every fact as it happened.
    */
-  constructor({ path, now = Date.now, debounceMs = USAGE_LEDGER_DEBOUNCE_MS, timeZone = 'system' }) {
+  constructor({ path, now = Date.now, debounceMs = USAGE_LEDGER_DEBOUNCE_MS, timeZone = 'system', retentionDays = 0 }) {
     this.path = path
     this.now = now
     this.debounceMs = debounceMs
     this.timeZone = timeZone
+    this.retentionDays = retentionDays
     /** @type {object[]} */
     this.entries = []
     /** @type {Map<string, object>} */
@@ -169,6 +247,11 @@ export class UsageLedger {
     /** Names temp files, so two writes in one millisecond cannot collide. */
     this.writeSequence = 0
     this.closed = false
+    /**
+     * Bumped whenever the entries change. The service caches its view slices on
+     * this counter instead of re-reading the whole ledger on every poll.
+     */
+    this.mutations = 0
   }
 
   /**
@@ -198,7 +281,7 @@ export class UsageLedger {
       )
     }
     const version = parsed.schemaVersion
-    if (version !== USAGE_LEDGER_SCHEMA_VERSION) {
+    if (!READABLE_SCHEMA_VERSIONS.includes(version)) {
       const backupPath = `${this.path}.v${String(version)}-${this.now()}`
       await rename(this.path, backupPath)
       throw new UsageLedgerCorruptError(
@@ -218,19 +301,95 @@ export class UsageLedger {
           backupPath,
         )
       }
-      const callId = entry.fact.callId
-      // A duplicate call id means two writers appended the same call. The later
-      // entry wins, which is what re-recording it would have done.
-      const existing = this.byCallId.get(callId)
-      if (existing !== undefined) this.entries.splice(this.entries.indexOf(existing), 1)
-      this.entries.push(entry)
-      this.byCallId.set(callId, entry)
-      while (this.entries.length > USAGE_LEDGER_MAX_FACTS) {
-        const dropped = this.entries.shift()
-        if (this.byCallId.get(dropped.fact.callId) === dropped) this.byCallId.delete(dropped.fact.callId)
+      if (entry.rollup === true) {
+        // A rollup states its own identity; it never takes part in the call-id
+        // map, because no real call id can collide with it and none should be
+        // silently dropped for looking like one.
+        this.entries.push(entry)
+      } else {
+        const callId = entry.fact.callId
+        // A duplicate call id means two writers appended the same call. The later
+        // entry wins, which is what re-recording it would have done.
+        const existing = this.byCallId.get(callId)
+        if (existing !== undefined) this.entries.splice(this.entries.indexOf(existing), 1)
+        this.entries.push(entry)
+        this.byCallId.set(callId, entry)
       }
+      while (this.entries.length > USAGE_LEDGER_MAX_FACTS) this.#dropOldest()
     }
+    this.mutations += 1
+    // Compaction runs here rather than on a timer so it never competes with a
+    // write: the fold is pure array work, and the rewritten file follows through
+    // the ordinary debounced write.
+    this.compact()
     return { facts: this.entries.length }
+  }
+
+  /**
+   * Drop the oldest entry, keeping the call-id map consistent with what leaves.
+   */
+  #dropOldest() {
+    const dropped = this.entries.shift()
+    if (dropped.fact !== undefined && this.byCallId.get(dropped.fact.callId) === dropped) {
+      this.byCallId.delete(dropped.fact.callId)
+    }
+  }
+
+  /**
+   * Fold raw facts older than the retention window into one rollup per day and
+   * route.
+   *
+   * Dropping old facts would silently rewrite the totals the windows report, so
+   * they are folded instead: token buckets and per-currency amounts are summed,
+   * and the windows only ever add those, so every total survives the fold
+   * exactly. A rollup carries no session, so per-session detail is the one thing
+   * that keeps the retention window as its horizon. Running twice folds nothing
+   * the second time: rollups are skipped by their own marker.
+   * @returns {{rolled: number}} how many raw facts were folded.
+   */
+  compact() {
+    if (this.retentionDays <= 0) return { rolled: 0 }
+    const cutoff = this.now() - this.retentionDays * 86_400_000
+    const groups = new Map()
+    const kept = []
+    let rolled = 0
+    for (const entry of this.entries) {
+      if (entry.rollup === true || entryStartedAt(entry) >= cutoff) {
+        kept.push(entry)
+        continue
+      }
+      rolled += 1
+      const day = calendarKey(entryStartedAt(entry), this.timeZone).day
+      const key = `${day}\u0000${entryProvider(entry)}\u0000${entryModel(entry)}`
+      const group = groups.get(key) ?? {
+        rollup: true,
+        day,
+        provider: entryProvider(entry),
+        model: entryModel(entry),
+        // Noon UTC lands on the folded day in every zone this build supports
+        // (UTC, Asia/Shanghai, or a local offset from −12 to +11), so the
+        // rollup is bucketed back into the day it summarizes.
+        startedAt: Date.parse(`${day}T12:00:00Z`),
+        usage: emptyBuckets(),
+        amountMicrosByCurrency: {},
+        calls: 0,
+      }
+      group.usage = addBuckets(group.usage, entryUsageOf(entry))
+      for (const [currency, micros] of Object.entries(entryAmounts(entry))) {
+        group.amountMicrosByCurrency[currency] = (group.amountMicrosByCurrency[currency] ?? 0) + micros
+      }
+      group.calls += entryCalls(entry)
+      groups.set(key, group)
+    }
+    if (rolled === 0) return { rolled: 0 }
+    this.entries = [...groups.values(), ...kept].sort((left, right) => entryStartedAt(left) - entryStartedAt(right))
+    this.byCallId.clear()
+    for (const entry of this.entries) {
+      if (entry.fact !== undefined) this.byCallId.set(entry.fact.callId, entry)
+    }
+    this.mutations += 1
+    this.schedule()
+    return { rolled }
   }
 
   /**
@@ -245,12 +404,8 @@ export class UsageLedger {
     const entry = { fact, quote }
     this.entries.push(entry)
     this.byCallId.set(fact.callId, entry)
-    while (this.entries.length > USAGE_LEDGER_MAX_FACTS) {
-      const dropped = this.entries.shift()
-      // Only forget the call id when the map still points at this entry: a
-      // duplicate appended later must stay recordable as itself.
-      if (this.byCallId.get(dropped.fact.callId) === dropped) this.byCallId.delete(dropped.fact.callId)
-    }
+    while (this.entries.length > USAGE_LEDGER_MAX_FACTS) this.#dropOldest()
+    this.mutations += 1
     this.schedule()
     return true
   }
@@ -328,13 +483,16 @@ export class UsageLedger {
       parsed = undefined
     }
     if (parsed === null || typeof parsed !== 'object' || !Array.isArray(parsed.entries)
-      || parsed.schemaVersion !== USAGE_LEDGER_SCHEMA_VERSION) {
+      || !READABLE_SCHEMA_VERSIONS.includes(parsed.schemaVersion)) {
       await rename(this.path, `${this.path}.corrupt-${this.now()}`)
       return
     }
-    const known = new Set(this.entries.map((entry) => entry.fact.callId))
+    // Rollups are each instance's own fold: a foreign one would duplicate this
+    // instance's on the next compaction, so only raw facts merge.
+    const known = new Set(this.entries.filter((entry) => entry.fact !== undefined).map((entry) => entry.fact.callId))
     const foreign = []
     for (const entry of parsed.entries) {
+      if (entry.rollup === true) continue
       if (!isReadableEntry(entry) || known.has(entry.fact.callId)) continue
       foreign.push(entry)
     }
@@ -342,10 +500,8 @@ export class UsageLedger {
     // Their facts happened before ours was the newest, so they lead the list.
     this.entries = [...foreign, ...this.entries]
     for (const entry of foreign) this.byCallId.set(entry.fact.callId, entry)
-    while (this.entries.length > USAGE_LEDGER_MAX_FACTS) {
-      const dropped = this.entries.shift()
-      if (this.byCallId.get(dropped.fact.callId) === dropped) this.byCallId.delete(dropped.fact.callId)
-    }
+    while (this.entries.length > USAGE_LEDGER_MAX_FACTS) this.#dropOldest()
+    this.mutations += 1
   }
 
   /**
@@ -377,7 +533,10 @@ export class UsageLedger {
    * @returns {object}
    */
   sessionSummary(sessionId, provider) {
-    return aggregate(ofProvider(this.entries, provider).filter((entry) => entry.fact.sessionId === sessionId))
+    // A rollup states no session: per-session detail keeps the retention window
+    // as its horizon, which is the one thing compaction costs.
+    return aggregate(ofProvider(this.entries, provider)
+      .filter((entry) => entry.fact !== undefined && entry.fact.sessionId === sessionId))
   }
 
   /**
@@ -393,7 +552,7 @@ export class UsageLedger {
     const key = calendarKey(now, this.timeZone)
     const field = range === 'month' ? 'month' : 'day'
     const wanted = key[field]
-    return aggregate(scoped.filter((entry) => calendarKey(entry.fact.startedAt, this.timeZone)[field] === wanted))
+    return aggregate(scoped.filter((entry) => calendarKey(entryStartedAt(entry), this.timeZone)[field] === wanted))
   }
 
   /**
@@ -403,7 +562,7 @@ export class UsageLedger {
    * @returns {object[]}
    */
   sessionFacts(sessionId) {
-    return this.entries.filter((entry) => entry.fact.sessionId === sessionId)
+    return this.entries.filter((entry) => entry.fact !== undefined && entry.fact.sessionId === sessionId)
   }
 
   /**
@@ -423,17 +582,19 @@ export class UsageLedger {
     for (const entry of this.entries) {
       const quote = entry.quote
       if (quote === null || typeof quote !== 'object' || quote.status !== 'unpriced') continue
-      if (wanted !== undefined && !wanted.has(entry.fact.provider)) continue
-      const key = `${entry.fact.provider}\u0000${entry.fact.model}`
+      const provider = entryProvider(entry)
+      const model = entryModel(entry)
+      if (wanted !== undefined && !wanted.has(provider)) continue
+      const key = `${provider}\u0000${model}`
       const current = seen.get(key) ?? {
-        provider: entry.fact.provider,
-        model: entry.fact.model,
+        provider,
+        model,
         calls: 0,
         lastSeenAt: 0,
         reason: quote.reason,
       }
-      current.calls += 1
-      current.lastSeenAt = Math.max(current.lastSeenAt, entry.fact.startedAt ?? 0)
+      current.calls += entryCalls(entry)
+      current.lastSeenAt = Math.max(current.lastSeenAt, entryStartedAt(entry))
       seen.set(key, current)
     }
     return [...seen.values()].sort((left, right) => right.calls - left.calls || left.model.localeCompare(right.model))
