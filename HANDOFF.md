@@ -19,6 +19,10 @@
 ## 最近在做什么
 
 ```
+54b7284 2026-09-15 feat: show the GLM plan and packages in the meter
+7aa4cff 2026-09-15 feat: keep an account reading behind its lifecycle slot
+ff42839 2026-09-15 feat: read the Zhipu account through its own station
+172677f 2026-09-15 feat: register the metered vendors in one table
 c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon when narrow
 25221a5 2026-09-15 feat: show the sidebar meter as an icon that opens its data on click
 907a59a 2026-09-15 feat: reduce the meter settings to the display currency
@@ -26,9 +30,24 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 eedd2c0 2026-09-15 feat: read the DeepSeek balance on demand and expose its switch
 ```
 
+### 智谱 GLM（本轮）
+
+指示器多跟一家厂商：**智谱 GLM**（pi-ai 的 `zai-coding-cn` 路由，模型如 `glm-5.3`）。四段实现各自独立提交，任何一段都可以单独回退：
+
+1. **`usage/vendors.js`——厂商注册表。** 厂商 id、Provider 代号、价格表 id（GLM 留空）、支持的读数类型集中在一处，`METERED_PROVIDERS` 由它派生。模块不 import 任何东西，因为价格解析要 import 它，反过来会成环。
+2. **`usage/zhipu-account.js`——账号读数。** 主机与认证方式按 Provider 代号选：中国站 `open.bigmodel.cn` 的用量端点用**原始 Key**，其余端点用 `Bearer`；国际站 `api.z.ai` 是另一条记录，目前没有客户端入口。
+3. **`usage/reading-slot.js` + 接线。** TTL、单飞、按上次**尝试**时刻计时（失败也退避）、世代守卫、失败保留上次成功读数——两家厂商共用。`view({sessionId, provider})` 收到厂商提示才触发那一家的到期刷新，所以切到别的 Provider 不会白查一个账号。
+4. **客户端与文档。** 桌面一行 `GLM 余 14M · 今日 1.2M`，卡片列出 Coding Plan 窗口、现金余额、每个资源包（名称、剩余、模型范围、到期日）。`meterUsageUrl()` 把 `provider` 提示带进读请求，`sessionUsageLine` 的标签在 GLM 会话里是 `GLM`。
+
+三条口径值得记住：**业务性拒绝不是 0**（「当前用户不存在 coding plan」是 HTTP 200 + `code:500`，卡片照抄官方措辞）；**空字符串余额不是 0**；**GLM 只计量不计价**（订阅制没有按 token 价格，台账里永远是 `unpriced` / `no-schedule`，DeepSeek 的价格表绝不给它计价——有测试守着）。全量失败时加载器**抛错**而不是返回空快照，否则会把上一次成功读数抹掉。
+
+本机实测（该部署的账号）：两个站点都答「无 coding plan」，现金 `availableBalance=0`、`totalSpendAmount=0`，5 个 `EFFECTIVE` 资源包（2M 通用、6M glm-4.6v、12M glm-4.5-air、20 次图片/视频、100 次搜索，均 2026-11-27 到期），`tokenBalance === tokensMagnitude`（未消耗）。凭据在 `.credentials.yaml` 的 `ZAI_CODING_CN_API_KEY`，**不在进程环境**，所以必须走 `ctx.credentials`；解析顺序是设置里的 `llm-pi-ai.providers['zai-coding-cn'].apiKeyEnv` → `ZAI_CODING_CN_API_KEY` → 进程环境。
+
+仍未接的两处（都留着测试驱动，不是忘记）：`POST /meter/deepseek/refresh` 与 `POST /meter/zhipu/refresh` 没有客户端调用者，界面靠轮询 + TTL 自刷新；国际站 `zai` 路由需要自己的凭据引用还没有条目。
+
 侧栏指示器**按视口宽度自适应**（阈值 `NARROW_VIEWPORT_PX = 640`）：
 
-- **桌面宽度（≥ 640px）直接显示文字摘要** —— DeepSeek 是 `DeepSeek ¥余额 · 今日 ¥消费`，OpenAI 是各额度窗口剩余百分比。使用者不用点就能看到花掉多少、还剩多少。
+- **桌面宽度（≥ 640px）直接显示文字摘要** —— DeepSeek 是 `DeepSeek ¥余额 · 今日 ¥消费`，OpenAI 是各额度窗口剩余百分比，GLM 是 `GLM 余 14M · 今日 1.2M`（资源包剩余 token + 今日用量）。使用者不用点就能看到花掉多少、还剩多少。
 - **手机宽度 / 远程接入（< 640px）收成一个内联 SVG 图标**（无字体依赖），点击在图标上方展开数据卡片；卡片按视口夹取、`whiteSpace: normal` 换行，Esc / 再点 / × 都能收起。
 - 窗口 resize 即时切换，无需刷新；两种渲染都可拖拽并持久化位置，双击复位，拖拽后的一次点击不会误触发卡片（靠 `dragRef.moved` 判定）。
 - 卡片与悬停提示共用 `indicatorDetails()`（`indicatorTooltip()` 现在只是它的 `.join(' · ')`），单一来源所以两者不会矛盾。
