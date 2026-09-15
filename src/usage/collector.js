@@ -46,7 +46,10 @@ export function createUsageCollector({ record, now = Date.now, createCallId = cr
   const metered = new Set(providers)
 
   return (options, next) => {
-    const downstream = next()
+    // Dispatch runs inside the marker as well: a router that starts another
+    // ctx.llm.stream() while building the chain — not while pulling it — is the
+    // same nested call, and metering it again would bill those tokens twice.
+    const downstream = meteredDepth.run(true, () => next())
     // A nested call inside an already-metered stream belongs to the outer
     // record; wrapping it again would bill the same tokens twice.
     if (meteredDepth.getStore() !== undefined) return downstream

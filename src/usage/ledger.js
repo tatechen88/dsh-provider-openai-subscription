@@ -14,7 +14,7 @@
 
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { addBuckets, emptyBuckets, promptTokensOf } from './types.js'
+import { addBuckets, emptyBuckets, promptTokensOf, validateUsageFact } from './types.js'
 
 /** Storage schema revision; a successor reads older files through a migration. */
 export const USAGE_LEDGER_SCHEMA_VERSION = 1
@@ -71,12 +71,15 @@ export function calendarKey(atMs, timeZone = 'system') {
 function aggregate(entries) {
   const usage = emptyBuckets()
   let reasoningTokens = 0
+  // Provider, model and currency all reach these maps as keys, and all three
+  // come from upstream data: a null prototype keeps `__proto__` an ordinary key
+  // instead of the prototype of every bucket.
   /** @type {Record<string, number>} */
-  const byCurrency = {}
+  const byCurrency = Object.create(null)
   /** @type {Record<string, {calls: number, usage: object, amountMicros: Record<string, number>}>} */
-  const byProvider = {}
+  const byProvider = Object.create(null)
   /** @type {Record<string, {calls: number, usage: object, amountMicros: Record<string, number>}>} */
-  const byModel = {}
+  const byModel = Object.create(null)
   for (const entry of entries) {
     const fact = entry.fact
     const merged = addBuckets(usage, fact.usage)
@@ -103,10 +106,28 @@ function aggregate(entries) {
   return {
     calls: entries.length,
     usage: { ...usage, reasoningTokens, promptTokens: promptTokensOf(usage) },
-    amountMicrosByCurrency: byCurrency,
-    byProvider,
-    byModel,
+    // Ordinary objects on the way out. The null prototype above exists to keep
+    // the lookups safe while keys arrive; callers compare and serialize these
+    // maps as plain records.
+    amountMicrosByCurrency: { ...byCurrency },
+    byProvider: { ...byProvider },
+    byModel: { ...byModel },
   }
+}
+
+/**
+ * Whether one stored entry can be read back.
+ *
+ * `aggregate` reads the fact's token buckets and the quote's status, so an
+ * entry missing either fails every later summary rather than one call.
+ * @param {unknown} entry
+ * @returns {boolean}
+ */
+function isReadableEntry(entry) {
+  if (entry === null || typeof entry !== 'object') return false
+  const candidate = /** @type {{fact?: unknown, quote?: unknown}} */ (entry)
+  if (candidate.quote === null || typeof candidate.quote !== 'object') return false
+  return validateUsageFact(candidate.fact).ok
 }
 
 /** Ledger for the built-in usage meter. */
@@ -171,10 +192,28 @@ export class UsageLedger {
       )
     }
     for (const entry of parsed.entries) {
-      if (entry === null || typeof entry !== 'object' || entry.fact === null || typeof entry.fact !== 'object') continue
-      if (typeof entry.fact.callId !== 'string') continue
+      // An entry that cannot be summed would turn every later summary into a
+      // failed request, and the file would be written back with it. One bad
+      // entry therefore quarantines the ledger, exactly like a bad document.
+      if (!isReadableEntry(entry)) {
+        const backupPath = `${this.path}.corrupt-${this.now()}`
+        await rename(this.path, backupPath)
+        throw new UsageLedgerCorruptError(
+          `usage ledger at ${this.path} holds an unreadable entry; it was preserved at ${backupPath}`,
+          backupPath,
+        )
+      }
+      const callId = entry.fact.callId
+      // A duplicate call id means two writers appended the same call. The later
+      // entry wins, which is what re-recording it would have done.
+      const existing = this.byCallId.get(callId)
+      if (existing !== undefined) this.entries.splice(this.entries.indexOf(existing), 1)
       this.entries.push(entry)
-      this.byCallId.set(entry.fact.callId, entry)
+      this.byCallId.set(callId, entry)
+      while (this.entries.length > USAGE_LEDGER_MAX_FACTS) {
+        const dropped = this.entries.shift()
+        if (this.byCallId.get(dropped.fact.callId) === dropped) this.byCallId.delete(dropped.fact.callId)
+      }
     }
     return { facts: this.entries.length }
   }
@@ -193,7 +232,9 @@ export class UsageLedger {
     this.byCallId.set(fact.callId, entry)
     while (this.entries.length > USAGE_LEDGER_MAX_FACTS) {
       const dropped = this.entries.shift()
-      this.byCallId.delete(dropped.fact.callId)
+      // Only forget the call id when the map still points at this entry: a
+      // duplicate appended later must stay recordable as itself.
+      if (this.byCallId.get(dropped.fact.callId) === dropped) this.byCallId.delete(dropped.fact.callId)
     }
     this.schedule()
     return true

@@ -16,6 +16,15 @@ import { PROVIDER_ID } from '../constants.js'
 export const MAX_BODY_BYTES = 4096
 
 /**
+ * Byte cap for the settings route.
+ *
+ * It carries the whole configuration, including every contractual model entry,
+ * so the small-mutation cap rejects a legitimate agreement list — four models
+ * over ten bands already exceed 4 KiB.
+ */
+export const SETTINGS_BODY_BYTES = 65_536
+
+/**
  * Write a JSON response with no-store caching.
  * @param {import('node:http').ServerResponse} response
  * @param {number} status
@@ -61,15 +70,17 @@ export function sameOrigin(request) {
 /**
  * Read a bounded JSON request body.
  * @param {import('node:http').IncomingMessage} request
+ * @param {number} [limit] - byte cap; the small-mutation default suits every
+ *   route except settings, which carries the whole configuration.
  * @returns {Promise<Record<string, unknown>>}
  */
-export async function readJsonBody(request) {
+export async function readJsonBody(request, limit = MAX_BODY_BYTES) {
   const chunks = []
   let total = 0
   for await (const chunk of request) {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
     total += bytes.byteLength
-    if (total > MAX_BODY_BYTES) {
+    if (total > limit) {
       const error = new Error('request body too large')
       error.code = 'body-too-large'
       throw error
@@ -316,25 +327,37 @@ export function mountRoutes(host, deps) {
     if (settings !== undefined) {
       route(['GET', 'PATCH'], '/meter/settings', async (request, response) => {
         if (request.method === 'GET') {
-          sendJson(response, 200, { ok: true, data: { revision: settings.revision, config: settings.resolved() } })
+          // The editable view, not the resolved one: contract prices have to
+          // reach the editor in the units the user wrote them in.
+          sendJson(response, 200, { ok: true, data: { revision: settings.revision, config: settings.editable() } })
           return
         }
-        const body = await readJsonBody(request)
-        const expectedRevision = Number.isSafeInteger(body.expectedRevision) ? body.expectedRevision : undefined
+        const body = await readJsonBody(request, SETTINGS_BODY_BYTES)
+        // The revision is the only protection against two tabs overwriting each
+        // other, so a missing or mistyped one is refused instead of being read
+        // as "replace whatever is stored".
+        if (!Number.isSafeInteger(body.expectedRevision)) {
+          sendJson(response, 400, { ok: false, error: 'expectedRevision must be a safe integer' })
+          return
+        }
         const patch = body.patch !== null && typeof body.patch === 'object' && !Array.isArray(body.patch) ? body.patch : undefined
         if (patch === undefined) {
           sendJson(response, 400, { ok: false, error: 'patch must be an object' })
           return
         }
         try {
-          const result = await settings.update(patch, expectedRevision)
+          const result = await settings.update(patch, body.expectedRevision)
           // A degraded meter has no service to reconfigure; the settings still
-          // persist so the next start picks them up.
-          service?.updateConfig?.(result.config)
-          sendJson(response, 200, { ok: true, data: result })
+          // persist so the next start picks them up. The service takes the raw
+          // layer, because normalizing it is the service's own step.
+          service?.updateConfig?.(result.raw)
+          sendJson(response, 200, { ok: true, data: { revision: result.revision, config: settings.editable() } })
         } catch (error) {
-          if (/** @type {{code?: string}} */ (error).code === 'settings-conflict') {
-            sendJson(response, 409, { ok: false, error: safeError(error) })
+          const failure = /** @type {{code?: string, actualRevision?: number}} */ (error)
+          if (failure.code === 'settings-conflict') {
+            // Returning the current revision lets the caller retry without a
+            // second round trip; otherwise it keeps sending the stale one.
+            sendJson(response, 409, { ok: false, error: safeError(error), actualRevision: failure.actualRevision })
             return
           }
           throw error

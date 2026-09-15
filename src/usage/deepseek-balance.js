@@ -147,27 +147,37 @@ export async function fetchDeepSeekBalance({
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   timer.unref?.()
-  let response
   try {
-    response = await fetchImpl(endpoint, {
-      method: 'GET',
-      headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' },
-      signal: controller.signal,
-      redirect: 'error',
+    let response
+    try {
+      response = await fetchImpl(endpoint, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' },
+        signal: controller.signal,
+        redirect: 'error',
+      })
+    } catch (error) {
+      const aborted = error !== null && typeof error === 'object' && error.name === 'AbortError'
+      throw new DeepSeekBalanceError(
+        aborted ? 'timeout' : 'network',
+        `DeepSeek balance request failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+    if (!response.ok) {
+      throw new DeepSeekBalanceError('http', `DeepSeek balance returned HTTP ${response.status}`)
+    }
+    // The timeout has to cover the body as well: a server that sends headers and
+    // then stalls would otherwise hold the single-flight refresh open for every
+    // caller until the runtime's much longer default expires.
+    const body = await response.json().catch((error) => {
+      if (error !== null && typeof error === 'object' && error.name === 'AbortError') {
+        throw new DeepSeekBalanceError('timeout', `DeepSeek balance body timed out after ${timeoutMs}ms`)
+      }
+      return undefined
     })
-  } catch (error) {
-    const aborted = error !== null && typeof error === 'object' && error.name === 'AbortError'
-    throw new DeepSeekBalanceError(
-      aborted ? 'timeout' : 'network',
-      `DeepSeek balance request failed: ${error instanceof Error ? error.message : String(error)}`,
-    )
+    const normalized = normalizeBalanceInfos(body)
+    return { ...normalized, fetchedAt: now() }
   } finally {
     clearTimeout(timer)
   }
-  if (!response.ok) {
-    throw new DeepSeekBalanceError('http', `DeepSeek balance returned HTTP ${response.status}`)
-  }
-  const body = await response.json().catch(() => undefined)
-  const normalized = normalizeBalanceInfos(body)
-  return { ...normalized, fetchedAt: now() }
 }

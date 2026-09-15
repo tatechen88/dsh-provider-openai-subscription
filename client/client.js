@@ -365,9 +365,12 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       cache: 'no-store',
     })
     const payload = await response.json().catch(() => ({}))
-    if (!response.ok) {
+    // A degraded route answers 200 with `ok:false` instead of failing the
+    // request, so the status alone cannot decide that a call succeeded.
+    if (!response.ok || (payload && payload.ok === false)) {
       const error = new Error(payload && payload.error ? payload.error : `HTTP ${response.status}`)
       error.status = response.status
+      error.payload = payload
       throw error
     }
     return payload
@@ -1005,12 +1008,28 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const patch = (next) => setDraft({ ...draft, ...next })
     const save = async () => {
       try {
-        const payload = await patchJson(API.meterSettings, { patch: draft, expectedRevision: state.revision })
+        // Only what changed: sending the whole editable configuration back
+        // would copy today's composition defaults into the user layer, after
+        // which editing the composition would stop having any effect.
+        const changes = {}
+        for (const [key, value] of Object.entries(draft)) {
+          if (JSON.stringify(state.config[key]) !== JSON.stringify(value)) changes[key] = value
+        }
+        if (Object.keys(changes).length === 0) {
+          setNotice('saved')
+          return
+        }
+        const payload = await patchJson(API.meterSettings, { patch: changes, expectedRevision: state.revision })
         setState({ revision: payload.data.revision, config: payload.data.config })
         setDraft(payload.data.config)
         setContracts(JSON.stringify(payload.data.config.contractualSchedules ?? [], null, 2))
         setNotice('saved')
       } catch (error) {
+        // A conflict leaves this panel holding a revision the store has already
+        // moved past. Adopting the current one is what makes a retry work;
+        // without it every later save conflicts for the same reason.
+        const actualRevision = error && error.payload ? error.payload.actualRevision : undefined
+        if (Number.isSafeInteger(actualRevision)) setState({ revision: actualRevision, config: state.config })
         // A conflict or a rejected value is something the user must see; a
         // silent failure would look like the save worked.
         setNotice(messageOf(error))

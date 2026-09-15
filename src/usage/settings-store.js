@@ -46,6 +46,12 @@ export class MeterSettingsStore {
     /** Raw user layer, exactly as stored. */
     this.user = {}
     this.revision = 0
+    /** Serializes writes, so two revisions cannot rename over each other. */
+    this.writeChain = undefined
+    /** Names temp files, so two writes in one millisecond cannot collide. */
+    this.writeSequence = 0
+    /** Schema version found on disk when this build cannot read it. */
+    this.foreignVersion = undefined
   }
 
   /**
@@ -59,6 +65,13 @@ export class MeterSettingsStore {
       if (parsed !== null && typeof parsed === 'object' && parsed.schemaVersion === METER_SETTINGS_SCHEMA_VERSION) {
         this.user = parsed.user !== null && typeof parsed.user === 'object' && !Array.isArray(parsed.user) ? parsed.user : {}
         this.revision = Number.isSafeInteger(parsed.revision) ? parsed.revision : 0
+      } else if (parsed !== null && typeof parsed === 'object' && parsed.schemaVersion !== undefined) {
+        // A newer build wrote this file. Reading it as empty and then writing
+        // over it would discard the user's contract prices and privacy
+        // switches, so it is left exactly as it is and every write is refused.
+        this.foreignVersion = parsed.schemaVersion
+        this.user = {}
+        this.revision = 0
       }
     } catch (error) {
       if (error !== null && typeof error === 'object' && (error.code === 'ENOENT' || error instanceof SyntaxError)) {
@@ -76,14 +89,30 @@ export class MeterSettingsStore {
 
   /** The resolved configuration: file layer over the composition base. */
   resolved() {
-    return normalizeMeterConfig({ ...(this.base ?? {}), ...this.user })
+    return normalizeMeterConfig({ ...(this.base ?? {}), ...(this.user) })
+  }
+
+  /**
+   * The configuration as the settings panel edits it.
+   *
+   * Scalar fields take their effective values, but contract prices stay in the
+   * units a user writes: {@link resolved} states them in micro units, and
+   * showing those in the editor would invite the user to save 100000 for a
+   * rate of 0.1.
+   *
+   * @returns {object}
+   */
+  editable() {
+    const raw = this.raw()
+    const contracts = Array.isArray(raw.contractualSchedules) ? raw.contractualSchedules : []
+    return { ...this.resolved(), contractualSchedules: contracts }
   }
 
   /**
    * Replace the user layer.
    * @param {unknown} patch
    * @param {number} [expectedRevision]
-   * @returns {Promise<{revision: number, config: object}>}
+   * @returns {Promise<{revision: number, config: object, raw: object}>}
    */
   async update(patch, expectedRevision) {
     if (Number.isSafeInteger(expectedRevision) && expectedRevision !== this.revision) {
@@ -92,10 +121,37 @@ export class MeterSettingsStore {
     if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
       throw new TypeError('meter settings patch must be an object')
     }
+    if (this.foreignVersion !== undefined) {
+      const error = new Error(`meter settings on disk use schema v${String(this.foreignVersion)}; this build writes v${METER_SETTINGS_SCHEMA_VERSION} and leaves that file untouched`)
+      error.code = 'settings-version'
+      throw error
+    }
     this.user = { ...this.user, ...patch }
     this.revision += 1
-    await this.#write()
-    return { revision: this.revision, config: this.resolved() }
+    await this.#enqueueWrite()
+    return { revision: this.revision, config: this.resolved(), raw: this.raw() }
+  }
+
+  /**
+   * The configuration as its layers state it, in the units a user writes.
+   *
+   * A caller that normalizes the configuration itself must take this rather
+   * than {@link resolved}: resolution has already converted contract prices
+   * from currency units into micro units, and normalizing that again would
+   * multiply every rate by 10^6.
+   *
+   * @returns {object}
+   */
+  raw() {
+    return { ...(this.base ?? {}), ...this.user }
+  }
+
+  /** Serialize writes so two revisions cannot rename over each other. */
+  #enqueueWrite() {
+    const next = (this.writeChain ?? Promise.resolve()).then(() => this.#write())
+    // A failed write must not poison the chain for later ones.
+    this.writeChain = next.catch(() => {})
+    return next
   }
 
   /** Persist atomically. */
@@ -107,7 +163,8 @@ export class MeterSettingsStore {
       updatedAt: this.now(),
       user: this.user,
     })
-    const temp = `${this.path}.tmp-${process.pid}-${this.now()}`
+    this.writeSequence += 1
+    const temp = `${this.path}.tmp-${process.pid}-${this.writeSequence}`
     await writeFile(temp, `${body}\n`, { encoding: 'utf8', mode: 0o600 })
     await rename(temp, this.path)
   }

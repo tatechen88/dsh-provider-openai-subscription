@@ -221,6 +221,57 @@ test('rescue meter reports a corrupt ledger as unreadable', async () => {
   assert.equal(report.ledger.unreadable, true)
 })
 
+test('rescue doctor flags a placeholder left before an appended entry', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-profile-'))
+  dirs.push(dir)
+  const packagePath = join(dir, 'package.json')
+  await writeFile(packagePath, JSON.stringify({ dependencies: {} }))
+  await writeFile(join(dir, 'cordis.patch.yml'), [
+    '# Your patch layer for this dsh profile',
+    '[]',
+    '',
+    '- id: llm-openai-subscription',
+    '  config:',
+    '    state: active',
+    '',
+  ].join('\n'))
+  const { stdout } = await runRescue(['doctor', '--profile', packagePath], {})
+  const report = JSON.parse(stdout)
+  assert.equal(report.profilePatchFile, true)
+  assert.equal(report.profilePatchPlaceholderAppended, true)
+  assert.match(report.profilePatchProblem, /will not compose/)
+})
+
+test('rescue doctor accepts a replaced placeholder and reports activation', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-profile-'))
+  dirs.push(dir)
+  const packagePath = join(dir, 'package.json')
+  await writeFile(packagePath, JSON.stringify({ dependencies: {} }))
+  await writeFile(join(dir, 'cordis.patch.yml'), [
+    '- id: llm-openai-subscription',
+    '  config:',
+    '    state: active',
+    '',
+  ].join('\n'))
+  const { stdout } = await runRescue(['doctor', '--profile', packagePath], {})
+  const report = JSON.parse(stdout)
+  assert.equal(report.profilePatchPlaceholderAppended, false)
+  assert.equal(report.profilePatchActivatesRow, true)
+})
+
+test('rescue doctor treats the shipped placeholder as unremarkable', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-profile-'))
+  dirs.push(dir)
+  const packagePath = join(dir, 'package.json')
+  await writeFile(packagePath, JSON.stringify({ dependencies: {} }))
+  await writeFile(join(dir, 'cordis.patch.yml'), '# header\n[]\n')
+  const { stdout } = await runRescue(['doctor', '--profile', packagePath], {})
+  const report = JSON.parse(stdout)
+  assert.equal(report.profilePatchFile, true)
+  assert.equal(report.profilePatchPlaceholderAppended, false)
+  assert.equal(report.profilePatchActivatesRow, false)
+})
+
 test('unknown command exits non-zero', async () => {
   await assert.rejects(runRescue(['wat'], {}), (error) => error.code === 2)
 })

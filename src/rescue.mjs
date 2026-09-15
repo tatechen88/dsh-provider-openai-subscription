@@ -188,7 +188,34 @@ async function commandEnable() {
 }
 
 /**
+ * Detect the edit that leaves a profile unable to boot.
+ *
+ * A profile ships `cordis.patch.yml` with a placeholder `[]`, and activation
+ * means adding an id-targeted entry. Appending that entry *after* the
+ * placeholder produces `[]` followed by a block sequence, which YAML rejects,
+ * and DSH then refuses to compose the profile at all. Only the combination is
+ * reported: `[]` alone is the shipped default, and a block alone is correct.
+ *
+ * @param {string} text - raw cordis.patch.yml contents.
+ * @returns {boolean} true when the placeholder precedes a block sequence.
+ */
+function isPlaceholderThenBlock(text) {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#'))
+  if (lines[0] !== '[]') return false
+  return lines.slice(1).some((line) => line === '-' || line.startsWith('- '))
+}
+
+/**
  * Print a non-secret doctor/canary readiness report.
+ *
+ * With `--profile`, it also reads the activation layer beside that
+ * package.json, because the two ways to get activation wrong are silent in the
+ * composition: the row never activates, or the placeholder is left in place and
+ * the profile stops composing.
+ *
  * @param {string|undefined} profilePackage
  * @returns {Promise<void>}
  */
@@ -208,6 +235,9 @@ async function commandDoctor(profilePackage) {
     killSwitch: await exists(switchPath),
     profileHasPlugin: false,
     profileHasRow: false,
+    profilePatchFile: false,
+    profilePatchActivatesRow: false,
+    profilePatchPlaceholderAppended: false,
   }
   if (profilePackage) {
     const raw = await tryRead(profilePackage)
@@ -220,6 +250,15 @@ async function commandDoctor(profilePackage) {
         checks.profileHasRow = Array.isArray(bundles) && bundles.includes(PACKAGE_NAME)
       } catch {
         // leave false
+      }
+    }
+    const patchRaw = await tryRead(join(dirname(profilePackage), 'cordis.patch.yml'))
+    if (patchRaw !== undefined) {
+      checks.profilePatchFile = true
+      checks.profilePatchActivatesRow = patchRaw.includes(ROW_ID)
+      checks.profilePatchPlaceholderAppended = isPlaceholderThenBlock(patchRaw)
+      if (checks.profilePatchPlaceholderAppended) {
+        checks.profilePatchProblem = 'the placeholder "[]" is still in place before a block sequence, which YAML rejects: the profile will not compose. Replace "[]" with the entry instead of appending after it.'
       }
     }
   }
@@ -456,9 +495,17 @@ async function commandRollback(dir, target) {
     return
   }
   await writeFile(target, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8')
+  print(`rollback: restored ${newest} to ${target}.`)
+  // The activation layer is part of the snapshot because losing it is the most
+  // common way a profile stops composing; restoring package.json alone would
+  // leave the operator believing the rollback covered it.
+  const patchPath = typeof snapshot.patchPath === 'string' ? snapshot.patchPath : undefined
+  if (typeof snapshot.patch === 'string' && patchPath !== undefined) {
+    await writeFile(patchPath, snapshot.patch, 'utf8')
+    print(`rollback: restored the activation layer to ${patchPath}.`)
+  }
   // Mark completion adjacent to the snapshot so operators can verify.
   await writeFile(join(dir, `${newest}.restored`), `${new Date().toISOString()}\n`, 'utf8')
-  print(`rollback: restored ${newest} to ${target}.`)
 }
 
 /**

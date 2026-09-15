@@ -81,6 +81,8 @@ export const DEEPSEEK_PUBLIC_SCHEDULE = Object.freeze({
 export const UNPRICED_UNKNOWN_MODEL = 'unknown-model'
 export const UNPRICED_NO_SCHEDULE = 'no-schedule'
 export const UNPRICED_INVALID_USAGE = 'invalid-usage'
+/** The selected schedule has no rate for the band this call falls in. */
+export const UNPRICED_MISSING_BAND = 'missing-band'
 
 /**
  * Clock parts of one instant under a fixed zone offset.
@@ -159,16 +161,41 @@ export function billedModelOf(schedule, model) {
 
 /**
  * Whether a schedule is in force at one instant.
+ *
+ * A date-only bound names a whole day: an agreement written
+ * `validTo: 2026-12-31` still prices calls made on the 31st, and
+ * `validFrom: 2026-01-01` starts at that day's first instant. A bound that is
+ * present but unparseable counts as absent here; the parser drops such an entry
+ * before it can become a schedule.
+ *
  * @param {object} schedule
  * @param {number} atMs
  * @returns {boolean}
  */
 export function scheduleCovers(schedule, atMs) {
-  const from = schedule.validFrom === undefined ? undefined : Date.parse(schedule.validFrom)
-  const to = schedule.validTo === undefined ? undefined : Date.parse(schedule.validTo)
-  if (from !== undefined && Number.isFinite(from) && atMs < from) return false
-  if (to !== undefined && Number.isFinite(to) && atMs >= to) return false
+  const from = parseBound(schedule.validFrom, false)
+  const to = parseBound(schedule.validTo, true)
+  if (from !== undefined && atMs < from) return false
+  if (to !== undefined && atMs >= to) return false
   return true
+}
+
+/**
+ * Parse one validity bound, letting a date-only end bound cover its whole day.
+ * @param {unknown} value
+ * @param {boolean} endOfDay
+ * @returns {number|undefined}
+ */
+function parseBound(value, endOfDay) {
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  if (text.length === 0) return undefined
+  if (endOfDay && /^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const midnight = Date.parse(`${text}T00:00:00Z`)
+    return Number.isFinite(midnight) ? midnight + 86_400_000 : undefined
+  }
+  const ms = Date.parse(text)
+  return Number.isFinite(ms) ? ms : undefined
 }
 
 /**
@@ -254,8 +281,20 @@ export function quoteUsage(fact, schedule, options = {}) {
   const peak = schedule.windows === undefined || schedule.windows === null
     ? false
     : isPeakAt(fact.startedAt, schedule.windows)
-  const band = peak && rates.peak !== undefined ? 'peak' : 'offPeak'
-  const rate = peak && rates.peak !== undefined ? rates.peak : rates.offPeak
+  const usePeak = peak && rates.peak !== undefined
+  const band = usePeak ? 'peak' : 'offPeak'
+  const rate = usePeak ? rates.peak : rates.offPeak
+  if (rate === undefined || rate === null) {
+    // A schedule with no rate for the band this call falls in cannot price it.
+    // Reporting it unpriced is the only safe answer: pricing it as zero would
+    // present the call as free.
+    return {
+      status: 'unpriced',
+      reason: UNPRICED_MISSING_BAND,
+      scheduleId: schedule.id,
+      basis: 'request-start-assumption',
+    }
+  }
   const miss = BigInt(buckets.buckets.inputTokens) * BigInt(rate.cacheMiss)
   const hit = BigInt(buckets.buckets.cacheReadTokens) * BigInt(rate.cacheHit)
   const out = BigInt(buckets.buckets.outputTokens) * BigInt(rate.output)

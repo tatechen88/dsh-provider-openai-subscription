@@ -67,14 +67,17 @@ function harness() {
   const settings = {
     revision: 3,
     resolved: () => ({ accountKind: 'enterprise' }),
+    editable: () => ({ accountKind: 'enterprise' }),
     update: async (patch, expectedRevision) => {
       calls.patches.push({ patch, expectedRevision })
-      if (expectedRevision !== undefined && expectedRevision !== 3) {
+      if (expectedRevision !== 3) {
         const error = new Error('meter settings moved')
         error.code = 'settings-conflict'
+        error.actualRevision = 7
         throw error
       }
-      return { revision: 4, config: { accountKind: patch.accountKind ?? 'enterprise' } }
+      const config = { accountKind: patch.accountKind ?? 'enterprise' }
+      return { revision: 4, config, raw: config }
     },
   }
   const web = fakeWebServer()
@@ -141,8 +144,23 @@ test('a stale settings revision is reported as a conflict, not applied', async (
     response,
   )
   assert.equal(response.state.status, 409)
-  assert.equal(JSON.parse(response.state.body).ok, false)
+  const failure = JSON.parse(response.state.body)
+  assert.equal(failure.ok, false)
+  assert.equal(failure.actualRevision, 7, 'the caller learns the revision it has to retry with')
   assert.equal(calls.config, undefined, 'nothing is applied on a conflict')
+  dispose()
+})
+
+test('a settings write without a revision is refused instead of overwriting', async () => {
+  const { web, calls, dispose } = harness()
+  const response = fakeResponse()
+  await routeOf(web, '/meter/settings').handler(
+    fakeRequest({ method: 'PATCH', body: JSON.stringify({ patch: { hideCost: true } }) }),
+    response,
+  )
+  assert.equal(response.state.status, 400)
+  assert.match(JSON.parse(response.state.body).error, /expectedRevision/)
+  assert.equal(calls.patches.length, 0, 'the store is never asked to overwrite blindly')
   dispose()
 })
 
@@ -166,7 +184,7 @@ test('a foreign origin cannot read or change meter state', async () => {
 
 test('a meter without a service reports itself unavailable instead of failing the request', async () => {
   const web = fakeWebServer()
-  const settings = { revision: 0, resolved: () => ({ accountKind: 'unknown' }), update: async () => ({ revision: 1, config: {} }) }
+  const settings = { revision: 0, resolved: () => ({ accountKind: 'unknown' }), editable: () => ({ accountKind: 'unknown' }), update: async () => ({ revision: 1, config: {}, raw: {} }) }
   const dispose = mountRoutes({ webServer: web }, {
     repository: { status: async () => ({ configured: false }) },
     attempts: { get: () => undefined },

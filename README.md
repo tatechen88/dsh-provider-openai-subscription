@@ -45,7 +45,10 @@ Runtime 加载或初始化失败时，Bootstrap 会捕获错误并停止激活�
 dsh plugin --profile web add ../dsh-provider-openai-subscription
 ```
 
-安装后，插件默认处于 `bootstrap` 状态，不会加载 Runtime。确认配置无冲突后，在对应 profile 中显式激活：
+安装后，插件默认处于 `bootstrap` 状态，不会加载 Runtime。确认配置无冲突后，编辑该 profile 的激活层 `$DSH_HOME/profiles/<profile>/cordis.patch.yml`，把整个文件内容换成：
+
+> **这个文件出厂是一段注释加一个占位 `[]`。必须把 `[]` 替换成下面的内容，不要在 `[]` 后面追加。**
+> `[]` 之后跟一个块序列不是合法 YAML：DSH 会报 `failed to parse overlay ...` 并拒绝组合该 profile，表现是整个 profile 起不来。`dsh-openai-subscription-rescue doctor --profile .../package.json` 会识别这种写法并给出提示。
 
 ```yaml
 - id: llm-openai-subscription
@@ -67,9 +70,24 @@ dsh plugin --profile web add ../dsh-provider-openai-subscription
       contractualSchedules: []  # 企业合同价，见「企业合同价」一节
 ```
 
-`meter` 是内置用量模块的默认层；运行时的设置页保存到 `$DSH_HOME/plugin-state/openai-subscription-meter.json`，该文件优先级更高。完整字段说明见「用量与费用（内置 meter）」。
+`meter` 是内置用量模块的默认层，上面这段与插件自带 patch 层的默认值一致：`meter` 整块省略也能工作（每个字段各自回落到内置默认），写出来只是让部署意图显式。运行时的设置页保存到 `$DSH_HOME/plugin-state/openai-subscription-meter.json`，该文件优先级高于这里的默认层。完整字段说明见「用量与费用（内置 meter）」。
 
 重新启动对应的 DSH profile，然后在 Web 设置页完成 ChatGPT OAuth 登录。
+
+### 验证安装
+
+三步都能独立确认，不必等到点开设置页：
+
+```sh
+# 1）组合树里应出现插件行，激活后 state 为 active（Windows 用 Select-String -Context 0,2）
+dsh --profile web --dump-config | grep -A2 llm-openai-subscription
+
+# 2）依赖 / bundle / 激活层一致性检查，离线运行、不加载 Runtime
+dsh-openai-subscription-rescue doctor --profile "$DSH_HOME/profiles/web/package.json"
+
+# 3）在临时 DSH_HOME 里完整重放「初始化 → 安装 → 组合 → 激活」，不碰真实 profile
+npm run test:install
+```
 
 如需立即停用插件，可以运行：
 
@@ -115,7 +133,7 @@ Responses 的终止事件会携带 `usage`，插件在 finish 之前把它转换
 - 上游**未上报** `cached_tokens` 时省略该字段，而不是伪造为 0；上报了 `cached_tokens: 0` 时保留 0，因为"未上报"和"确认零命中"是两个不同事实；
 - 缓存数大于输入总数、reasoning 大于输出总数、非整数等不可能取值的明细会被丢弃，避免负的 prompt 计数。
 
-转换后的用量会出现在 DSH 消息的 token 用量显示（Cached input / 缓存读取）与 `dsh-cost-meter` 的统计中。
+转换后的用量会出现在 DSH 消息的 token 用量显示（Cached input / 缓存读取）中，并作为一条事实进入本插件的账本。
 
 用量转换位于 Host 侧，升级插件后需要重新启动对应 DSH profile 才会生效。
 
@@ -223,9 +241,9 @@ dsh-openai-subscription-rescue meter
 # 检查依赖和激活条件
 dsh-openai-subscription-rescue doctor --profile path/to/profile/package.json
 
-# 创建或回滚快照
-dsh-openai-subscription-rescue snapshot
-dsh-openai-subscription-rescue rollback
+# 创建或回滚快照（rollback 需要 --target；快照目录默认在 plugin-state 下）
+dsh-openai-subscription-rescue snapshot --profile "$DSH_HOME/profiles/web/package.json" --patch "$DSH_HOME/profiles/web/cordis.patch.yml"
+dsh-openai-subscription-rescue rollback --path "$DSH_HOME/plugin-state/openai-subscription-snapshots" --target "$DSH_HOME/profiles/web/package.json"
 
 # 启用或禁用插件
 dsh-openai-subscription-rescue enable

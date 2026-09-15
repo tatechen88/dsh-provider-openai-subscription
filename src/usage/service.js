@@ -73,11 +73,20 @@ export class UsageMeterService {
 
   /**
    * Replace the meter configuration.
+   *
+   * The argument is the configuration as its layers state it, with contract
+   * prices still in currency units, because this is the one place that
+   * normalizes them. Handing over an already resolved configuration would
+   * convert those prices a second time and multiply every rate by 10^6.
+   *
    * @param {unknown} raw
    * @returns {object} the resolved configuration.
    */
   updateConfig(raw) {
     this.config = normalizeMeterConfig(raw)
+    // "Today" and "month" are calendar windows, so the ledger follows a
+    // time-zone change at once instead of at the next start.
+    this.ledger.timeZone = this.config.timeZone
     this.generation += 1
     return this.config
   }

@@ -273,10 +273,20 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
 
   const service = new UsageMeterService({
     ledger,
-    config: resolved,
+    // The raw layer: the service normalizes contract prices itself, while the
+    // resolved view already states them in micro units.
+    config: settings.raw(),
     readDeepSeekCredential: () => resolveDeepSeekCredential(ctx, credentials),
   })
-  collector = createUsageCollector({ record: (fact) => { service.recordUsage(fact) } })
+  collector = createUsageCollector({
+    record: (fact) => {
+      const stored = service.recordUsage(fact)
+      // Metering is best-effort, but a fact that never reaches the ledger must
+      // not be silent: it is the only sign that a usage event no longer carries
+      // what this plugin expects.
+      if (stored.ok !== true) logger?.warn?.(`${PACKAGE_NAME}: usage fact was not recorded (${String(stored.reason)})`)
+    },
+  })
   const openaiQuota = balance === undefined ? undefined : () => balance.get()
 
   return {
