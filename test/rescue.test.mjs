@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdtemp, rm, readFile, access, readdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, access, readdir, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -151,6 +151,74 @@ test('rescue doctor with profile reports plugin presence', async () => {
   const { stdout } = await runRescue(['doctor', '--profile', packagePath], {})
   const report = JSON.parse(stdout)
   assert.equal(report.profileHasPlugin, true)
+})
+
+test('rescue meter reports ledger and settings state without echoing content', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-rescue-'))
+  dirs.push(dir)
+  const ledgerDir = join(dir, 'storages', 'openai-subscription-meter')
+  const legacyDir = join(dir, 'storages', 'cost-meter')
+  const stateDir = join(dir, 'plugin-state')
+  await mkdir(ledgerDir, { recursive: true })
+  await mkdir(legacyDir, { recursive: true })
+  await mkdir(stateDir, { recursive: true })
+  const startedAt = 1_760_000_000_000
+  await writeFile(join(ledgerDir, 'usage.json'), JSON.stringify({
+    schemaVersion: 1,
+    updatedAt: startedAt,
+    entries: [{ callId: 'SECRET-CALL-ID', fact: { sessionId: 'SECRET-SESSION', startedAt, providerId: 'deepseek-official' } }],
+  }))
+  await writeFile(join(stateDir, 'openai-subscription-meter.json'), JSON.stringify({
+    schemaVersion: 1,
+    revision: 5,
+    user: {
+      accountKind: 'enterprise',
+      displayCurrency: 'CNY',
+      timeZone: 'Asia/Shanghai',
+      contractualSchedules: [{}, {}],
+    },
+  }))
+  await writeFile(join(legacyDir, 'ledger.json'), JSON.stringify({ entries: [{ note: 'SECRET-LEGACY-ENTRY' }] }))
+
+  const { stdout } = await runRescue(['meter'], { DSH_HOME: dir })
+  const report = JSON.parse(stdout)
+  assert.equal(report.ok, true)
+  assert.equal(report.ledger.present, true)
+  assert.equal(report.ledger.schemaVersion, 1)
+  assert.equal(report.ledger.facts, 1)
+  assert.equal(report.ledger.oldestFactAt, startedAt)
+  assert.equal(report.ledger.newestFactAt, startedAt)
+  assert.equal(report.settings.present, true)
+  assert.equal(report.settings.revision, 5)
+  assert.equal(report.settings.accountKind, 'enterprise')
+  assert.equal(report.settings.contractualSchedules, 2)
+  assert.equal(report.retiredCostMeterLedger.present, true)
+  // The report is a summary: no entry, call id, or session id is echoed.
+  for (const secret of ['SECRET-CALL-ID', 'SECRET-SESSION', 'SECRET-LEGACY-ENTRY']) {
+    assert.equal(stdout.includes(secret), false)
+  }
+})
+
+test('rescue meter reports a fresh home as absent', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-rescue-'))
+  dirs.push(dir)
+  const { stdout } = await runRescue(['meter'], { DSH_HOME: dir })
+  const report = JSON.parse(stdout)
+  assert.equal(report.ledger.present, false)
+  assert.equal(report.settings.present, false)
+  assert.equal(report.retiredCostMeterLedger.present, false)
+})
+
+test('rescue meter reports a corrupt ledger as unreadable', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-rescue-'))
+  dirs.push(dir)
+  const ledgerDir = join(dir, 'storages', 'openai-subscription-meter')
+  await mkdir(ledgerDir, { recursive: true })
+  await writeFile(join(ledgerDir, 'usage.json'), '{ not json')
+  const { stdout } = await runRescue(['meter'], { DSH_HOME: dir })
+  const report = JSON.parse(stdout)
+  assert.equal(report.ledger.present, true)
+  assert.equal(report.ledger.unreadable, true)
 })
 
 test('unknown command exits non-zero', async () => {

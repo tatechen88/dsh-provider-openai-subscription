@@ -10,7 +10,6 @@
  * @module dsh-provider-openai-subscription/runtime
  */
 
-import { join } from 'node:path'
 import { PACKAGE_NAME, PROVIDER_ID, SETTINGS_NAMESPACE } from './constants.js'
 import { readConflictReport } from './conflicts.js'
 import { CredentialRepository } from './credentials/repository.js'
@@ -28,7 +27,7 @@ import { createUsageCollector } from './usage/collector.js'
 import { UsageLedger } from './usage/ledger.js'
 import { MeterSettingsStore } from './usage/settings-store.js'
 import { UsageMeterService } from './usage/service.js'
-import { dshHome, pluginStateDir } from './state.js'
+import { dshHome, meterSettingsPath, usageLedgerPath } from './state.js'
 
 /** How long the runtime waits for a DSH service to become available. */
 export const SERVICE_WAIT_TIMEOUT_MS = 30_000
@@ -192,16 +191,6 @@ export async function applyRuntime(ctx, config, options = {}) {
 
   if (logger?.info) logger.info(`${PACKAGE_NAME}: runtime active for provider "${PROVIDER_ID}" namespace "${SETTINGS_NAMESPACE}"`)
   return { ok: true }
-}
-
-/** Ledger path under the DSH home. */
-export function usageLedgerPath(home = dshHome()) {
-  return join(home, 'storages', 'openai-subscription-meter', 'usage.json')
-}
-
-/** Meter settings path under the DSH home. */
-export function meterSettingsPath(home = dshHome()) {
-  return join(pluginStateDir(home), 'openai-subscription-meter.json')
 }
 
 /**

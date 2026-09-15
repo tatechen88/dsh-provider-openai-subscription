@@ -16,12 +16,14 @@ import { fileURLToPath } from 'node:url'
 import { PACKAGE_NAME, ROW_ID, KILL_SWITCH_FILENAME } from './constants.js'
 import {
   dshHome, pluginStateDir, killSwitchPath, enableKillSwitch, disableKillSwitch,
+  usageLedgerPath, meterSettingsPath, retiredCostMeterLedgerPath,
 } from './state.js'
 
 const HELP = `dsh-openai-subscription-rescue
 
 Usage:
   dsh-openai-subscription-rescue status
+  dsh-openai-subscription-rescue meter
   dsh-openai-subscription-rescue disable
   dsh-openai-subscription-rescue enable
   dsh-openai-subscription-rescue snapshot --profile <package.json> [--patch <cordis.patch.yml>]
@@ -31,6 +33,7 @@ Usage:
 
 Commands:
   status                 Print non-secret plugin safety state.
+  meter                  Print the usage meter's ledger and settings state (read-only).
   disable                Create the kill switch so bootstrap never loads runtime.
   enable                 Remove the kill switch.
   snapshot               Save a reversible copy of profile package.json (+ optional patch).
@@ -72,6 +75,64 @@ async function exists(path) {
     return true
   } catch {
     return false
+  }
+}
+
+/**
+ * Report the built-in usage meter's local state without reading credentials.
+ *
+ * The point is to make an upgrade checkable: the ledger's schema version and
+ * fact count, the settings revision, and whether the retired `dsh-cost-meter`
+ * ledger is still on disk untouched. It reads files only — no network, no
+ * credential, and it never prints a credential value or a raw ledger entry.
+ * @returns {Promise<void>}
+ */
+async function commandMeter() {
+  const home = dshHome()
+  const ledgerPath = usageLedgerPath(home)
+  const settingsPath = meterSettingsPath(home)
+  const legacyPath = retiredCostMeterLedgerPath(home)
+
+  const ledger = await describeJson(ledgerPath, (parsed) => ({
+    schemaVersion: parsed.schemaVersion,
+    facts: Array.isArray(parsed.entries) ? parsed.entries.length : undefined,
+    oldestFactAt: Array.isArray(parsed.entries) && parsed.entries.length > 0 ? parsed.entries[0]?.fact?.startedAt : undefined,
+    newestFactAt: Array.isArray(parsed.entries) && parsed.entries.length > 0 ? parsed.entries[parsed.entries.length - 1]?.fact?.startedAt : undefined,
+  }))
+  const settings = await describeJson(settingsPath, (parsed) => ({
+    revision: parsed.revision,
+    accountKind: parsed.user?.accountKind ?? 'unknown',
+    displayCurrency: parsed.user?.displayCurrency,
+    timeZone: parsed.user?.timeZone,
+    contractualSchedules: Array.isArray(parsed.user?.contractualSchedules) ? parsed.user.contractualSchedules.length : 0,
+  }))
+
+  print(JSON.stringify({
+    ok: true,
+    plugin: PACKAGE_NAME,
+    dshHome: home,
+    ledger: { path: ledgerPath, ...ledger },
+    settings: { path: settingsPath, ...settings },
+    retiredCostMeterLedger: { path: legacyPath, present: await exists(legacyPath), note: 'read by this plugin: never' },
+    note: 'Read-only report: no ledger entry, credential or account number is printed.',
+  }, null, 2))
+}
+
+/**
+ * Describe one JSON file as parsed facts, or as a named absence.
+ * @param {string} path
+ * @param {(parsed: any) => object} project - pulls the reportable fields out.
+ * @returns {Promise<object>}
+ */
+async function describeJson(path, project) {
+  const raw = await tryRead(path)
+  if (raw === undefined) return { present: false }
+  try {
+    return { present: true, ...project(JSON.parse(raw)) }
+  } catch {
+    // A file that exists but does not parse is the fact worth reporting: the
+    // meter quarantines such a ledger on the next start rather than reading it.
+    return { present: true, unreadable: true }
   }
 }
 
@@ -410,6 +471,9 @@ async function main(args) {
   switch (command) {
     case 'status':
       await commandStatus()
+      return
+    case 'meter':
+      await commandMeter()
       return
     case 'disable':
       await commandDisable()

@@ -33,6 +33,41 @@ export function pluginStateDir(home = dshHome()) {
 }
 
 /**
+ * Absolute path of the usage meter's ledger.
+ *
+ * The ledger is durable session data, so it lives under `storages/` beside the
+ * rest of the DSH data rather than in `plugin-state/`.
+ *
+ * @param {string} [home] - DSH home; injectable so callers and tests can aim it.
+ * @returns {string}
+ */
+export function usageLedgerPath(home = dshHome()) {
+  return join(home, 'storages', 'openai-subscription-meter', 'usage.json')
+}
+
+/**
+ * Absolute path of the usage meter's settings file.
+ * @param {string} [home] - DSH home; injectable so callers and tests can aim it.
+ * @returns {string}
+ */
+export function meterSettingsPath(home = dshHome()) {
+  return join(pluginStateDir(home), 'openai-subscription-meter.json')
+}
+
+/**
+ * Absolute path of the retired `dsh-cost-meter` ledger.
+ *
+ * The migration never reads, imports, or rewrites that file; the rescue CLI
+ * reports only whether it is still on disk.
+ *
+ * @param {string} [home] - DSH home; injectable so callers and tests can aim it.
+ * @returns {string}
+ */
+export function retiredCostMeterLedgerPath(home = dshHome()) {
+  return join(home, 'storages', 'cost-meter', 'ledger.json')
+}
+
+/**
  * Absolute path of the plugin kill switch marker.
  * @returns {string}
  */
