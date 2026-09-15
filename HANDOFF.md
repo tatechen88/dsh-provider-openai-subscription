@@ -56,7 +56,7 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 
 `449e096` 顺带修了另一个「新模型不出现」的老问题：adapter 的目录缓存是**进程级永久**的，`/models/refresh` 也只是返回缓存。现在 TTL 10 分钟，并新增 `invalidateCatalog()`，路由先清缓存再列。
 
-本轮**未发版**：`package.json` 仍是 1.2.0，是否 release 由使用者决定（1.2.0 那次是显式要求后才打的 tag）。
+本轮已发版 **1.3.0**（`chore: release 1.3.0` + 附注标签 `v1.3.0`，含 GitHub Release）。
 
 ### 浮动与自动收回（本轮）
 
