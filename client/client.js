@@ -1905,6 +1905,10 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       formatAmount,
       formatTokens,
       indicatorHeadline,
+      // Mounted directly by tests: every slot component nests inside a page
+      // component, and a shallow harness cannot drive a nested component's
+      // effects, so this one is reachable only through the test surface.
+      MeterSettingsPanel,
     },
     enumerable: false,
   })
