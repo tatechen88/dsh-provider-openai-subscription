@@ -55,7 +55,7 @@ function fakeWebServer() {
 
 /** Route-under-test harness: one meter stub, one settings stub. */
 function harness() {
-  const calls = { refresh: 0, zhipuRefresh: 0, patches: [], views: [] }
+  const calls = { refresh: 0, zhipuRefresh: 0, priceRefresh: 0, patches: [], views: [] }
   const service = {
     view: (options = {}) => {
       calls.views.push(options)
@@ -74,6 +74,10 @@ function harness() {
     refreshZhipuAccount: async () => {
       calls.zhipuRefresh += 1
       return { status: 'ok' }
+    },
+    refreshPublicPrices: async () => {
+      calls.priceRefresh += 1
+      return { status: 'ok', schedule: { id: 'deepseek-public-2026-09-20' } }
     },
     updateConfig: (config) => { calls.config = config },
   }
@@ -207,6 +211,18 @@ test('the refresh route forces one DeepSeek reading and returns the balance slic
   dispose()
 })
 
+test('the price route forces one read of the vendor page and reports what came back', async () => {
+  const { web, calls, dispose } = harness()
+  const response = fakeResponse()
+  await routeOf(web, '/meter/prices/refresh').handler(fakeRequest({ method: 'POST' }), response)
+  const payload = JSON.parse(response.state.body)
+  assert.equal(payload.ok, true)
+  assert.equal(payload.status, 'ok')
+  assert.equal(payload.data.schedule.id, 'deepseek-public-2026-09-20')
+  assert.equal(calls.priceRefresh, 1)
+  dispose()
+})
+
 test('a foreign origin cannot read or change meter state', async () => {
   const { web, dispose } = harness()
   const response = fakeResponse()
@@ -239,6 +255,11 @@ test('a meter without a service reports itself unavailable instead of failing th
   await routeOf(web, '/meter/deepseek/refresh').handler(fakeRequest({ method: 'POST' }), refresh)
   assert.equal(refresh.state.status, 200)
   assert.equal(JSON.parse(refresh.state.body).ok, false)
+
+  const priceRefresh = fakeResponse()
+  await routeOf(web, '/meter/prices/refresh').handler(fakeRequest({ method: 'POST' }), priceRefresh)
+  assert.equal(priceRefresh.state.status, 200, 'a route that cannot read the page still answers, it does not throw')
+  assert.equal(JSON.parse(priceRefresh.state.body).ok, false)
 
   // Settings still persist even with no running service to reconfigure.
   const patch = fakeResponse()

@@ -311,3 +311,18 @@ test('a card names the models its own price table does not cover', () => {
     'a vendor that publishes no table never lists one',
   )
 })
+
+test('a card says when the price table could not be refreshed', () => {
+  const meter = deepseekMeter()
+  meter.pricing.refresh = { enabled: true, lastAttemptAt: 1, lastError: 'missing-rate:deepseek-flash.output.peak' }
+  const line = indicatorTooltip({ provider: 'deepseek-official', meter, quota: null, t })
+  assert.match(line, /价格表刷新失败: missing-rate:deepseek-flash\.output\.peak/, 'a page that stopped parsing is visible, not silent')
+
+  const quiet = deepseekMeter()
+  quiet.pricing.refresh = { enabled: false, lastAttemptAt: 0 }
+  assert.doesNotMatch(
+    indicatorTooltip({ provider: 'deepseek-official', meter: quiet, quota: null, t }),
+    /价格表刷新失败/,
+    'and a switch that is simply off is not an error',
+  )
+})

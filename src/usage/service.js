@@ -16,9 +16,21 @@ import { fetchZhipuAccount } from './zhipu-account.js'
 import { ReadingSlot } from './reading-slot.js'
 import { normalizeMeterConfig } from './config.js'
 import { METERED_PROVIDERS, pricedVendors, vendorFor } from './vendors.js'
+import { fetchPricingPage, parsePricingPage } from './deepseek-pricing-page.js'
 
 /** How long an account reading stays fresh. */
 export const ACCOUNT_READING_TTL_MS = 5 * 60 * 1000
+
+/**
+ * How long a learned price table is used before the page is read again.
+ *
+ * A published price changes rarely, and a failed read already backs off: this
+ * only bounds how stale a table can be once the vendor does change it.
+ */
+export const PUBLIC_PRICE_TTL_MS = 24 * 60 * 60 * 1000
+
+/** The route whose vendor publishes a per-token price table. */
+const DEEPSEEK_PROVIDER_ID = 'deepseek-official'
 
 /** The registry id of the vendor whose reading is the Zhipu account. */
 const ZHIPU_VENDOR_ID = 'zhipu'
@@ -78,8 +90,10 @@ export class UsageMeterService {
    * @param {number} [options.balanceTtlMs] - how long one account reading stays fresh.
    * @param {() => string[]} [options.listRoutes] - every route the host meters right
    *   now, including providers other plugins registered.
+   * @param {object} [options.pricingStore] - the learned price table, when the
+   *   deployment reads one from the vendor's page.
    */
-  constructor({ ledger, config, now = Date.now, fetchImpl = globalThis.fetch, readDeepSeekCredential, readZhipuCredential, listRoutes, balanceTtlMs = ACCOUNT_READING_TTL_MS }) {
+  constructor({ ledger, config, now = Date.now, fetchImpl = globalThis.fetch, readDeepSeekCredential, readZhipuCredential, listRoutes, pricingStore, balanceTtlMs = ACCOUNT_READING_TTL_MS }) {
     if (ledger === undefined || ledger === null) throw new TypeError('UsageMeterService requires a ledger')
     this.ledger = ledger
     this.config = normalizeMeterConfig(config)
@@ -88,6 +102,9 @@ export class UsageMeterService {
     this.readDeepSeekCredential = readDeepSeekCredential
     this.readZhipuCredential = readZhipuCredential
     this.listRoutes = listRoutes
+    this.pricingStore = pricingStore
+    /** The in-flight price refresh, so concurrent misses share one request. */
+    this.pricingRefresh = undefined
     /** Bumped whenever the configuration changes, so stale async work is dropped. */
     this.generation = 0
     this.deepseek = new ReadingSlot({
@@ -155,20 +172,77 @@ export class UsageMeterService {
   }
 
   /**
+   * The price tables that ship with this build.
+   * @returns {object[]}
+   */
+  builtinSchedules() {
+    return pricedVendors()
+      .map((vendor) => PUBLIC_SCHEDULES[vendor.priceTableId])
+      .filter((schedule) => schedule !== undefined)
+  }
+
+  /**
    * The public price tables this deployment offers: one per vendor that
    * publishes a table. The registry names them by id, so this module joins an id
    * to a table instead of importing a snapshot it may not use.
    * @returns {object[]}
    */
   publicSchedules() {
-    return pricedVendors()
-      .map((vendor) => PUBLIC_SCHEDULES[vendor.priceTableId])
-      .filter((schedule) => schedule !== undefined)
+    const builtin = this.builtinSchedules()
+    const learned = this.pricingStore === undefined ? undefined : this.pricingStore.schedule
+    // The learned table goes first and the built-in one stays behind it: a model
+    // the page no longer carries falls back to the snapshot instead of going
+    // unpriced, and a learned table with a newer date wins where both carry one.
+    return learned === undefined ? builtin : [learned, ...builtin]
   }
 
   /** The schedules currently reachable by the resolver. */
   schedules() {
     return buildSchedules({ contractual: this.config.contractualSchedules, schedules: this.publicSchedules() })
+  }
+
+  /**
+   * Read the vendor's price page and adopt it when the whole table parses.
+   *
+   * A half-understood table would price some calls from the new numbers and the
+   * rest from the old ones with no way to tell which. Anything the parser cannot
+   * read exactly leaves the table in force untouched and records only why.
+   * @param {object} [options]
+   * @param {boolean} [options.force] - read even when the switch is off or the last attempt was recent.
+   * @returns {Promise<{status: string, schedule?: object, reason?: string}>}
+   */
+  async refreshPublicPrices({ force = false } = {}) {
+    if (this.pricingStore === undefined) return { status: 'off', reason: 'no price store' }
+    if (force !== true) {
+      if (this.config.refreshPublicPrices !== true) return { status: 'off', reason: 'disabled' }
+      if (!this.pricingStore.due(PUBLIC_PRICE_TTL_MS)) return { status: 'not-due' }
+    }
+    if (this.pricingRefresh !== undefined) return this.pricingRefresh
+    const generation = this.generation
+    const work = (async () => {
+      try {
+        const html = await fetchPricingPage({ fetchImpl: this.fetchImpl })
+        // A configuration change while the page was in flight means the table
+        // this read would replace may not be the one in force any more.
+        if (this.generation !== generation) return { status: 'stale' }
+        const previous = this.publicSchedules().find((schedule) => schedule.provider === DEEPSEEK_PROVIDER_ID)
+        const parsed = parsePricingPage(html, { now: this.now, previousAliases: previous?.aliases ?? {} })
+        if (parsed.ok !== true) {
+          await this.pricingStore.recordFailure(parsed.reason).catch(() => {})
+          return { status: 'unreadable', reason: parsed.reason }
+        }
+        await this.pricingStore.save(parsed.schedule)
+        return { status: 'ok', schedule: parsed.schedule }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        await this.pricingStore.recordFailure(reason).catch(() => {})
+        return { status: 'failed', reason }
+      } finally {
+        this.pricingRefresh = undefined
+      }
+    })()
+    this.pricingRefresh = work
+    return work
   }
 
   /**
@@ -197,6 +271,10 @@ export class UsageMeterService {
           : undefined,
       })
       const stored = this.ledger.record(fact, quote)
+      // A model the table does not carry is exactly when the vendor's page is
+      // worth reading again. The read is background work, and it never touches
+      // the call being metered.
+      if (quote.reason === UNPRICED_UNKNOWN_MODEL) void this.refreshPublicPrices()
       return { ok: true, stored, quote }
     } catch (error) {
       // Metering must never fail the model call it observes.
@@ -362,6 +440,9 @@ export class UsageMeterService {
           currency: publicPrice?.currency,
           retrievedAt: publicPrice?.retrievedAt,
           sourceUrl: publicPrice?.sourceUrl,
+          // The table this build ships, which stays in force for every model the
+          // learned one does not carry.
+          fallbackScheduleId: this.builtinSchedules()[0]?.id,
         },
         contractual: this.contractualStatus(),
         estimated: true,
@@ -369,6 +450,11 @@ export class UsageMeterService {
         // Models this deployment has no rate for: the list a newly shipped model
         // appears in, instead of quietly costing nothing.
         unpricedModels: this.ledger.unpricedModels(PRICED_PROVIDER_IDS),
+        refresh: {
+          enabled: this.config.refreshPublicPrices === true,
+          ...(this.pricingStore === undefined ? {} : { lastAttemptAt: this.pricingStore.lastAttemptAt }),
+          ...(this.pricingStore === undefined || this.pricingStore.lastError === undefined ? {} : { lastError: this.pricingStore.lastError }),
+        },
       },
       usage: {
         // The route is part of the read, not a filter the caller applies later:

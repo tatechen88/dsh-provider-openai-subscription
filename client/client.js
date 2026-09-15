@@ -200,6 +200,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterQuotaTokens: 'Token 额度',
       meterQuotaTimes: '次数额度',
       meterReadingUnavailable: '部分数据不可用',
+      meterPriceRefreshFailed: '价格表刷新失败',
     },
     en: {
       nav: 'OpenAI Connect',
@@ -286,6 +287,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterQuotaTokens: 'token quota',
       meterQuotaTimes: 'uses quota',
       meterReadingUnavailable: 'Some readings unavailable',
+      meterPriceRefreshFailed: 'Price table refresh failed',
     },
   }
 
@@ -2176,6 +2178,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         amountTextOf(meter?.usage?.month) === undefined ? undefined : `${t('meterMonth')} ${amountTextOf(meter?.usage?.month)}`,
         priceSourceLine(pricing, t),
         unpricedModelsLine(pricing, provider, t),
+        priceRefreshLine(pricing, t),
       ].filter(isFilled)
     }
     // A route the host meters without an account reading of its own: the card
@@ -2230,6 +2233,22 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       .map((entry) => `${entry.model} ×${Number.isFinite(entry.calls) ? entry.calls : 1}`)
     if (named.length === 0) return undefined
     return `${t('meterNoPrice')}: ${named.join(' · ')}`
+  }
+
+  /**
+   * Why the price table could not be refreshed, when it could not.
+   *
+   * A page that stopped parsing is invisible otherwise: the meter keeps pricing
+   * with the table it has, and nobody learns that shipped models stay unpriced.
+   * @param {object|undefined} pricing - meter view `pricing` slice.
+   * @param {(key: string) => string} t
+   * @returns {string|undefined}
+   */
+  function priceRefreshLine(pricing, t) {
+    const refresh = pricing?.refresh
+    if (refresh === null || refresh === undefined) return undefined
+    if (typeof refresh.lastError !== 'string' || refresh.lastError.length === 0) return undefined
+    return `${t('meterPriceRefreshFailed')}: ${refresh.lastError}`
   }
 
   /**

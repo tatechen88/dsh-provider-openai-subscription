@@ -27,8 +27,9 @@ import { createUsageCollector } from './usage/collector.js'
 import { UsageLedger } from './usage/ledger.js'
 import { MeterSettingsStore } from './usage/settings-store.js'
 import { UsageMeterService } from './usage/service.js'
+import { LearnedPriceStore } from './usage/pricing-store.js'
 import { METERED_PROVIDERS } from './usage/vendors.js'
-import { dshHome, meterSettingsPath, usageLedgerPath } from './state.js'
+import { dshHome, learnedPricePath, meterSettingsPath, usageLedgerPath } from './state.js'
 
 /** How long the runtime waits for a DSH service to become available. */
 export const SERVICE_WAIT_TIMEOUT_MS = 30_000
@@ -366,6 +367,13 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
   // DSH has registered. Built once so the collector and the view answer the same
   // question from the same cached list.
   const routes = createMeterRoutes(ctx, { auto: resolved.autoProviders !== false })
+  // The learned price table is derived data: an unreadable file is reported once
+  // and then ignored, and the built-in snapshot prices calls as it always did.
+  const prices = new LearnedPriceStore({ path: learnedPricePath(home) })
+  const priceState = await prices.open()
+  if (priceState.reason !== undefined) {
+    logger?.warn?.(`${PACKAGE_NAME}: learned price table was ignored (${priceState.reason})`)
+  }
 
   const ledger = new UsageLedger({ path: usageLedgerPath(home), timeZone: resolved.timeZone })
   const passthrough = (_options, next) => next()
@@ -396,6 +404,8 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
     readZhipuCredential: () => resolveZhipuCredential(ctx, credentials),
     // What the browser is allowed to follow: the routes metered right now.
     listRoutes: () => routes.known(),
+    // The vendor's own table, when this deployment reads one from its page.
+    pricingStore: prices,
   })
   // Warm the readings once: the sidebar shows an account only once one has been
   // read, and leaving that to a manual refresh means an empty panel until

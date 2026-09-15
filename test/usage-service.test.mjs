@@ -8,11 +8,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { UsageLedger } from '../src/usage/ledger.js'
 import { UsageMeterService } from '../src/usage/service.js'
+import { LearnedPriceStore } from '../src/usage/pricing-store.js'
 import { normalizeMeterConfig, priceToMicros, toContractualSchedule } from '../src/usage/config.js'
-import { UNPRICED_NO_SCHEDULE } from '../src/usage/pricing.js'
+import { DEEPSEEK_PUBLIC_SCHEDULE, UNPRICED_NO_SCHEDULE } from '../src/usage/pricing.js'
 
 /** Frozen clock shared by the ledger and the meter, so periods are comparable. */
 const NOW = Date.UTC(2026, 8, 15, 20, 30)
@@ -333,6 +334,144 @@ test('the configuration exposes exactly the switches the settings page renders',
   // without a release here, and turning it off restores the fixed registry.
   assert.equal(normalizeMeterConfig({}).autoProviders, true)
   assert.equal(normalizeMeterConfig({ autoProviders: false }).autoProviders, false)
+  // Reading the vendor's price page is the one outbound request that is not about
+  // the account's own state, so it stays off unless a deployment asks for it.
+  assert.equal(normalizeMeterConfig({}).refreshPublicPrices, false)
+  assert.equal(normalizeMeterConfig({ refreshPublicPrices: true }).refreshPublicPrices, true)
+})
+
+/**
+ * A price page in the shape the real one uses: one model column, six rates.
+ * @param {string} model
+ * @param {string} cacheMiss
+ * @returns {string}
+ */
+function pricePage(model, cacheMiss) {
+  return `<table>
+<tr><td colspan="3" style="text-align:center">模型</td><td>${model}<sup>(1)</sup></td></tr>
+<tr><td rowspan="6">价格<sup>(3)</sup></td><td rowspan="2">百万tokens输入<br>（缓存命中）</td><td>空闲时段</td><td>0.02元</td></tr>
+<tr><td>高峰时段</td><td>0.04元</td></tr>
+<tr><td rowspan="2">百万tokens输入<br>（缓存未命中）</td><td>空闲时段</td><td>${cacheMiss}</td></tr>
+<tr><td>高峰时段</td><td>2元</td></tr>
+<tr><td rowspan="2">百万tokens输出</td><td>空闲时段</td><td>4元</td></tr>
+<tr><td>高峰时段</td><td>8元</td></tr></table>
+<p>(3) 空闲时段价格为高峰时段价格的一半。高峰时段为北京时间周一至周五 9:00 - 12:00、14:00 - 18:00（其余为空闲时段）。</p>`
+}
+
+/** A learned price store beside one test's ledger. */
+async function priceStoreFor(ledger) {
+  const store = new LearnedPriceStore({ path: join(dirname(ledger.path), 'prices.json'), now: () => NOW })
+  assert.deepEqual(await store.open(), { loaded: false })
+  return store
+}
+
+test('a learned price table prices the model the snapshot does not carry', async () => {
+  const ledger = await openedLedger()
+  const store = await priceStoreFor(ledger)
+  const meter = new UsageMeterService({
+    ledger,
+    now: () => NOW,
+    pricingStore: store,
+    config: { refreshPublicPrices: true },
+    fetchImpl: async () => new Response(pricePage('deepseek-v5', '3元'), { status: 200 }),
+  })
+
+  const result = await meter.refreshPublicPrices({ force: true })
+  assert.equal(result.status, 'ok', result.reason)
+  assert.equal(result.schedule.source, 'official-price-page')
+  assert.equal(result.schedule.windowSource, 'page')
+  assert.deepEqual(result.schedule.models['deepseek-v5'].offPeak, { cacheHit: 20_000, cacheMiss: 3_000_000, output: 4_000_000 })
+
+  const schedules = meter.publicSchedules()
+  assert.equal(schedules.length, 2, 'the learned table sits in front of the one this build ships')
+  assert.deepEqual(schedules[0], result.schedule)
+  assert.equal(schedules[1].id, DEEPSEEK_PUBLIC_SCHEDULE.id)
+
+  const shipped = meter.recordUsage(fact({ callId: 'v5', model: 'deepseek-v5' })).quote
+  assert.equal(shipped.status, 'priced', 'the page carries this model, so it is priced from the page')
+  assert.equal(shipped.amountMicros, 3_000_000)
+
+  const known = meter.recordUsage(fact({ callId: 'flash', model: 'deepseek-flash' })).quote
+  assert.equal(known.status, 'priced')
+  assert.equal(known.amountMicros, 1_000_000, 'a model only the built-in table carries still resolves')
+
+  const view = meter.view({ provider: 'deepseek-official' })
+  assert.equal(view.pricing.public.scheduleId, result.schedule.id)
+  assert.equal(view.pricing.public.fallbackScheduleId, DEEPSEEK_PUBLIC_SCHEDULE.id)
+  assert.deepEqual(view.pricing.unpricedModels, [], 'and nothing is left unpriced')
+  await ledger.close()
+})
+
+test('a page that does not parse leaves the table in force and says why', async () => {
+  const ledger = await openedLedger()
+  const store = await priceStoreFor(ledger)
+  const meter = new UsageMeterService({
+    ledger,
+    now: () => NOW,
+    pricingStore: store,
+    config: { refreshPublicPrices: true },
+    fetchImpl: async () => new Response('<table><tr><td>模型</td></tr></table>', { status: 200 }),
+  })
+
+  const result = await meter.refreshPublicPrices({ force: true })
+  assert.equal(result.status, 'unreadable')
+  assert.equal(store.schedule, undefined, 'nothing is adopted from a table that did not parse')
+  assert.equal(store.lastError, result.reason)
+
+  const view = meter.view({ provider: 'deepseek-official' })
+  assert.equal(view.pricing.public.scheduleId, DEEPSEEK_PUBLIC_SCHEDULE.id, 'the built-in table keeps pricing calls')
+  assert.equal(view.pricing.public.fallbackScheduleId, DEEPSEEK_PUBLIC_SCHEDULE.id)
+  assert.deepEqual(view.pricing.refresh, { enabled: true, lastAttemptAt: NOW, lastError: result.reason })
+  await ledger.close()
+})
+
+test('the price page is read only when a deployment asks for it', async () => {
+  const ledger = await openedLedger()
+  const store = await priceStoreFor(ledger)
+  let calls = 0
+  const meter = new UsageMeterService({
+    ledger,
+    now: () => NOW,
+    pricingStore: store,
+    fetchImpl: async () => { calls += 1; return new Response(pricePage('deepseek-v5', '3元'), { status: 200 }) },
+  })
+
+  assert.deepEqual(await meter.refreshPublicPrices(), { status: 'off', reason: 'disabled' })
+  // An unpriced model is the moment worth reading the page, but only when the
+  // deployment turned that on: the request stays out of the default deployment.
+  meter.recordUsage(fact({ callId: 'v5', model: 'deepseek-v5' }))
+  await new Promise((resolve) => { setTimeout(resolve, 5) })
+  assert.equal(calls, 0)
+  assert.equal(meter.view().pricing.refresh.enabled, false, 'and the page can say the switch is off')
+  await ledger.close()
+})
+
+test('an unpriced model asks for the page once, and the attempt backs off', async () => {
+  const ledger = await openedLedger()
+  const store = await priceStoreFor(ledger)
+  let calls = 0
+  const meter = new UsageMeterService({
+    ledger,
+    now: () => NOW,
+    pricingStore: store,
+    config: { refreshPublicPrices: true },
+    fetchImpl: async () => { calls += 1; return new Response(pricePage('deepseek-v5', '3元'), { status: 200 }) },
+  })
+
+  meter.recordUsage(fact({ callId: 'v5-a', model: 'deepseek-v5' }))
+  await new Promise((resolve) => { setTimeout(resolve, 5) })
+  assert.equal(calls, 1, 'an unpriced call starts exactly one read')
+  assert.equal(store.schedule.models['deepseek-v5'].offPeak.cacheMiss, 3_000_000)
+
+  meter.recordUsage(fact({ callId: 'v5-b', model: 'deepseek-v5' }))
+  await new Promise((resolve) => { setTimeout(resolve, 5) })
+  assert.equal(calls, 1, 'a recent attempt is not repeated on every unpriced call')
+  assert.deepEqual(await meter.refreshPublicPrices(), { status: 'not-due' })
+
+  // The model the page now covers stops being unpriced on the next call.
+  const priced = meter.recordUsage(fact({ callId: 'v5-c', model: 'deepseek-v5' })).quote
+  assert.equal(priced.status, 'priced')
+  await ledger.close()
 })
 
 test('the view names the models its price table does not cover', async () => {

@@ -55,6 +55,19 @@ export function meterSettingsPath(home = dshHome()) {
 }
 
 /**
+ * Absolute path of the price table learned from the vendor's own price page.
+ *
+ * Derived data, not a preference: it lives beside the ledger under `storages/`
+ * and can be deleted at any time — the built-in snapshot then prices every call
+ * again.
+ * @param {string} [home] - DSH home; injectable so callers and tests can aim it.
+ * @returns {string}
+ */
+export function learnedPricePath(home = dshHome()) {
+  return join(home, 'storages', 'openai-subscription-meter', 'prices.json')
+}
+
+/**
  * Absolute path of the retired `dsh-cost-meter` ledger.
  *
  * The migration never reads, imports, or rewrites that file; the rescue CLI

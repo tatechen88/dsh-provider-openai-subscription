@@ -32,6 +32,11 @@
           # plugin reads accounts for: a model another plugin adds is counted from
           # its first call. Turning it off restores the fixed vendor registry.
           autoProviders: true
+          # Read the vendor's own price page to price a model the built-in snapshot
+          # does not carry. Off by default: it is the only outbound request the
+          # meter makes that is not about the account's own state, and a table that
+          # does not parse completely is rejected whole.
+          refreshPublicPrices: false
           # Hide money / balance on shared screens; token counts stay visible.
           hideBalance: false
           hideCost: false

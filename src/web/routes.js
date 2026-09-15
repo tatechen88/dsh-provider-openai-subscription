@@ -341,6 +341,15 @@ export function mountRoutes(host, deps) {
       sendJson(response, 200, { ok: true, data: service.view().zhipu, status: reading.status })
     })
 
+    route('POST', '/meter/prices/refresh', async (_request, response) => {
+      if (service === undefined) {
+        sendJson(response, 200, { ok: false, error: 'usage meter is unavailable', data: { status: 'off' } })
+        return
+      }
+      const result = await service.refreshPublicPrices({ force: true })
+      sendJson(response, 200, { ok: true, data: result, status: result.status })
+    })
+
     if (settings !== undefined) {
       route(['GET', 'PATCH'], '/meter/settings', async (request, response) => {
         if (request.method === 'GET') {

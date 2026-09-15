@@ -36,6 +36,12 @@ export const DEFAULT_METER_CONFIG = Object.freeze({
    * counted from its first call instead of waiting for a release here.
    */
   autoProviders: true,
+  /**
+   * Whether the vendor's own price page is read to price a model the built-in
+   * snapshot does not carry. Off by default: it is the only outbound request this
+   * meter makes that does not answer with the account's own state.
+   */
+  refreshPublicPrices: false,
   contractualSchedules: Object.freeze([]),
 })
 
@@ -172,6 +178,7 @@ export function normalizeMeterConfig(raw) {
     hideCost: record.hideCost === true,
     deepseekBalance: record.deepseekBalance !== false,
     autoProviders: record.autoProviders !== false,
+    refreshPublicPrices: record.refreshPublicPrices === true,
     contractualSchedules: contracts
       .map((entry, index) => toContractualSchedule(entry, index))
       .filter((entry) => entry !== undefined),
