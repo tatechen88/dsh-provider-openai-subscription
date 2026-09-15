@@ -35,6 +35,8 @@
 
 阶梯时段用固定 `+08:00` 偏移实现（中国自 1991 年起无夏令时），区间为半开 `[start, end)`。`resolveSchedule` 的优先级是合同价 > 当前官方快照 > 历史快照，且合同价只对企业声明可见。
 
+`bandTransition` 与 `isPeakAt` 读同一个时钟，因此卡片承诺的档位与账单实际取的档永远不会不一致；它额外给出**当前档的结束时刻**，让"把批量任务挪到空闲时段"成为可以执行的提示而非一句口号。
+
 已下线的模型名走 alias 而不是复制一份费率：官方价页写明 `deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp` 仍可调用、由 DeepSeek-V4.1-Flash 提供服务、并按 Flash 价格计费，因此它们解析到 flash 的费率，报价里用 `billedModel` 说明实际采用的是谁的价。alias 之外的未知模型仍然 unpriced。
 
 ### `usage/collector.js`
@@ -53,6 +55,8 @@
 
 `UsageLedger` 保存 append-only 事实与当时报价。`callId` 是幂等键；写入 2 秒防抖、串行、临时文件加 rename 原子落盘；`flush()`/`close()` 等待最新字节。文件无法解析或版本不认识时，先改名保留再抛 `UsageLedgerCorruptError`，绝不当作空账本继续。
 
+账本有 **20,000 条的硬上限**，但上限不是清理策略——直接丢最旧事实会静默改写各时间窗的合计。因此 `compact()`（启动时、以及 `retentionDays` 被调小时）把窗口外的原始事实**折叠**成每天 × 每路由 × 每模型的 rollup 条目：token 各桶与各币种金额都是整数求和，窗口只做加法，所以**每个合计在压实前后一分不差**。rollup 是独立条目类型（schema v2；v1 文件仍可读，下次写入即升级），带自己的标记与校验，不进 call-id 幂等表；`unpricedModels` 不看 rollup——历史缺口不是还能补的缺口。rollup 没有会话，**会话级明细的回溯范围即保留窗口**，这是压实唯一的代价。`mutations` 计数器在每次条目变化时递增，是服务层视图缓存的失效信号。
+
 `summary(range, provider?)` 与 `sessionSummary(sessionId, provider?)` 的第二个参数是**归属**而不是事后过滤：指示器描述的是当前模型，别家的 token 不能加进来。不传则保持全局汇总，供不针对某一路由的读取使用。`unpricedModels(providers?)` 按 `(provider, model)` 汇总未定价调用（次数、最近时间、原因），只有传入了「有价格表的路由」时它才代表真正的缺口。
 
 ### `usage/deepseek-balance.js`
@@ -66,6 +70,8 @@
 ### `usage/service.js`
 
 组装计价、账本与两家厂商的账户读数，产出浏览器视图模型。视图里没有密钥、没有原始事实、没有企业合同内部备注。`hideBalance` 只去掉余额，`hideCost` 只去掉金额，token 始终保留；GLM 的现金余额受 `hideBalance` 约束，资源包 token 不受——token 永远不是隐私。`view({sessionId, provider})` 收到厂商提示时才触发那一家的到期刷新，并按该路由收窄三个时间窗；`metered` 切片告诉页面「现在到底在统计哪些 Provider」，客户端不再自带名单。
+
+`view` 的四个账本扫描切片（三个时间窗 + 未定价清单）按 `(generation × ledger.mutations × provider × sessionId)` **缓存**：两个轮询面每 30 秒各读一次，多数轮询之间账本毫无变化，重复扫描纯属浪费。账户切片与读数触发**刻意留在缓存之外**——它们随后台读数变化，账本看不见。`pricing.band` 同理：它取决于墙上时钟，由 `bandTransition` 每次现算。
 
 `publicSchedules()` 的返回顺序是有意的：**学到的表在前、内置快照在后**。`resolveSchedule` 先按状态、再按 `retrievedAt` 排序，所以新表覆盖它带的模型，快照继续为它没有的模型兜底，合同价仍然压过两者。`recordUsage` 在报价为 `unknown-model` 时后台触发一次价格页刷新（开关默认关）；`refreshPublicPrices` 是单飞的，任何解析失败都只记录原因、不动正在生效的表。
 

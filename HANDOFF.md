@@ -19,6 +19,11 @@
 ## 最近在做什么
 
 ```
+<docs> 2026-09-15 docs: record the hardening and optimization round
+c02e1c3 2026-09-15 feat: show the price band, reasoning tokens, and per-model session breakdown
+c35cf06 2026-09-15 perf: cache the meter's ledger scans between polls
+748b8ae 2026-09-15 feat: fold old ledger facts into day rollups instead of dropping them
+bafae8a 2026-09-15 fix: harden the client reads, the price refresh route, and the syntax check
 449e096 2026-09-15 feat: expire the model catalog cache
 7a61c4b 2026-09-15 feat: refresh the price table from the vendor page
 2d6b650 2026-09-15 feat: name the models the price table does not cover
@@ -58,7 +63,18 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 
 本轮已发版 **1.3.0**（`chore: release 1.3.0` + 附注标签 `v1.3.0`，含 GitHub Release）。
 
-### 浮动与自动收回（本轮）
+### 严格体检与四段优化（本轮）
+
+一轮全面审计后按批准的四段路线执行，导出与预算两项被用户明确划掉。发现与修法：
+
+1. **账本压实替代裸截断**（`748b8ae`，最大单项）。审计发现账本有 20,000 条 FIFO 上限（此前无人注意），直接丢最旧事实会静默改写各时间窗合计，且每次写入都是全文件重写——封顶后写放大约 7GB/天。现在 `compact()` 把 `retentionDays`（默认 90，0=永不）窗口外的原始事实折叠成**每天 × 每路由 × 每模型**的 rollup：token 桶与各币种金额整数求和，窗口只做加法，锚点测试断言压实前后 `summary('all'/'today'/scoped)` **逐项相等**。rollup 是独立条目类型（`rollup: true`，schema v2，v1 文件仍可读、下次写入升级），有自己的校验 `isReadableRollup`，不进 call-id 幂等表；`unpricedModels` 不看 rollup（历史缺口不是还能补的缺口）；rollup 无会话，**会话明细的回溯范围即保留窗口**——这是压实唯一的代价，README 已写明。踩过的坑：`summary` 内层过滤、cap 淘汰循环、`#mergeFromDisk` 的 `known` 集合原来都直接读 `entry.fact.*`，rollup 一进列表就会崩——全部收敛到模块级访问器（`entryStartedAt/entryProvider/entryModel/entryCalls/entryUsageOf/entryAmounts`）。
+2. **视图扫描缓存**（`c35cf06`）。两个轮询面每 30s 各读一次，每次 4 个全量扫描；现在三个时间窗切片按 `(generation × ledger.mutations × provider × sessionId)` 缓存，未定价清单按 `(generation × mutations)` 缓存。**账户切片与读数触发刻意留在缓存外**——它们随后台读数变化，账本看不见。
+3. **功能三件**（`c02e1c3`）：`pricing.band = bandTransition(now, windows)`（与 `isPeakAt` 同读一个时钟，测试用一周半小时步进扫描断言两者永不打架），卡片显示「高峰时段 · 42 分钟后转空闲时段（半价）」；tokenLines 标注 reasoning 子集（`（含思考 12.0K）`，数据本就在聚合里，只是从没显示）；`viewOfAggregate` 把内部 `byModel` 暴露成 top-3 会话构成。
+4. **加固**（`bafae8a`）：客户端 `getJson` 加 45s 超时（必须大于服务端模型目录的 30s 上限，防悬挂连接堆积轮询）；`/meter/prices/refresh` 的 force 路径加 60s 冷却（同源脚本不能再借 force 高频打官方页）；`check` 脚本从 40+ 项手工清单改为 `scripts/check-syntax.mjs` 目录遍历——本轮审计自己也踩了一次"新文件忘加清单"的坑。
+
+另：测试骨架的三份相同 `createHookRuntime` 收敛到 `test/helpers.mjs`（故意不叫 `*.test.mjs`，跑测 glob 不会执行它）；各文件的 `fact()` 语义各不相同，是夹具不是重复，保留。
+
+### 浮动与自动收回（上一轮）
 
 远程手机上的截图暴露了一个此前没有被验证过的问题：**卡片虽然写了 `position: fixed`，却被切在侧边栏右边缘**。原因是 `position: fixed` 只有在祖先不是它的包含块时才逃得掉 `overflow: hidden`；侧边栏的 rail 收起/展开带 `transform` 动画，动画期间那个祖先就是包含块，于是卡片被裁。之前桌面拖拽"能用"只说明数字位置算对了，没人从手机上看过。
 
@@ -68,7 +84,7 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 
 测试在 `test/client-float-portal.test.mjs`（4 条，本仓唯一带 `document` 与 `react-dom` stub 的 harness）：拖动后按钮挂到 body、卡片挂到 body 且不裁剪、倒计时与外部按压的收回、切换模型收回。`client-ui.test.mjs` 继续覆盖"没有 `react-dom` 时原地渲染"的降级路径——两个 harness 的模块表不同，正因为行为本来就不同。踩过的坑：那份 harness 里 `hooks` 是模块级变量，`mount()` 必须重置它，否则第二个测试会拿到第一个测试的状态槽；以及 `useCurrentProvider` 是**订阅驱动**的（不随每次渲染重读），测试里换 Provider 必须触发 `sessionsService.list.subscribe` 的回调。
 
-### 智谱 GLM（本轮）
+### 智谱 GLM
 
 指示器多跟一家厂商：**智谱 GLM**（pi-ai 的 `zai-coding-cn` 路由，模型如 `glm-5.3`）。四段实现各自独立提交，任何一段都可以单独回退：
 

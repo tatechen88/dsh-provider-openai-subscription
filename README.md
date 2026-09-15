@@ -67,6 +67,7 @@ dsh plugin --profile web add ../dsh-provider-openai-subscription
       deepseekBalance: true     # 读取 DeepSeek 官方余额；关掉则完全不发该请求
       autoProviders: true       # 所有已注册 Provider 都记 token；关掉只记注册表里的厂商
       refreshPublicPrices: false # 读官方价格页给新模型定价；默认关，见「新模型怎么自己出现」
+      retentionDays: 90         # 90 天前的原始调用折叠成按日汇总；0 = 永不折叠
       hideBalance: false
       hideCost: false
       contractualSchedules: []  # 企业合同价，见「企业合同价」一节
@@ -153,9 +154,11 @@ Responses 的终止事件会携带 `usage`，插件在 finish 之前把它转换
 |---|---|
 | `openai-subscription` | 桌面：`OpenAI 5小时 82% · 每周 64%`；卡片：`OpenAI (ChatGPT OAuth)`、各窗口剩余百分比、本会话/今日/本月 token |
 | `deepseek-official` | 桌面：`DeepSeek ¥86.20 · 今日 ¥0.42`（余额 + 今日消费）；卡片：再加上账号类型、月消费、价格来源 |
-| `zai-coding-cn`（智谱 GLM） | 桌面：`GLM 余 14M · 今日 1.2M`（资源包剩余 token + 今日用量）；卡片：Coding Plan 各窗口剩余额度、现金余额、每个资源包（名称、剩余量、模型范围、到期日）、本会话/今日/本月 token |
+| `zai-coding-cn`（智谱 GLM） | 桌面：`GLM 余 14M · 今日 1.2M`（资源包剩余 token + 今日用量）；卡片：Coding Plan 各窗口剩余额度、现金余额、每个资源包（名称、剩余量、模型范围、到期日）、本会话/今日/本月 token（含思考 token）、会话按模型分解 |
 | 其他已注册 Provider | 桌面：`<provider id> 今日 3.4M`；卡片：该路由的 token 与未定价模型。没有账号读数就不显示余额，没有价格表就不显示金额 |
 | 未注册的 Provider | 不显示 |
+
+卡片还有三行与"钱什么时候最少"有关：**当前价格档**（`高峰时段 · 42 分钟后转空闲时段（半价）`，倒计时来自官方时段定义）、**思考 token**（`输出 20.0K（含思考 12.0K）`，它是输出的子集不重复计费）、以及**会话按模型分解**（`会话构成: glm-5.3 1.2M→30.0K · …`，最多三个最重的模型）。
 
 鼠标悬停在任何一种渲染上都会给出同一份数据的单行摘要，两份内容来自同一个函数，不会互相矛盾。
 
@@ -192,6 +195,7 @@ GLM 走 pi-ai 的 `zai-coding-cn` 路由，用量与资源包也从智谱自己�
 - **OpenAI 订阅不显示金额。** ChatGPT 订阅没有按 token 的现金结算，把 API 目录价当成订阅支出是错的。
 - **GLM 只计量不计价。** 智谱 Coding Plan 是订阅制，没有可引用的按 token 价格，因此 GLM 调用始终记为「未配置价格」（`no-schedule`）：只累计 token，既不产生金额，也不会套用 DeepSeek 的价格表。
 - **DeepSeek 显示的是本地估算。** 官方公开接口只提供余额，没有账单历史；费用由本插件按 token 与价格表计算，措辞与 UI 始终标注"估算"。
+- **账本会自动压实。** 超过 `meter.retentionDays`（默认 90 天，0 = 永不）的原始调用，在启动时折叠成"每天 × 每路由 × 每模型"的汇总条目：token 与金额都是整数求和，**所有时间窗的合计一分不差**；换来的是账本文件有界、不会随年月膨胀。会话级明细的回溯范围即这个窗口。
 - 计价使用**整数定点**：价格以「每百万 token 的货币微元」存储，金额是各桶分子求和后一次性四舍五入，不经过浮点累加。
 - 三个计费桶：未缓存输入、缓存读取、输出。`reasoning` 是输出的子集，只展示不重复计费。官方未公布独立的 cache-write 价格，因此该桶只统计、不计费。
 - 未知模型**不套默认价**，显示为"未配置价格"，避免用别的模型价格编造金额；这类模型会在卡片与 `rescue meter` 里被逐个点名。
