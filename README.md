@@ -217,7 +217,7 @@ dsh --profile web --dump-default-config
 - 账本位于 `$DSH_HOME/storages/openai-subscription-meter/usage.json`，只保存调用事实与当时报价，不保存提示词、响应正文或密钥；
 - 设置位于 `$DSH_HOME/plugin-state/openai-subscription-meter.json`，带 revision，冲突写入返回 409 而不是覆盖；
 - 余额查询每次重新解析 `DEEPSEEK_API_KEY`（或 `llm-deepseek.apiKeyEnv` 指定的变量），只允许发往 HTTPS `api.deepseek.com`，禁止重定向；失败保留上一次成功读数；
-- 设置页可分别隐藏余额与费用，token 统计不受影响。
+- 设置页的「用量与费用」面板只提供**显示币种**（人民币 / 美元）；账号类型、统计时区、是否读取官方余额、隐藏余额与隐藏费用都在 `cordis.patch.yml` 的 `meter` 配置层，token 统计不受这些开关影响。
 
 ## DSH 工具权限
 

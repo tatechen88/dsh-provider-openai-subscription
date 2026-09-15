@@ -58,19 +58,8 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   const COLLISION_GAP_PX = 8
   /** Controls considered occupied when a floating panel settles nearby. */
   const COLLISION_SELECTOR = 'button, a[href], input, textarea, select, [role="button"], [role="link"], [role="dialog"], [role="menu"], [role="toolbar"]'
-  /** Placeholder showing the shape an enterprise price agreement takes. */
-  const METER_CONTRACT_EXAMPLE = `[
-  {
-    "id": "acme-2026",
-    "label": "Acme agreement",
-    "currency": "USD",
-    "validFrom": "2026-01-01",
-    "validTo": "2026-12-31",
-    "models": {
-      "deepseek-flash": { "cacheMiss": 0.1, "cacheHit": 0.001, "output": 0.2 }
-    }
-  }
-]`
+  /** Currencies the meter settings offer. A composition may still name another. */
+  const DISPLAY_CURRENCIES = ['CNY', 'USD']
 
   const API = {
     status: '/plugins/openai-subscription/status',
@@ -157,21 +146,13 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterPublicPrice: '公开价',
       meterContractPrice: '合同价',
       meterNoPrice: '未配置价格',
-      meterAccountKind: '账号类型',
       meterAccountUnknown: '未声明',
       meterAccountPersonal: '个人',
       meterAccountEnterprise: '企业（用户声明）',
       meterAccountHint: '公开 API 不返回实名类型，企业身份始终是用户声明。',
-      meterContractHint: '企业合同价：JSON 数组，每条含币种、有效期与各模型的每百万 token 单价。只有账号声明为企业且在有效期内才会生效。',
-      meterContractInvalid: '合同价 JSON 无法解析',
-      meterHideBalance: '隐藏余额',
-      meterHideCost: '隐藏费用',
-      meterDeepseekBalance: '读取 DeepSeek 官方余额',
       meterDisplayCurrency: '显示币种',
-      meterTimeZone: '统计时区',
       meterSave: '保存',
       meterSaved: '已保存',
-      meterRefresh: '刷新余额',
       meterUnavailable: '余额不可用',
       meterNoUsage: '暂无用量',
       meterPriceSource: '价格来源',
@@ -240,21 +221,13 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterPublicPrice: 'Public price',
       meterContractPrice: 'Contract price',
       meterNoPrice: 'No configured price',
-      meterAccountKind: 'Account type',
       meterAccountUnknown: 'Not declared',
       meterAccountPersonal: 'Personal',
       meterAccountEnterprise: 'Enterprise (user-declared)',
       meterAccountHint: 'The public API does not report verification type; enterprise identity is always user-declared.',
-      meterContractHint: 'Enterprise price agreements: a JSON array; each entry carries a currency, a validity window, and per-million-token rates per model. One takes effect only for a declared enterprise account inside its window.',
-      meterContractInvalid: 'The agreement JSON could not be parsed',
-      meterHideBalance: 'Hide balance',
-      meterHideCost: 'Hide cost',
-      meterDeepseekBalance: 'Read the official DeepSeek balance',
       meterDisplayCurrency: 'Display currency',
-      meterTimeZone: 'Accounting time zone',
       meterSave: 'Save',
       meterSaved: 'Saved',
-      meterRefresh: 'Refresh balance',
       meterUnavailable: 'Balance unavailable',
       meterNoUsage: 'No usage yet',
       meterPriceSource: 'Price source',
@@ -999,11 +972,13 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   }
 
   /**
-   * Meter settings: the account declaration, the display choices, the two
-   * privacy switches, and the enterprise price agreements.
+   * Meter settings: the display currency, and nothing else.
    *
-   * The account type is a declaration, never a detection: the panel says so
-   * where the choice is made, so nobody reads the label as verified identity.
+   * Everything else the meter understands is composition-level configuration in
+   * `cordis.patch.yml`: the account declaration, the statistics zone, whether the
+   * official balance is read at all, and the two privacy switches. Those are
+   * deployment decisions, so the page keeps the one choice that is the user's.
+   *
    * @param {object} props
    * @param {(key: string) => string} props.t - translator for the active locale.
    * @returns {object|null} element tree, or null until the settings load.
@@ -1012,8 +987,6 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const [state, setState] = useState(null)
     const [draft, setDraft] = useState(null)
     const [notice, setNotice] = useState(null)
-    const [contracts, setContracts] = useState('')
-    const [contractsError, setContractsError] = useState(null)
 
     useEffect(() => {
       let cancelled = false
@@ -1023,7 +996,6 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
           if (cancelled) return
           setState({ revision: payload.data.revision, config: payload.data.config })
           setDraft(payload.data.config)
-          setContracts(JSON.stringify(payload.data.config.contractualSchedules ?? [], null, 2))
         } catch {
           if (!cancelled) setNotice('unavailable')
         }
@@ -1051,7 +1023,6 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         const payload = await patchJson(API.meterSettings, { patch: changes, expectedRevision: state.revision })
         setState({ revision: payload.data.revision, config: payload.data.config })
         setDraft(payload.data.config)
-        setContracts(JSON.stringify(payload.data.config.contractualSchedules ?? [], null, 2))
         setNotice('saved')
       } catch (error) {
         // A conflict leaves this panel holding a revision the store has already
@@ -1064,100 +1035,24 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         setNotice(messageOf(error))
       }
     }
-    const refreshBalance = async () => {
-      setNotice(null)
-      try {
-        await postJson(API.meterRefresh)
-        setNotice('saved')
-      } catch (error) {
-        setNotice(messageOf(error))
-      }
-    }
-    /**
-     * Parse the agreement text and stage it, reporting a malformed document
-     * instead of dropping it silently.
-     */
-    const applyContracts = (text) => {
-      setContracts(text)
-      if (text.trim().length === 0) {
-        setContractsError(null)
-        patch({ contractualSchedules: [] })
-        return
-      }
-      try {
-        const parsed = JSON.parse(text)
-        if (!Array.isArray(parsed)) throw new Error('an array of agreements is required')
-        setContractsError(null)
-        patch({ contractualSchedules: parsed })
-      } catch (error) {
-        setContractsError(messageOf(error))
-      }
-    }
-    /** One boolean setting, rendered as a labelled checkbox. */
-    const toggle = (key, labelKey) => h('label', { style: s.checkRow, key }, [
-      h('input', {
-        type: 'checkbox',
-        checked: draft[key] === true,
-        onChange: (event) => patch({ [key]: event.target.checked }),
-      }),
-      h('span', null, t(labelKey)),
-    ])
+    // A composition may name a currency this panel does not offer; it is then
+    // appended, so the select shows the value in force instead of going blank.
+    const currencies = DISPLAY_CURRENCIES.includes(draft.displayCurrency)
+      ? DISPLAY_CURRENCIES
+      : [...DISPLAY_CURRENCIES, draft.displayCurrency]
 
     return h('div', { style: s.block }, [
       h('h3', { style: s.cardTitle, key: 'title' }, t('meterTitle')),
-      h('div', { key: 'account', style: s.row }, [
-        h('span', null, t('meterAccountKind')),
-        h('select', {
-          style: s.input,
-          value: draft.accountKind,
-          onChange: (event) => patch({ accountKind: event.target.value }),
-        }, [
-          h('option', { key: 'unknown', value: 'unknown' }, t('meterAccountUnknown')),
-          h('option', { key: 'personal', value: 'personal' }, t('meterAccountPersonal')),
-          h('option', { key: 'enterprise', value: 'enterprise' }, t('meterAccountEnterprise')),
-        ]),
-      ]),
-      h('p', { key: 'hint', style: s.note }, t('meterAccountHint')),
       h('div', { key: 'display', style: s.row }, [
         h('span', null, t('meterDisplayCurrency')),
         h('select', {
           style: s.input,
           value: draft.displayCurrency,
           onChange: (event) => patch({ displayCurrency: event.target.value }),
-        }, ['CNY', 'USD', 'EUR'].map((code) => h('option', { key: code, value: code }, code))),
+        }, currencies.map((code) => h('option', { key: code, value: code }, code))),
       ]),
-      h('div', { key: 'zone', style: s.row }, [
-        h('span', null, t('meterTimeZone')),
-        h('select', {
-          style: s.input,
-          value: draft.timeZone,
-          onChange: (event) => patch({ timeZone: event.target.value }),
-        }, [
-          h('option', { key: 'system', value: 'system' }, 'system'),
-          h('option', { key: 'UTC', value: 'UTC' }, 'UTC'),
-          h('option', { key: 'Asia/Shanghai', value: 'Asia/Shanghai' }, 'Asia/Shanghai'),
-        ]),
-      ]),
-      draft.accountKind === 'enterprise'
-        ? h('div', { key: 'contracts' }, [
-            h('p', { style: s.note }, t('meterContractHint')),
-            h('textarea', {
-              style: s.textarea,
-              rows: 6,
-              spellCheck: false,
-              value: contracts,
-              placeholder: METER_CONTRACT_EXAMPLE,
-              onChange: (event) => applyContracts(event.target.value),
-            }),
-            contractsError === null ? null : h('p', { style: s.error, role: 'alert' }, `${t('meterContractInvalid')}: ${contractsError}`),
-          ])
-        : null,
-      toggle('deepseekBalance', 'meterDeepseekBalance'),
-      toggle('hideBalance', 'meterHideBalance'),
-      toggle('hideCost', 'meterHideCost'),
       h('div', { key: 'actions', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } }, [
-        h(ActionButton, { key: 'save', label: t('meterSave'), disabled: contractsError !== null, onClick: () => { void save() } }),
-        h(ActionButton, { key: 'balance', label: t('meterRefresh'), onClick: () => { void refreshBalance() } }),
+        h(ActionButton, { key: 'save', label: t('meterSave'), onClick: () => { void save() } }),
         notice === null || notice === 'unavailable'
           ? null
           : h('span', {

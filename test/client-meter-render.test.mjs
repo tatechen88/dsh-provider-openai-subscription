@@ -311,43 +311,28 @@ test('the meter settings panel edits an enterprise agreement, and an old host le
     const props = { t: (key) => descriptor.pure.translate('zh', key) }
     const node = await render(panel, props)
     const nodes = collectNodes(node)
-    const textarea = nodes.find((entry) => entry.type === 'textarea')
-    assert.notEqual(textarea, undefined, 'a declared enterprise account gets the agreement editor')
-    assert.match(textarea.props.placeholder, /acme-2026/)
-
-    // Every switch the panel renders is one the plugin actually reads.
-    const checkboxes = nodes.filter((entry) => entry.type === 'input' && entry.props.type === 'checkbox')
+    const selects = nodes.filter((entry) => entry.type === 'select')
+    assert.equal(selects.length, 1, 'the panel offers exactly one choice')
     assert.deepEqual(
-      checkboxes.map((entry) => entry.props.checked),
-      [true, false, false],
-      'the balance reading is on, both hiding switches are off',
+      selects[0].children.flat().map((option) => option.props.value),
+      ['CNY', 'USD'],
+      'and that choice is the display currency, offered in the two supported currencies',
+    )
+    assert.equal(selects[0].props.value, 'CNY', 'showing the value the settings carry')
+    assert.deepEqual(
+      nodes.filter((entry) => entry.type === 'input' || entry.type === 'textarea').length,
+      0,
+      'no other control remains: everything else is composition-level configuration',
     )
 
-    // A malformed document is reported and blocks the save rather than being
-    // silently dropped.
-    textarea.props.onChange({ target: { value: '{ not json' } })
-    const broken = collectNodes(await rerender(panel, props))
-    assert.ok(broken.some((entry) => entry.type === 'p' && String(entry.children?.[0] ?? '').includes('无法解析')), 'the parse failure is shown')
-    assert.equal(broken.find((entry) => entry.type === 'button' && entry.children?.[0] === '保存').props.disabled, true, 'an unparseable document cannot be saved')
-
-    // A valid document is staged and saved through the settings route.
-    broken.find((entry) => entry.type === 'textarea').props.onChange({
-      target: { value: JSON.stringify([{ id: 'acme', currency: 'USD', models: { 'deepseek-flash': { cacheMiss: 0.1, cacheHit: 0.001, output: 0.2 } } }]) },
-    })
-    const ready = collectNodes(await rerender(panel, props))
-    const save = ready.find((entry) => entry.type === 'button' && entry.children?.[0] === '保存')
-    assert.equal(save.props.disabled, false, 'a parseable document can be saved')
+    selects[0].props.onChange({ target: { value: 'USD' } })
+    const changed = collectNodes(await rerender(panel, props))
+    const save = changed.find((entry) => entry.type === 'button' && entry.children?.[0] === '保存')
     save.props.onClick()
     await new Promise((resolve) => { setTimeout(resolve, 25) })
     const patch = posted.find((entry) => entry.body?.patch !== undefined)
-    assert.equal(patch.body.patch.contractualSchedules.length, 1, 'the agreement reaches the settings route')
+    assert.deepEqual(patch.body.patch, { displayCurrency: 'USD' }, 'only the key that changed is submitted')
     assert.equal(patch.body.expectedRevision, 2, 'the save carries the revision it read')
-
-    // The refresh action uses the route it is meant to.
-    const refresh = ready.find((entry) => entry.type === 'button' && entry.children?.[0] === '刷新余额')
-    refresh.props.onClick()
-    await new Promise((resolve) => { setTimeout(resolve, 25) })
-    assert.ok(posted.some((entry) => entry.path.endsWith('/meter/deepseek/refresh')), 'the refresh button hits the balance route')
   } finally {
     globalThis.fetch = original
     unmountAll()
