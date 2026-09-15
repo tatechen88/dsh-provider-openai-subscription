@@ -19,15 +19,18 @@
 ## 最近在做什么
 
 ```
+45fe074 2026-09-15 docs: hand off the GLM meter round
 54b7284 2026-09-15 feat: show the GLM plan and packages in the meter
-7aa4cff 2026-09-15 feat: keep an account reading behind its lifecycle slot
-ff42839 2026-09-15 feat: read the Zhipu account through its own station
-172677f 2026-09-15 feat: register the metered vendors in one table
+7aa4cff 2026-09-15 feat: read the Zhipu account through the meter's reading slot
+ff42839 2026-09-15 feat: read the Zhipu account from its official station
+172677f 2026-09-15 refactor: keep the metered vendors in one registry
+9025543 2026-09-15 docs: record the responsive indicator in the handoff
 c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon when narrow
+7393db7 2026-09-15 docs: record the icon indicator and the known flake in the handoff
 25221a5 2026-09-15 feat: show the sidebar meter as an icon that opens its data on click
+69247df 2026-09-15 docs: record the meter panel reduction in the handoff
 907a59a 2026-09-15 feat: reduce the meter settings to the display currency
-5367490 2026-09-15 fix: read the account quota on the OpenAI panel whatever the session runs
-eedd2c0 2026-09-15 feat: read the DeepSeek balance on demand and expose its switch
+6213f43 2026-09-15 docs: record the OpenAI panel balance fix in the handoff
 ```
 
 ### 智谱 GLM（本轮）
