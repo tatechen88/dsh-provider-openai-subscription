@@ -252,7 +252,13 @@ export async function resolveDeepSeekCredential(ctx, credentials) {
 export async function createMeter({ ctx, config, credentials, balance, logger, home = dshHome() }) {
   const base = config?.meter !== null && typeof config?.meter === 'object' ? config.meter : {}
   const settings = new MeterSettingsStore({ path: meterSettingsPath(home), base })
-  await settings.open()
+  try {
+    await settings.open()
+  } catch (error) {
+    // Preferences are not worth a disabled provider: fall back to the
+    // composition-level defaults and let the next save replace the file.
+    logger?.warn?.(`${PACKAGE_NAME}: meter settings could not be read; using defaults`, error)
+  }
   const resolved = settings.resolved()
 
   const ledger = createUsageLedger({ path: usageLedgerPath(home), timeZone: resolved.timeZone })
