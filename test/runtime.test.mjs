@@ -1,7 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp, readdir } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { applyRuntime, waitForService } from '../src/runtime.js'
-import { PROVIDER_ID, SETTINGS_NAMESPACE } from '../src/constants.js'
+import { PROVIDER_ID, ROUTE_PREFIX, SETTINGS_NAMESPACE } from '../src/constants.js'
 
 function fakeContext() {
   const records = new Map()
@@ -62,24 +65,37 @@ function fakeContext() {
 
 test('applyRuntime registers provider, directory, and routes', async () => {
   const { ctx, llm, routes, effects } = fakeContext()
-  const result = await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } })
+  // A throwaway home keeps the meter's ledger and settings out of the real one.
+  const home = await mkdtemp(join(tmpdir(), 'runtime-home-'))
+  const result = await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } }, { home, sleep: async () => {} })
   assert.equal(result.ok, true)
   assert.equal(llm.adapters.providers[0], PROVIDER_ID)
   assert.equal(llm.directory[0].provider, PROVIDER_ID)
   assert.equal(llm.directory[0].settingsNs, SETTINGS_NAMESPACE)
-  assert.equal(routes.length, 14)
+  const paths = routes.map((entry) => entry.path)
+  assert.ok(paths.includes(`${ROUTE_PREFIX}/meter/usage`), 'the meter exposes its view model')
+  assert.ok(paths.includes(`${ROUTE_PREFIX}/meter/settings`), 'the meter settings are editable')
+  assert.equal(paths.length, new Set(paths).size, 'no route is registered twice')
   assert.equal(effects.length, 1)
   // Disposer should tear down registrations.
   effects[0].disposer()
   assert.equal(llm.adapters, undefined)
   assert.equal(llm.directory, undefined)
   assert.equal(routes.length, 0)
+  const meterDir = join(home, 'storages', 'openai-subscription-meter')
+  let residue = []
+  // The disposer flushes without being awaited, so give the write a moment.
+  for (let attempt = 0; attempt < 100 && residue.length === 0; attempt += 1) {
+    residue = await readdir(meterDir).catch(() => [])
+    if (residue.length === 0) await new Promise((resolve) => { setTimeout(resolve, 10) })
+  }
+  assert.deepEqual(residue, ['usage.json'], 'the meter writes only inside the injected home')
 })
 
 test('applyRuntime stays disabled on provider conflict', async () => {
   const { ctx, llm } = fakeContext()
   llm.listProviders = () => [{ id: PROVIDER_ID, name: 'Other' }]
-  const result = await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } })
+  const result = await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } }, { home: await mkdtemp(join(tmpdir(), 'runtime-home-')) })
   assert.equal(result.ok, false)
   assert.equal(result.reason.includes('conflict'), true)
 })

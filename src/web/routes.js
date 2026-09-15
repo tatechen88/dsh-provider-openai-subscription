@@ -112,18 +112,27 @@ export async function readJsonBody(request) {
  * @param {object} [deps.migration]
  * @param {() => Promise<object>} [deps.migration.status]
  * @param {(password: string) => Promise<object>} [deps.migration.backup]
+ * @param {object} [deps.meter]
+ * @param {import('../usage/service.js').UsageMeterService} deps.meter.service
+ * @param {import('../usage/settings-store.js').MeterSettingsStore} [deps.meter.settings]
+ * @param {() => Promise<object>} [deps.meter.openaiQuota] - current subscription quota snapshot.
  * @returns {() => void}
  */
 export function mountRoutes(host, deps) {
   const disposers = []
 
   const route = (method, path, handler) => {
+    const methods = Array.isArray(method) ? method : [method]
+    const allow = methods.join(', ')
     disposers.push(host.webServer.register({
       kind: 'exact',
       path: `${ROUTE_PREFIX}${path}`,
       handler: async (request, response) => {
-        if (request.method !== method) {
-          response.writeHead(405, { allow: method })
+        // One path carries one registration: the web server matches exact
+        // paths, so a second registration for the same path would shadow or
+        // collide with the first. Methods are dispatched here instead.
+        if (!methods.includes(request.method)) {
+          response.writeHead(405, { allow })
           response.end()
           return
         }
@@ -263,6 +272,54 @@ export function mountRoutes(host, deps) {
       const models = await deps.listModels()
       sendJson(response, 200, { ok: true, data: models })
     })
+  }
+
+  if (deps.meter !== undefined) {
+    const { service, settings, openaiQuota } = deps.meter
+
+    route('GET', '/meter/usage', async (request, response) => {
+      const sessionId = new URL(request.url ?? '/', 'http://localhost').searchParams.get('sessionId')
+      const quota = openaiQuota === undefined ? undefined : await openaiQuota().catch(() => undefined)
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          ...service.view(sessionId === null || sessionId.length === 0 ? {} : { sessionId }),
+          ...(quota === undefined ? {} : { openaiQuota: quota }),
+        },
+      })
+    })
+
+    route('POST', '/meter/deepseek/refresh', async (_request, response) => {
+      const balance = await service.refreshDeepSeekBalance({ force: true })
+      sendJson(response, 200, { ok: true, data: service.view().deepseek, status: balance.status })
+    })
+
+    if (settings !== undefined) {
+      route(['GET', 'PATCH'], '/meter/settings', async (request, response) => {
+        if (request.method === 'GET') {
+          sendJson(response, 200, { ok: true, data: { revision: settings.revision, config: settings.resolved() } })
+          return
+        }
+        const body = await readJsonBody(request)
+        const expectedRevision = Number.isSafeInteger(body.expectedRevision) ? body.expectedRevision : undefined
+        const patch = body.patch !== null && typeof body.patch === 'object' && !Array.isArray(body.patch) ? body.patch : undefined
+        if (patch === undefined) {
+          sendJson(response, 400, { ok: false, error: 'patch must be an object' })
+          return
+        }
+        try {
+          const result = await settings.update(patch, expectedRevision)
+          service.updateConfig(result.config)
+          sendJson(response, 200, { ok: true, data: result })
+        } catch (error) {
+          if (/** @type {{code?: string}} */ (error).code === 'settings-conflict') {
+            sendJson(response, 409, { ok: false, error: safeError(error) })
+            return
+          }
+          throw error
+        }
+      })
+    }
   }
 
   return () => {
