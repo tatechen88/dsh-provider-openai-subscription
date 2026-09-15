@@ -324,9 +324,12 @@ export class UsageMeterService {
         basis: 'request-start-assumption',
       },
       usage: {
-        session: aggregate(sessionId === undefined ? emptySummary : this.ledger.sessionSummary(sessionId)),
-        today: aggregate(this.ledger.summary('today')),
-        month: aggregate(this.ledger.summary('month')),
+        // The route is part of the read, not a filter the caller applies later:
+        // the indicator follows the model the session runs, so another route's
+        // tokens must not appear in these totals.
+        session: aggregate(sessionId === undefined ? emptySummary : this.ledger.sessionSummary(sessionId, provider)),
+        today: aggregate(this.ledger.summary('today', provider)),
+        month: aggregate(this.ledger.summary('month', provider)),
       },
       hideCost,
     }

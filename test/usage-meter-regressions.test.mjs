@@ -321,3 +321,38 @@ test('the settings switch can forbid the outbound balance request entirely', asy
   assert.equal(meter.view({ sessionId: 's1' }).deepseek.status, 'off')
   await ledger.close()
 })
+
+test('totals belong to the route they describe, never to every route at once', async () => {
+  const dir = await freshDir()
+  const ledger = new UsageLedger({ path: join(dir, 'usage.json'), debounceMs: 60_000, now: () => OFF_PEAK })
+  await ledger.open()
+  const meter = new UsageMeterService({ ledger, now: () => OFF_PEAK })
+
+  // One session that switched routes: a priced DeepSeek call, then a GLM call and
+  // an OpenAI call the same day, neither of which publishes a token price.
+  meter.recordUsage(fact({ callId: 'ds-1', usage: { inputTokens: 1_000_000, outputTokens: 0 } }))
+  meter.recordUsage(fact({ callId: 'glm-1', provider: 'zai-coding-cn', model: 'glm-5.3', usage: { inputTokens: 500, outputTokens: 100 } }))
+  meter.recordUsage(fact({ callId: 'oai-1', provider: 'openai-subscription', model: 'gpt-5.4', usage: { inputTokens: 700, outputTokens: 50 } }))
+
+  const glm = meter.view({ sessionId: 's1', provider: 'zai-coding-cn' })
+  assert.equal(glm.usage.session.calls, 1, 'only the GLM call belongs to the GLM reading')
+  assert.equal(glm.usage.session.usage.inputTokens, 500)
+  assert.equal(glm.usage.today.usage.inputTokens, 500, 'another route tokens stay out of today')
+  assert.equal(glm.usage.month.usage.inputTokens, 500)
+  assert.equal(glm.usage.today.amountMicros, undefined, 'a coding plan has no cash price to add')
+
+  const deepseek = meter.view({ sessionId: 's1', provider: 'deepseek-official' })
+  assert.equal(deepseek.usage.session.usage.inputTokens, 1_000_000)
+  assert.equal(deepseek.usage.today.usage.inputTokens, 1_000_000)
+  assert.equal(deepseek.usage.today.amountMicros, 1_000_000, 'the priced route still reports its own money')
+  assert.equal(deepseek.usage.today.amountCurrency, 'CNY')
+
+  const everything = meter.view({ sessionId: 's1' })
+  assert.equal(
+    everything.usage.today.usage.inputTokens,
+    1_000_000 + 500 + 700,
+    'a read that names no route still asks about all of them',
+  )
+  assert.equal(everything.usage.session.calls, 3, 'and the session totals stay complete for the whole log')
+  await ledger.close()
+})

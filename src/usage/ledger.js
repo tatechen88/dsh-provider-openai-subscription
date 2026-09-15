@@ -116,6 +116,21 @@ function aggregate(entries) {
 }
 
 /**
+ * The facts of one route, or every fact when no route is named.
+ *
+ * A route is part of the question rather than a filter a caller applies later:
+ * the numbers an indicator shows belong to the model the session is running, and
+ * every other route's tokens would otherwise be added to them.
+ * @param {object[]} entries
+ * @param {string|undefined} provider - wire provider id.
+ * @returns {object[]}
+ */
+function ofProvider(entries, provider) {
+  if (typeof provider !== 'string' || provider.length === 0) return entries
+  return entries.filter((entry) => entry.fact.provider === provider)
+}
+
+/**
  * Whether one stored entry can be read back.
  *
  * `aggregate` reads the fact's token buckets and the quote's status, so an
@@ -356,26 +371,29 @@ export class UsageLedger {
   }
 
   /**
-   * Totals for one session.
+   * Totals for one session, optionally of one route only.
    * @param {string} sessionId
+   * @param {string} [provider] - wire provider id; every route when omitted.
    * @returns {object}
    */
-  sessionSummary(sessionId) {
-    return aggregate(this.entries.filter((entry) => entry.fact.sessionId === sessionId))
+  sessionSummary(sessionId, provider) {
+    return aggregate(ofProvider(this.entries, provider).filter((entry) => entry.fact.sessionId === sessionId))
   }
 
   /**
-   * Totals for one calendar range.
+   * Totals for one calendar range, optionally of one route only.
    * @param {'today'|'month'|'all'} range
+   * @param {string} [provider] - wire provider id; every route when omitted.
    * @returns {object}
    */
-  summary(range) {
-    if (range === 'all') return aggregate(this.entries)
+  summary(range, provider) {
+    const scoped = ofProvider(this.entries, provider)
+    if (range === 'all') return aggregate(scoped)
     const now = this.now()
     const key = calendarKey(now, this.timeZone)
     const field = range === 'month' ? 'month' : 'day'
     const wanted = key[field]
-    return aggregate(this.entries.filter((entry) => calendarKey(entry.fact.startedAt, this.timeZone)[field] === wanted))
+    return aggregate(scoped.filter((entry) => calendarKey(entry.fact.startedAt, this.timeZone)[field] === wanted))
   }
 
   /**
