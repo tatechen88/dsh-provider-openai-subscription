@@ -15,7 +15,7 @@ import { fetchDeepSeekBalance } from './deepseek-balance.js'
 import { fetchZhipuAccount } from './zhipu-account.js'
 import { ReadingSlot } from './reading-slot.js'
 import { normalizeMeterConfig } from './config.js'
-import { pricedVendors, vendorFor } from './vendors.js'
+import { METERED_PROVIDERS, pricedVendors, vendorFor } from './vendors.js'
 
 /** How long an account reading stays fresh. */
 export const ACCOUNT_READING_TTL_MS = 5 * 60 * 1000
@@ -68,8 +68,10 @@ export class UsageMeterService {
    * @param {() => Promise<{baseURL: string|undefined, apiKey: string|undefined}>} [options.readDeepSeekCredential]
    * @param {() => Promise<{apiKey: string|undefined}>} [options.readZhipuCredential]
    * @param {number} [options.balanceTtlMs] - how long one account reading stays fresh.
+   * @param {() => string[]} [options.listRoutes] - every route the host meters right
+   *   now, including providers other plugins registered.
    */
-  constructor({ ledger, config, now = Date.now, fetchImpl = globalThis.fetch, readDeepSeekCredential, readZhipuCredential, balanceTtlMs = ACCOUNT_READING_TTL_MS }) {
+  constructor({ ledger, config, now = Date.now, fetchImpl = globalThis.fetch, readDeepSeekCredential, readZhipuCredential, listRoutes, balanceTtlMs = ACCOUNT_READING_TTL_MS }) {
     if (ledger === undefined || ledger === null) throw new TypeError('UsageMeterService requires a ledger')
     this.ledger = ledger
     this.config = normalizeMeterConfig(config)
@@ -77,6 +79,7 @@ export class UsageMeterService {
     this.fetchImpl = fetchImpl
     this.readDeepSeekCredential = readDeepSeekCredential
     this.readZhipuCredential = readZhipuCredential
+    this.listRoutes = listRoutes
     /** Bumped whenever the configuration changes, so stale async work is dropped. */
     this.generation = 0
     this.deepseek = new ReadingSlot({
@@ -273,6 +276,29 @@ export class UsageMeterService {
   }
 
   /**
+   * The routes this meter records right now.
+   *
+   * The browser asks for this list instead of carrying its own copy of it: a
+   * vendor another plugin registers is metered from its first call, and a list
+   * compiled into the page would keep hiding it until this plugin shipped again.
+   * @returns {{auto: boolean, providers: string[]}}
+   */
+  meteredView() {
+    let providers = [...METERED_PROVIDERS]
+    try {
+      const listed = this.listRoutes === undefined ? undefined : this.listRoutes()
+      const usable = Array.isArray(listed) ? listed.filter((id) => typeof id === 'string' && id.length > 0) : []
+      // An empty or unreadable list keeps the registry's own routes rather than
+      // reporting that nothing is metered.
+      if (usable.length > 0) providers = usable
+    } catch {
+      // Listing providers is a host capability: without it the routes this
+      // plugin owns are still the ones it measures.
+    }
+    return { auto: this.config.autoProviders === true, providers }
+  }
+
+  /**
    * Build the browser view model.
    *
    * Tokens always survive: privacy hides money and balance, never the token
@@ -312,6 +338,7 @@ export class UsageMeterService {
       privacy: { hideBalance: this.config.hideBalance, hideCost },
       deepseek: this.balanceView(),
       zhipu: this.zhipuView(),
+      metered: this.meteredView(),
       pricing: {
         public: {
           scheduleId: publicPrice?.id,

@@ -117,3 +117,38 @@ test('collector isolates concurrent calls and closes an abandoned stream', async
   assert.deepEqual(byModel.b, { inputTokens: 2, outputTokens: 2 }, 'the concurrent call keeps its own usage')
   assert.equal(closed, true, 'the abandoned stream is closed downstream')
 })
+
+test('a live route test meters a provider the fixed registry never heard of', async () => {
+  const facts = []
+  const accepted = new Set(['deepseek-official', 'acme-llm'])
+  const collector = createUsageCollector({
+    record: (fact) => facts.push(fact),
+    providers: (id) => accepted.has(id),
+    createCallId: () => 'call-acme',
+  })
+
+  await drain(collector({ provider: 'acme-llm', model: 'acme-1' }, () => source([
+    { type: 'usage', usage: { inputTokens: 42, outputTokens: 7 } },
+  ])))
+  await drain(collector({ provider: 'stranger-llm', model: 'x' }, () => source([
+    { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } },
+  ])))
+
+  assert.equal(facts.length, 1, 'only a route the live test accepts becomes a fact')
+  assert.equal(facts[0].provider, 'acme-llm')
+  assert.equal(facts[0].usage.inputTokens, 42)
+})
+
+test('a route test that throws leaves the call alone', async () => {
+  const facts = []
+  const collector = createUsageCollector({
+    record: (fact) => facts.push(fact),
+    providers: () => { throw new Error('the provider list is unreachable') },
+  })
+
+  const seen = await drain(collector({ provider: 'acme-llm', model: 'm' }, () => source([
+    { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } },
+  ])))
+  assert.equal(seen.length, 1, 'the model call still completes')
+  assert.deepEqual(facts, [], 'and nothing is invented from a question that failed')
+})

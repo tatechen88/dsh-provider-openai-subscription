@@ -27,6 +27,7 @@ import { createUsageCollector } from './usage/collector.js'
 import { UsageLedger } from './usage/ledger.js'
 import { MeterSettingsStore } from './usage/settings-store.js'
 import { UsageMeterService } from './usage/service.js'
+import { METERED_PROVIDERS } from './usage/vendors.js'
 import { dshHome, meterSettingsPath, usageLedgerPath } from './state.js'
 
 /** How long the runtime waits for a DSH service to become available. */
@@ -278,6 +279,64 @@ export async function resolveZhipuCredential(ctx, credentials) {
 }
 
 /**
+ * How long a discovered provider list is reused before asking DSH again.
+ *
+ * The lookup runs on every metered call, so it must not walk the registry each
+ * time; it must also not be frozen for the process, or a provider registered
+ * later would stay invisible.
+ */
+export const PROVIDER_LIST_TTL_MS = 5_000
+
+/**
+ * The routes this meter records, as a live question rather than a fixed list.
+ *
+ * The vendor registry says which routes this plugin can read an account for; it
+ * must not decide which providers exist. DSH knows that, so a vendor added by
+ * another plugin is metered for tokens from its first call. A route that never
+ * registers is passed through untouched, which keeps an unknown id in a stray
+ * stream from creating facts nobody asked for.
+ * @param {object} ctx - Cordis context.
+ * @param {object} [options]
+ * @param {boolean} [options.auto] - false restores the registry list alone.
+ * @param {() => number} [options.now]
+ * @returns {{covers: (id: unknown) => boolean, known: () => string[]}}
+ */
+export function createMeterRoutes(ctx, { auto = true, now = Date.now } = {}) {
+  let cached = { at: Number.NEGATIVE_INFINITY, ids: [] }
+  const registered = () => {
+    const at = now()
+    if (at - cached.at < PROVIDER_LIST_TTL_MS) return cached.ids
+    let ids = []
+    try {
+      const listed = ctx.llm.listProviders()
+      if (Array.isArray(listed)) {
+        ids = listed
+          .map((entry) => (entry === null || entry === undefined ? undefined : entry.id))
+          .filter((id) => typeof id === 'string' && id.length > 0)
+      }
+    } catch {
+      // A context without the llm service has no providers to discover; the
+      // registry's own routes are still metered.
+      ids = []
+    }
+    cached = { at, ids }
+    return ids
+  }
+  return {
+    covers(id) {
+      if (typeof id !== 'string' || id.length === 0) return false
+      if (METERED_PROVIDERS.includes(id)) return true
+      return auto && registered().includes(id)
+    },
+    known() {
+      if (!auto) return [...METERED_PROVIDERS]
+      const extra = registered().filter((id) => !METERED_PROVIDERS.includes(id))
+      return [...METERED_PROVIDERS, ...extra]
+    },
+  }
+}
+
+/**
  * Assemble the usage meter: durable ledger, price book, settings file, and the
  * `llm/stream` listener that feeds them.
  *
@@ -303,6 +362,10 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
     logger?.warn?.(`${PACKAGE_NAME}: meter settings could not be read; using defaults`, error)
   }
   const resolved = settings.resolved()
+  // Which routes this meter records: the registry's vendors plus every provider
+  // DSH has registered. Built once so the collector and the view answer the same
+  // question from the same cached list.
+  const routes = createMeterRoutes(ctx, { auto: resolved.autoProviders !== false })
 
   const ledger = new UsageLedger({ path: usageLedgerPath(home), timeZone: resolved.timeZone })
   const passthrough = (_options, next) => next()
@@ -331,6 +394,8 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
     // meter reads the same account through the same store rather than looking at
     // the process environment.
     readZhipuCredential: () => resolveZhipuCredential(ctx, credentials),
+    // What the browser is allowed to follow: the routes metered right now.
+    listRoutes: () => routes.known(),
   })
   // Warm the readings once: the sidebar shows an account only once one has been
   // read, and leaving that to a manual refresh means an empty panel until
@@ -345,6 +410,7 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
       // what this plugin expects.
       if (stored.ok !== true) logger?.warn?.(`${PACKAGE_NAME}: usage fact was not recorded (${String(stored.reason)})`)
     },
+    providers: (id) => routes.covers(id),
   })
   const openaiQuota = balance === undefined ? undefined : () => balance.get()
 

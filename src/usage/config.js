@@ -30,6 +30,12 @@ export const DEFAULT_METER_CONFIG = Object.freeze({
   hideBalance: false,
   hideCost: false,
   deepseekBalance: true,
+  /**
+   * Whether every provider DSH has registered is metered, not only the vendors
+   * this plugin can read accounts for. A vendor another plugin adds is then
+   * counted from its first call instead of waiting for a release here.
+   */
+  autoProviders: true,
   contractualSchedules: Object.freeze([]),
 })
 
@@ -165,6 +171,7 @@ export function normalizeMeterConfig(raw) {
     hideBalance: record.hideBalance === true,
     hideCost: record.hideCost === true,
     deepseekBalance: record.deepseekBalance !== false,
+    autoProviders: record.autoProviders !== false,
     contractualSchedules: contracts
       .map((entry, index) => toContractualSchedule(entry, index))
       .filter((entry) => entry !== undefined),

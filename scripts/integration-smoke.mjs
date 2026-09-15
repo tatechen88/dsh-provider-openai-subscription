@@ -175,15 +175,33 @@ try {
     glmHandle()
   }
 
+  // The third call runs on a provider this plugin has never heard of: a route
+  // another plugin registered after the meter started. It must be counted from
+  // its first call, with no price attached, because the registry is not what
+  // decides which providers exist.
+  const strangerHandle = ctx.llm.registerAdapter(['acme-llm'], fakeAdapter('acme-llm'))
+  try {
+    for await (const _chunk of ctx.llm.stream({
+      provider: 'acme-llm',
+      model: 'acme-large',
+      messages: [],
+      sessionId: 'smoke-session',
+    })) {
+      // Drain: metering happens as the stream is consumed.
+    }
+  } finally {
+    strangerHandle()
+  }
+
   const ledgerPath = join(dir, 'storages', 'openai-subscription-meter', 'usage.json')
-  // The ledger debounces its write, so poll until the durable file holds both
-  // facts rather than assuming a fixed delay.
+  // The ledger debounces its write, so poll until the durable file holds every
+  // fact rather than assuming a fixed delay.
   let ledger
   let lastError
   for (let attempt = 0; attempt < 60 && ledger === undefined; attempt += 1) {
     try {
       const parsed = JSON.parse(await readFile(ledgerPath, 'utf8'))
-      if (Array.isArray(parsed.entries) && parsed.entries.length === 2) ledger = parsed
+      if (Array.isArray(parsed.entries) && parsed.entries.length === 3) ledger = parsed
       else lastError = new Error(`ledger holds ${Array.isArray(parsed.entries) ? parsed.entries.length : '?'} entries`)
     } catch (error) {
       lastError = error
@@ -195,10 +213,11 @@ try {
   }
   const entry = ledger.entries.find((candidate) => candidate.fact.provider === 'deepseek-official')
   const glmEntry = ledger.entries.find((candidate) => candidate.fact.provider === 'zai-coding-cn')
-  if (entry === undefined || glmEntry === undefined) {
+  const strangerEntry = ledger.entries.find((candidate) => candidate.fact.provider === 'acme-llm')
+  if (entry === undefined || glmEntry === undefined || strangerEntry === undefined) {
     throw new Error(`metered facts lost a route: ${JSON.stringify(ledger.entries.map((candidate) => candidate.fact.provider))}`)
   }
-  if (entry.fact.sessionId !== 'smoke-session' || glmEntry.fact.sessionId !== 'smoke-session') {
+  if (ledger.entries.some((candidate) => candidate.fact.sessionId !== 'smoke-session')) {
     throw new Error(`metered facts lost their session: ${JSON.stringify(ledger.entries.map((candidate) => candidate.fact.sessionId))}`)
   }
   if (entry.quote?.status !== 'priced') {
@@ -217,12 +236,19 @@ try {
   if (glmEntry.quote?.status !== 'unpriced' || glmEntry.quote.amountMicros !== undefined) {
     throw new Error(`a GLM call must be accounted for and never priced: ${JSON.stringify(glmEntry.quote)}`)
   }
+  if (strangerEntry.fact.model !== 'acme-large' || strangerEntry.fact.usage.inputTokens !== 1_000_000) {
+    throw new Error(`the discovered route lost its buckets: ${JSON.stringify(strangerEntry.fact)}`)
+  }
+  if (strangerEntry.quote?.status !== 'unpriced' || strangerEntry.quote.amountMicros !== undefined) {
+    throw new Error(`a route with no price table must be counted without money: ${JSON.stringify(strangerEntry.quote)}`)
+  }
 
   console.log(`OK: plugin root ${pluginRoot}`)
   console.log(`OK: bootstrap state stays inactive`)
   console.log(`OK: active state registers provider openai-subscription`)
   console.log(`OK: a real llm/stream call becomes a priced ledger fact (1M uncached input tokens = CNY ${(expectedMicros / 1_000_000).toFixed(2)} in the ${entry.quote.band} band)`)
   console.log(`OK: a GLM call on the pi-ai route lands as an unpriced token fact (${glmEntry.fact.usage.inputTokens} input tokens, reason ${glmEntry.quote.reason})`)
+  console.log(`OK: a provider registered by nobody this plugin knows is metered too (acme-llm, ${strangerEntry.fact.usage.inputTokens} input tokens, reason ${strangerEntry.quote.reason})`)
 } finally {
   if (previousHome === undefined) delete process.env.DSH_HOME
   else process.env.DSH_HOME = previousHome

@@ -33,17 +33,29 @@ function createDefaultCallId() {
 }
 
 /**
+ * Membership test for a fixed list of routes.
+ * @param {readonly string[]} providers
+ * @returns {(id: unknown) => boolean}
+ */
+function membership(providers) {
+  const routes = new Set(providers)
+  return (id) => routes.has(id)
+}
+
+/**
  * Create one `llm/stream` waterfall listener.
  * @param {object} options
  * @param {(fact: object) => void} options.record - receives each completed call.
  * @param {() => number} [options.now] - clock, injectable for tests.
  * @param {() => string} [options.createCallId] - opaque per-call identity.
- * @param {readonly string[]} [options.providers] - routes to meter.
+ * @param {readonly string[]|((id: unknown) => boolean)} [options.providers] - routes
+ *   to meter, either as a fixed list or as a live test. A test lets the host
+ *   meter a provider that another plugin registered after this meter started.
  * @returns {(options: object, next: () => AsyncIterable<object>) => AsyncIterable<object>}
  */
 export function createUsageCollector({ record, now = Date.now, createCallId = createDefaultCallId, providers = METERED_PROVIDERS }) {
   if (typeof record !== 'function') throw new TypeError('createUsageCollector requires record')
-  const metered = new Set(providers)
+  const covers = typeof providers === 'function' ? providers : membership(providers)
 
   return (options, next) => {
     // Dispatch runs inside the marker as well: a router that starts another
@@ -54,7 +66,15 @@ export function createUsageCollector({ record, now = Date.now, createCallId = cr
     // record; wrapping it again would bill the same tokens twice.
     if (meteredDepth.getStore() !== undefined) return downstream
     const request = options === null || typeof options !== 'object' ? {} : options
-    if (!metered.has(request.provider)) return downstream
+    let metered = false
+    try {
+      metered = covers(request.provider) === true
+    } catch {
+      // A route test that fails is not a metering decision, and this listener
+      // observes a model call: throwing here would fail the call itself.
+      metered = false
+    }
+    if (!metered) return downstream
 
     const startedAt = now()
     const callId = createCallId()

@@ -28,6 +28,10 @@
           # Composition-level like every other field here: the settings page only
           # edits the display currency.
           deepseekBalance: true
+          # Meter every provider DSH has registered, not only the vendors this
+          # plugin reads accounts for: a model another plugin adds is counted from
+          # its first call. Turning it off restores the fixed vendor registry.
+          autoProviders: true
           # Hide money / balance on shared screens; token counts stay visible.
           hideBalance: false
           hideCost: false

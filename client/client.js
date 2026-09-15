@@ -1317,8 +1317,25 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     return formatAmount(aggregate.amountMicros, aggregate.amountCurrency)
   }
 
-  /** Whether the meter tracks this provider at all. */
-  function isMeteredProvider(provider) {
+  /**
+   * Whether the meter follows this provider.
+   *
+   * The host owns the question: it meters the vendors this plugin reads accounts
+   * for plus every provider DSH has registered, so a route this build never heard
+   * of is still counted. Until a payload answers, an unknown route is asked
+   * about — the host's list is the only way that route can ever appear, and a
+   * provider that turns out not to be metered is dropped on the next render.
+   * @param {string|null|undefined} provider
+   * @param {object|null|undefined} meter - the last meter payload, when there is one.
+   * @returns {boolean}
+   */
+  function isMeteredProvider(provider, meter) {
+    if (typeof provider !== 'string' || provider.length === 0) return false
+    const listed = meter?.metered?.providers
+    if (Array.isArray(listed) && listed.length > 0) return listed.includes(provider)
+    if (meter === null || meter === undefined) return true
+    // A payload from a host that does not report its list: the routes this build
+    // ships are the only ones it can vouch for.
     return provider === PROVIDER_ID || provider === DEEPSEEK_PROVIDER_ID || provider === ZHIPU_PROVIDER_ID
   }
 
@@ -1380,7 +1397,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
    * @returns {{provider: string, text: string}|null} null when nothing should render.
    */
   function indicatorHeadline({ provider, meter, quota, t }) {
-    if (!isMeteredProvider(provider)) return null
+    if (!isMeteredProvider(provider, meter)) return null
     if (provider === PROVIDER_ID) {
       const parts = summaryWindows(quota).map((window) => `${windowShortLabel(t, window)} ${window.remainingPercent}%`)
       return { provider, text: parts.length > 0 ? `OpenAI ${parts.join(' · ')}` : 'OpenAI …' }
@@ -1397,20 +1414,30 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       if (pieces.length === 0) return null
       return { provider, text: `GLM ${pieces.join(' · ')}` }
     }
-    // Without a reading there is nothing to say about a DeepSeek account, and a
-    // placeholder would occupy the sidebar seat while saying nothing.
+    if (provider === DEEPSEEK_PROVIDER_ID) {
+      // Without a reading there is nothing to say about a DeepSeek account, and a
+      // placeholder would occupy the sidebar seat while saying nothing.
+      if (meter === null || meter === undefined) return null
+      const balance = meter.deepseek
+      const hidden = balance !== undefined && balance.hidden === true
+      const primary = hidden ? undefined : balance?.primary
+      const spent = amountTextOf(meter?.usage?.today)
+      const pieces = []
+      if (primary !== undefined) pieces.push(formatAmount(Math.round(primary.total * 1_000_000), primary.currency))
+      if (spent !== undefined) pieces.push(`${t('meterToday')} ${spent}`)
+      // An account whose balance cannot be read and that has spent nothing has
+      // nothing to show either; the reason lives in the tooltip.
+      if (pieces.length === 0) return null
+      return { provider, text: `DeepSeek ${pieces.join(' · ')}` }
+    }
+    // A route the host meters but this build has no account reading for — a vendor
+    // another plugin added. Tokens are everything the meter can honestly report
+    // about it, and they are reported under that route's own name.
     if (meter === null || meter === undefined) return null
-    const balance = meter.deepseek
-    const hidden = balance !== undefined && balance.hidden === true
-    const primary = hidden ? undefined : balance?.primary
-    const spent = amountTextOf(meter?.usage?.today)
-    const pieces = []
-    if (primary !== undefined) pieces.push(formatAmount(Math.round(primary.total * 1_000_000), primary.currency))
-    if (spent !== undefined) pieces.push(`${t('meterToday')} ${spent}`)
-    // An account whose balance cannot be read and that has spent nothing has
-    // nothing to show either; the reason lives in the tooltip.
-    if (pieces.length === 0) return null
-    return { provider, text: `DeepSeek ${pieces.join(' · ')}` }
+    const today = totalTokensOf(meter.usage?.today)
+    const used = today > 0 ? today : totalTokensOf(meter.usage?.month)
+    if (used === 0) return null
+    return { provider, text: `${provider} ${t('meterToday')} ${formatTokens(used)}` }
   }
 
   /**
@@ -1657,6 +1684,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     // it was started for, and a response whose provider is no longer current is
     // dropped: a slow DeepSeek answer can never repaint an OpenAI session.
     const generationRef = useRef(0)
+    // The route the host answered that it does not meter, so the poll can stop
+    // asking instead of repeating a request that will always come back empty.
+    const unmeteredRef = useRef(null)
     const floating = panel !== null
     const headline = indicatorHeadline({ provider: currentProvider, meter, quota, t })
     // A phone reaching this harness remotely gets an icon and opens the numbers
@@ -1682,6 +1712,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       const cadence = metered ? METER_POLL_MS : BALANCE_POLL_MS
       let cancelled = false
       async function load() {
+        // The host may already have answered that this route is not metered:
+        // there is nothing left to ask it for.
+        if (unmeteredRef.current === currentProvider) return
         // The session window is keyed by the session, so the poll reloads when
         // it changes; a provider-only dependency would keep the old totals.
         const url = meterUsageUrl(currentProvider, sessionId)
@@ -1709,6 +1742,15 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
           }
         }
         if (cancelled || generationRef.current !== generation) return
+        if (nextMeter !== undefined && isMeteredProvider(currentProvider, nextMeter) === false) {
+          // The host answered that it does not meter this route: stop asking and
+          // stop showing whatever the previous route left behind.
+          unmeteredRef.current = currentProvider
+          generationRef.current += 1
+          setMeter(null)
+          setQuota(null)
+          return
+        }
         if (nextMeter !== undefined) setMeter(nextMeter)
         if (metered === false && nextQuota !== undefined) setQuota(nextQuota)
       }
@@ -2119,20 +2161,25 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         ...tokenLines(meter, t),
       ].filter(isFilled)
     }
-    const balance = meter?.deepseek
-    const account = meter?.account?.kind
-    const pricing = meter?.pricing
-    const balanceUnavailable = balance !== undefined && balance.status !== 'ok' && balance.status !== 'idle'
-    return [
-      'DeepSeek',
-      balance?.primary === undefined ? undefined : `${balance.primary.currency} ${balance.primary.total}`,
-      balanceUnavailable ? balance.message || t('meterUnavailable') : undefined,
-      account === 'enterprise' ? t('meterAccountEnterprise') : account === 'personal' ? t('meterAccountPersonal') : t('meterAccountUnknown'),
-      ...tokenLines(meter, t),
-      amountTextOf(meter?.usage?.today) === undefined ? undefined : `${t('meterToday')} ${amountTextOf(meter?.usage?.today)}`,
-      amountTextOf(meter?.usage?.month) === undefined ? undefined : `${t('meterMonth')} ${amountTextOf(meter?.usage?.month)}`,
-      priceSourceLine(pricing, t),
-    ].filter(isFilled)
+    if (provider === DEEPSEEK_PROVIDER_ID) {
+      const balance = meter?.deepseek
+      const account = meter?.account?.kind
+      const pricing = meter?.pricing
+      const balanceUnavailable = balance !== undefined && balance.status !== 'ok' && balance.status !== 'idle'
+      return [
+        'DeepSeek',
+        balance?.primary === undefined ? undefined : `${balance.primary.currency} ${balance.primary.total}`,
+        balanceUnavailable ? balance.message || t('meterUnavailable') : undefined,
+        account === 'enterprise' ? t('meterAccountEnterprise') : account === 'personal' ? t('meterAccountPersonal') : t('meterAccountUnknown'),
+        ...tokenLines(meter, t),
+        amountTextOf(meter?.usage?.today) === undefined ? undefined : `${t('meterToday')} ${amountTextOf(meter?.usage?.today)}`,
+        amountTextOf(meter?.usage?.month) === undefined ? undefined : `${t('meterMonth')} ${amountTextOf(meter?.usage?.month)}`,
+        priceSourceLine(pricing, t),
+      ].filter(isFilled)
+    }
+    // A route the host meters without an account reading of its own: the card
+    // states the route and its token totals, and claims nothing about money.
+    return [provider, ...tokenLines(meter, t)].filter(isFilled)
   }
 
   /**
@@ -2199,11 +2246,15 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
    * @returns {{text: string, detail: string}|null}
    */
   function sessionUsageLine({ provider, meter, t }) {
-    if (!isMeteredProvider(provider)) return null
+    if (!isMeteredProvider(provider, meter)) return null
     const session = meter?.usage?.session
     if (session === undefined || session === null || session.calls === 0) return null
     const usage = session.usage ?? {}
-    const label = provider === PROVIDER_ID ? 'OpenAI' : provider === ZHIPU_PROVIDER_ID ? 'GLM' : 'DeepSeek'
+    // The route's own name is the honest label for a vendor this build does not
+    // know: calling it DeepSeek would attribute another vendor's tokens to it.
+    const label = provider === PROVIDER_ID
+      ? 'OpenAI'
+      : provider === ZHIPU_PROVIDER_ID ? 'GLM' : provider === DEEPSEEK_PROVIDER_ID ? 'DeepSeek' : provider
     const parts = [`${t('meterSession')} ${formatTokens(usage.promptTokens ?? 0)} → ${formatTokens(usage.outputTokens ?? 0)}`]
     const ratio = session.cacheHitRatio
     if (typeof ratio === 'number' && Number.isFinite(ratio)) {
@@ -2228,6 +2279,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const sessionId = useCurrentSessionId(sessionsService)
     const [meter, setMeter] = useState(null)
     const generationRef = useRef(0)
+    // The route the host answered that it does not meter, so the poll can stop
+    // asking and the line can stay hidden.
+    const unmeteredRef = useRef(null)
 
     useEffect(() => {
       if (!isMeteredProvider(currentProvider)) {
@@ -2239,12 +2293,20 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       generationRef.current = generation
       let cancelled = false
       async function load() {
+        if (unmeteredRef.current === currentProvider) return
         // The session, not just the provider: two sessions can share a provider,
         // and reloading only on the provider would keep the old totals visible.
         if (!sessionId) return
         try {
           const payload = await getJson(meterUsageUrl(currentProvider, sessionId))
-          if (!cancelled && generationRef.current === generation) setMeter(payload.data)
+          if (cancelled || generationRef.current !== generation) return
+          if (isMeteredProvider(currentProvider, payload.data) === false) {
+            unmeteredRef.current = currentProvider
+            generationRef.current += 1
+            setMeter(null)
+            return
+          }
+          setMeter(payload.data)
         } catch {
           // A missing meter leaves the line hidden rather than showing stale money.
         }

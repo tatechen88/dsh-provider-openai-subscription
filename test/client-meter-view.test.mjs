@@ -248,3 +248,45 @@ test('the meter read carries only the route it serves', () => {
   assert.equal(meterUsageUrl(undefined, 'a b'), `${base}?sessionId=a%20b`)
   assert.equal(meterUsageUrl(null, null), base, 'a read with no route asks no station')
 })
+
+test('a route this build never heard of shows its own tokens, never another vendor money', () => {
+  const meter = deepseekMeter()
+  meter.metered = { auto: true, providers: ['deepseek-official', 'acme-llm'] }
+  meter.usage.today = { calls: 3, usage: { promptTokens: 3_400_000, outputTokens: 0 }, cacheHitRatio: 0.5 }
+
+  const line = indicatorHeadline({ provider: 'acme-llm', meter, quota: null, t })
+  assert.equal(line.text, 'acme-llm 今日 3.4M')
+  assert.ok(!line.text.includes('DeepSeek'), 'a discovered route never borrows the DeepSeek name')
+  assert.ok(!line.text.includes('¥'), 'and never claims cash for an account the meter cannot read')
+
+  const card = indicatorTooltip({ provider: 'acme-llm', meter, quota: null, t })
+  assert.match(card, /^acme-llm/, 'the card starts with the route it describes')
+  assert.match(card, /本会话 1\.0K → 100/, 'and carries the token totals')
+  assert.doesNotMatch(card, /DeepSeek|OpenAI|价格来源/, 'with no other vendor balance and no price claim')
+})
+
+test('a route the host does not meter renders nothing, whatever the payload says', () => {
+  const meter = deepseekMeter()
+  meter.metered = { auto: true, providers: ['deepseek-official'] }
+  meter.usage.session = { calls: 2, usage: { promptTokens: 12_400, outputTokens: 900 }, cacheHitRatio: 0.64 }
+  assert.equal(indicatorHeadline({ provider: 'acme-llm', meter, quota: null, t }), null)
+  assert.equal(descriptor.pure.sessionUsageLine({ provider: 'acme-llm', meter, t }), null)
+
+  // A payload without a list comes from a host that does not report one: only the
+  // routes this build ships can be vouched for, so an unrelated provider still
+  // never borrows the DeepSeek balance.
+  delete meter.metered
+  assert.equal(indicatorHeadline({ provider: 'acme-llm', meter, quota: null, t }), null)
+  assert.equal(indicatorHeadline({ provider: 'deepseek-official', meter, quota: null, t }).text.startsWith('DeepSeek'), true)
+})
+
+test('a session line labels a discovered route by its own name', () => {
+  const meter = deepseekMeter()
+  meter.metered = { auto: true, providers: ['deepseek-official', 'acme-llm'] }
+  meter.usage.session = { calls: 2, usage: { promptTokens: 12_400, outputTokens: 900 }, cacheHitRatio: 0.64 }
+
+  const line = descriptor.pure.sessionUsageLine({ provider: 'acme-llm', meter, t })
+  assert.equal(line.text, 'acme-llm · 本会话 12.4K → 900 · 缓存命中 64.0%')
+  assert.equal(line.detail, 'acme-llm 用量与费用')
+  assert.ok(!line.text.includes('¥'), 'no estimate is attached to a route the meter cannot price')
+})
