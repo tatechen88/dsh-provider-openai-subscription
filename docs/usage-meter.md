@@ -13,12 +13,17 @@
 | 调用 token | DSH `llm/stream` 最终 `usage` chunk | Provider 上报，未上报时不估算 |
 | 调用归属 | `GenerateOptions.provider/model/sessionId/purpose` | 用于路由、归集与价格匹配 |
 | 账户余额 | `GET https://api.deepseek.com/user/balance` | 只有余额，没有账单 |
+| GLM 用量与资源包 | 智谱账号接口，见 `usage/zhipu-account.js` | Coding Plan 窗口额度、现金余额、按包剩余量 |
 | 价格 | 官方价格页快照 | 带版本，改价不改历史 |
 | 账号类型 | 用户设置 | 公开 API 不返回实名类型 |
 
 费用永远不是账单。UI 与文案统一使用"估算"。
 
 ## Modules
+
+### `usage/vendors.js`
+
+厂商注册表：每条记录把厂商 id、它下面的 Provider 代号、价格表 id（没有价格表的厂商留空）和它支持的读数类型放在一起。计量范围（`METERED_PROVIDERS`）由它派生，因此「新增一个要计量的厂商」只有一处改动；价格解析按 `provider` 过滤，任何厂商的价格表都不会给另一个厂商的调用计价。模块刻意不 import 任何东西，避免 pricing → types → vendors 的循环。
 
 ### `usage/types.js`
 
@@ -50,13 +55,21 @@
 
 `resolveOfficialEndpoint` 只接受 HTTPS 且 host 恰为 `api.deepseek.com`；其他地址一律拒绝，密钥不外发。响应保留每一个 `balance_infos` 行；主行选择顺序为：有余额的 CNY → 有余额的首行 → CNY → 首行。
 
+### `usage/zhipu-account.js`
+
+一个 Provider 代号对应一个站点主机与一条认证方式：中国站（`open.bigmodel.cn`）的用量端点用**原始 Key**，其余端点用 `Bearer`，国际站（`api.z.ai`）走另一条记录。解析器共享一条铁律——**业务性拒绝不是 0**：「当前用户不存在 coding plan」返回 HTTP 200 + `code:500`，解析为 `applicable: false` 加官方措辞；空字符串余额不当作 0。资源包只取 `EFFECTIVE`，且按 `tokenBalance` 判断剩余量；`TOKENS` 计 token、`TIMES` 计次。单轮里只要还有一项读到就返回部分结果，把失败项放进 `errors[]`；一项都没读到则**抛错**，让调用方保留上一次成功读数而不是把快照清空。
+
 ### `usage/service.js`
 
-组装计价、账本与余额，产出浏览器视图模型。视图里没有密钥、没有原始事实、没有企业合同内部备注。`hideBalance` 只去掉余额，`hideCost` 只去掉金额，token 始终保留。
+组装计价、账本与两家厂商的账户读数，产出浏览器视图模型。视图里没有密钥、没有原始事实、没有企业合同内部备注。`hideBalance` 只去掉余额，`hideCost` 只去掉金额，token 始终保留；GLM 的现金余额受 `hideBalance` 约束，资源包 token 不受——token 永远不是隐私。`view({sessionId, provider})` 收到厂商提示时才触发那一家的到期刷新。
 
 ### `usage/settings-store.js`
 
 设置放在插件自己的状态目录，带 revision；revision 不匹配返回冲突。这里刻意不使用 DSH settings registry：该 registry 需要 schemastery schema，而本插件声明零依赖，引入依赖会破坏"加载失败也不能阻止 DSH 启动"的既有保证。
+
+### `usage/reading-slot.js`
+
+账户读数的**生命周期**被抽成一个类，两家厂商共用：TTL 缓存、单飞（同一时刻只有一个在途请求）、按「上次尝试时刻」判断是否到期（失败也会退避，不会每个请求都重试）、世代守卫丢弃过期响应、失败时保留上一次成功读数，以及一个把读数整体关掉的开关。视图只读它暴露的 `reading`，因此「过期但可用」与「不可用」在 UI 上是两种状态（`ok` / `stale`）。
 
 ## 视图与接口
 
@@ -64,9 +77,12 @@
 
 | 路由 | 作用 |
 |---|---|
-| `GET /meter/usage?sessionId=` | 视图模型（账号、余额、价格来源、会话/今日/本月聚合） |
-| `POST /meter/deepseek/refresh` | 强制刷新一次余额 |
+| `GET /meter/usage?sessionId=&provider=` | 视图模型（账号、余额、GLM 读数、价格来源、会话/今日/本月聚合） |
+| `POST /meter/deepseek/refresh` | 强制刷新一次 DeepSeek 余额 |
+| `POST /meter/zhipu/refresh` | 强制刷新一次 GLM 账号读数 |
 | `GET/PATCH /meter/settings` | 读设置 / 带 revision 写设置 |
+
+`provider` 是**提示而不是过滤**：视图永远返回完整模型，只有该厂商的读数到期时才会去问那个站点，因此切到别的 Provider 不会顺带查一个无关账号。两条 refresh 路由目前只有测试在驱动，客户端靠轮询与 TTL 自己刷新。
 
 一个路径只注册一次，方法在路由内分发：DSH 的 exact 路由按路径匹配，同一路径注册两次会互相遮蔽。
 
@@ -80,7 +96,7 @@
 
 ## 测试策略
 
-纯函数与契约优先：计价与阶梯时段、采集器的委托/嵌套/并发/中止、账本的原子写与损坏保留、余额端点门禁与多币种、服务层的企业合同价、隐私与按 Provider 限定的计价（OpenAI 只计 token、不计费）、指示器的金额格式与 Provider 切换、meter 路由的方法分发与冲突。真实余额 e2e 需要显式 Key，否则跳过。
+纯函数与契约优先：计价与阶梯时段、采集器的委托/嵌套/并发/中止、账本的原子写与损坏保留、余额端点门禁与多币种、服务层的企业合同价、隐私与按 Provider 限定的计价（OpenAI 只计 token、不计费）、指示器的金额格式与 Provider 切换、meter 路由的方法分发与冲突。智谱一侧用**真实响应夹具**覆盖：业务性拒绝、空字符串余额、非 `EFFECTIVE` 包、`TOKENS`/`TIMES` 两种包、部分失败与全量失败的差别，以及「DeepSeek 的价格表绝不给 GLM 计价」。真实余额 e2e 需要显式 Key，否则跳过。
 
 ## 与旧插件的关系
 

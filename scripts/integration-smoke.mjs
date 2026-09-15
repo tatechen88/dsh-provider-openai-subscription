@@ -158,28 +158,48 @@ try {
     adapterHandle()
   }
 
+  // The second metered vendor is a pi-ai route this plugin does not provide but
+  // does account for: a GLM call must land as a token-only fact with no price
+  // attached, because a coding plan has no per-token rate to charge.
+  const glmHandle = ctx.llm.registerAdapter(['zai-coding-cn'], fakeAdapter('zai-coding-cn'))
+  try {
+    for await (const _chunk of ctx.llm.stream({
+      provider: 'zai-coding-cn',
+      model: 'glm-5.3',
+      messages: [],
+      sessionId: 'smoke-session',
+    })) {
+      // Drain: metering happens as the stream is consumed.
+    }
+  } finally {
+    glmHandle()
+  }
+
   const ledgerPath = join(dir, 'storages', 'openai-subscription-meter', 'usage.json')
-  // The ledger debounces its write, so poll for the durable file rather than
-  // assuming a fixed delay.
+  // The ledger debounces its write, so poll until the durable file holds both
+  // facts rather than assuming a fixed delay.
   let ledger
   let lastError
   for (let attempt = 0; attempt < 60 && ledger === undefined; attempt += 1) {
     try {
-      ledger = JSON.parse(await readFile(ledgerPath, 'utf8'))
+      const parsed = JSON.parse(await readFile(ledgerPath, 'utf8'))
+      if (Array.isArray(parsed.entries) && parsed.entries.length === 2) ledger = parsed
+      else lastError = new Error(`ledger holds ${Array.isArray(parsed.entries) ? parsed.entries.length : '?'} entries`)
     } catch (error) {
       lastError = error
-      await new Promise((resolve) => { setTimeout(resolve, 100) })
     }
+    if (ledger === undefined) await new Promise((resolve) => { setTimeout(resolve, 100) })
   }
   if (ledger === undefined) {
     throw new Error(`meter ledger was not written at ${ledgerPath}: ${lastError?.message}`)
   }
-  if (!Array.isArray(ledger.entries) || ledger.entries.length !== 1) {
-    throw new Error(`expected exactly one metered call, got ${JSON.stringify(ledger.entries?.length)}`)
+  const entry = ledger.entries.find((candidate) => candidate.fact.provider === 'deepseek-official')
+  const glmEntry = ledger.entries.find((candidate) => candidate.fact.provider === 'zai-coding-cn')
+  if (entry === undefined || glmEntry === undefined) {
+    throw new Error(`metered facts lost a route: ${JSON.stringify(ledger.entries.map((candidate) => candidate.fact.provider))}`)
   }
-  const entry = ledger.entries[0]
-  if (entry.fact.sessionId !== 'smoke-session' || entry.fact.provider !== 'deepseek-official') {
-    throw new Error(`metered fact lost its route: ${JSON.stringify(entry.fact)}`)
+  if (entry.fact.sessionId !== 'smoke-session' || glmEntry.fact.sessionId !== 'smoke-session') {
+    throw new Error(`metered facts lost their session: ${JSON.stringify(ledger.entries.map((candidate) => candidate.fact.sessionId))}`)
   }
   if (entry.quote?.status !== 'priced') {
     throw new Error(`metered fact was not priced by the built-in snapshot: ${JSON.stringify(entry.quote)}`)
@@ -191,11 +211,18 @@ try {
   if (entry.quote.amountMicros !== expectedMicros) {
     throw new Error(`1M uncached deepseek-flash tokens in the ${entry.quote.band} band should cost ${expectedMicros} micros, got ${JSON.stringify(entry.quote.amountMicros)}`)
   }
+  if (glmEntry.fact.model !== 'glm-5.3' || glmEntry.fact.usage.inputTokens !== 1_000_000) {
+    throw new Error(`the GLM fact lost its buckets: ${JSON.stringify(glmEntry.fact)}`)
+  }
+  if (glmEntry.quote?.status !== 'unpriced' || glmEntry.quote.amountMicros !== undefined) {
+    throw new Error(`a GLM call must be accounted for and never priced: ${JSON.stringify(glmEntry.quote)}`)
+  }
 
   console.log(`OK: plugin root ${pluginRoot}`)
   console.log(`OK: bootstrap state stays inactive`)
   console.log(`OK: active state registers provider openai-subscription`)
   console.log(`OK: a real llm/stream call becomes a priced ledger fact (1M uncached input tokens = CNY ${(expectedMicros / 1_000_000).toFixed(2)} in the ${entry.quote.band} band)`)
+  console.log(`OK: a GLM call on the pi-ai route lands as an unpriced token fact (${glmEntry.fact.usage.inputTokens} input tokens, reason ${glmEntry.quote.reason})`)
 } finally {
   if (previousHome === undefined) delete process.env.DSH_HOME
   else process.env.DSH_HOME = previousHome

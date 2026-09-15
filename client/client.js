@@ -40,6 +40,8 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   const PROVIDER_ID = 'openai-subscription'
   /** DSH's official DeepSeek route, the second account the indicator follows. */
   const DEEPSEEK_PROVIDER_ID = 'deepseek-official'
+  /** pi-ai's Z.AI coding-plan route, the third account the indicator follows. */
+  const ZHIPU_PROVIDER_ID = 'zai-coding-cn'
   const SECTION_ID = 'openai-subscription'
   const ONBOARDING_STEP_ID = 'openai-subscription-connect'
   const SIDEBAR_ID = 'dsh-provider-openai-subscription-balance'
@@ -83,7 +85,6 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     modelsRefresh: '/plugins/openai-subscription/models/refresh',
     migrationBackup: '/plugins/openai-subscription/migration/backup',
     meterUsage: '/plugins/openai-subscription/meter/usage',
-    meterRefresh: '/plugins/openai-subscription/meter/deepseek/refresh',
     meterSettings: '/plugins/openai-subscription/meter/settings',
   }
 
@@ -165,6 +166,15 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterNoUsage: '暂无用量',
       meterPriceSource: '价格来源',
       meterInactive: '当前模型不在统计范围',
+      meterRemaining: '余',
+      meterNoPlan: '无 Coding Plan 配额',
+      meterBalance: '余额',
+      meterSpent: '累计消费',
+      meterUntil: '至',
+      meterUses: '次',
+      meterQuotaTokens: 'Token 额度',
+      meterQuotaTimes: '次数额度',
+      meterReadingUnavailable: '部分数据不可用',
     },
     en: {
       nav: 'OpenAI Connect',
@@ -242,6 +252,15 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterNoUsage: 'No usage yet',
       meterPriceSource: 'Price source',
       meterInactive: 'The current model is not metered',
+      meterRemaining: 'left',
+      meterNoPlan: 'No coding-plan quota',
+      meterBalance: 'Balance',
+      meterSpent: 'Spent',
+      meterUntil: 'until',
+      meterUses: 'uses',
+      meterQuotaTokens: 'token quota',
+      meterQuotaTimes: 'uses quota',
+      meterReadingUnavailable: 'Some readings unavailable',
     },
   }
 
@@ -766,6 +785,21 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     return window.label || window.id
   }
 
+  /**
+   * Localized label for one Zhipu coding-plan quota window.
+   *
+   * The station names its windows by a protocol type and a length in hours, so
+   * two token windows of one account stay apart only through that length.
+   */
+  function quotaWindowLabel(t, window) {
+    const hours = typeof window.unit === 'number' && Number.isFinite(window.unit) && window.unit > 0
+      ? `${window.unit}h`
+      : ''
+    if (window.type === 'TOKENS_LIMIT') return `${hours} ${t('meterQuotaTokens')}`.trim()
+    if (window.type === 'TIME_LIMIT') return t('meterQuotaTimes')
+    return window.type || window.id
+  }
+
   function ActionButton({ label, disabled, onClick }) {
     return h('button', {
       type: 'button',
@@ -1260,7 +1294,46 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
 
   /** Whether the meter tracks this provider at all. */
   function isMeteredProvider(provider) {
-    return provider === PROVIDER_ID || provider === DEEPSEEK_PROVIDER_ID
+    return provider === PROVIDER_ID || provider === DEEPSEEK_PROVIDER_ID || provider === ZHIPU_PROVIDER_ID
+  }
+
+  /**
+   * The meter read URL for one route and session.
+   *
+   * The provider travels with the read because the host asks only that vendor's
+   * station for a fresh account reading: a read without one costs nothing.
+   * @param {string|null|undefined} provider
+   * @param {string|null|undefined} sessionId
+   * @returns {string}
+   */
+  function meterUsageUrl(provider, sessionId) {
+    const params = []
+    if (sessionId !== null && sessionId !== undefined) params.push(`sessionId=${encodeURIComponent(sessionId)}`)
+    if (typeof provider === 'string' && provider.length > 0) params.push(`provider=${encodeURIComponent(provider)}`)
+    return params.length === 0 ? API.meterUsage : `${API.meterUsage}?${params.join('&')}`
+  }
+
+  /**
+   * Tokens one aggregate billed: the prompt side (uncached, cache read and
+   * write) plus output.
+   * @param {object|undefined} summary
+   * @returns {number}
+   */
+  function totalTokensOf(summary) {
+    if (summary === null || summary === undefined || summary.calls === 0) return 0
+    return (summary.usage?.promptTokens ?? 0) + (summary.usage?.outputTokens ?? 0)
+  }
+
+  /** Resource packages of one Zhipu account slice, split by how they are consumed. */
+  function zhipuPackages(slice, kind) {
+    const packages = slice !== null && slice !== undefined && Array.isArray(slice.packages) ? slice.packages : []
+    return packages.filter((entry) => entry !== null && typeof entry === 'object'
+      && (kind === 'times' ? entry.kind === 'times' : entry.kind !== 'times'))
+  }
+
+  /** Remaining tokens one Zhipu account holds across its token packages. */
+  function remainingTokensOf(packages) {
+    return packages.reduce((total, entry) => total + (Number.isFinite(entry.remaining) ? entry.remaining : 0), 0)
   }
 
   /** The two quota windows the indicator summarises, in display order. */
@@ -1286,6 +1359,18 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     if (provider === PROVIDER_ID) {
       const parts = summaryWindows(quota).map((window) => `${windowShortLabel(t, window)} ${window.remainingPercent}%`)
       return { provider, text: parts.length > 0 ? `OpenAI ${parts.join(' · ')}` : 'OpenAI …' }
+    }
+    if (provider === ZHIPU_PROVIDER_ID) {
+      if (meter === null || meter === undefined) return null
+      const remaining = remainingTokensOf(zhipuPackages(meter.zhipu, 'tokens'))
+      const used = totalTokensOf(meter.usage?.today)
+      const pieces = []
+      if (remaining > 0) pieces.push(`${t('meterRemaining')} ${formatTokens(remaining)}`)
+      if (used > 0) pieces.push(`${t('meterToday')} ${formatTokens(used)}`)
+      // An account with no tokens left and nothing spent has nothing to say; the
+      // reason it has no reading lives in the card.
+      if (pieces.length === 0) return null
+      return { provider, text: `GLM ${pieces.join(' · ')}` }
     }
     // Without a reading there is nothing to say about a DeepSeek account, and a
     // placeholder would occupy the sidebar seat while saying nothing.
@@ -1554,13 +1639,13 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       }
       const generation = generationRef.current + 1
       generationRef.current = generation
-      const metered = currentProvider === DEEPSEEK_PROVIDER_ID
+      const metered = isMeteredProvider(currentProvider)
       const cadence = metered ? METER_POLL_MS : BALANCE_POLL_MS
       let cancelled = false
       async function load() {
         // The session window is keyed by the session, so the poll reloads when
         // it changes; a provider-only dependency would keep the old totals.
-        const url = `${API.meterUsage}${sessionId === null ? '' : `?sessionId=${encodeURIComponent(sessionId)}`}`
+        const url = meterUsageUrl(currentProvider, sessionId)
         let nextMeter
         let nextQuota
         try {
@@ -1920,6 +2005,46 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         .join(' / ')
       return ['OpenAI (ChatGPT OAuth)', detail, ...tokenLines(meter, t)].filter(isFilled)
     }
+    if (provider === ZHIPU_PROVIDER_ID) {
+      const slice = meter?.zhipu
+      const plan = slice?.plan
+      const windows = plan?.applicable === true && Array.isArray(plan.windows) && plan.windows.length > 0
+        ? plan.windows.map((window) => `${quotaWindowLabel(t, window)} ${window.remainingPercent}%`).join(' / ')
+        : undefined
+      // The station's own refusal text is data from the vendor, so an account
+      // without a coding plan reads as exactly that instead of as an empty quota.
+      const planLine = plan?.applicable === false ? plan.reason || t('meterNoPlan') : windows
+      const cash = slice?.balance
+      const money = (micros) => (typeof micros === 'number' && Number.isFinite(micros)
+        ? formatAmount(Math.round(micros * 1_000_000), cash?.currency) ?? ''
+        : undefined)
+      const available = money(cash?.available)
+      // A zero spend is the normal state of an untouched account, not a fact
+      // worth a line.
+      const spent = typeof cash?.spent === 'number' && Number.isFinite(cash.spent) && cash.spent > 0 ? money(cash.spent) : undefined
+      const until = (entry) => (entry.expiresAt === undefined || entry.expiresAt === null
+        ? undefined
+        : `${t('meterUntil')} ${String(entry.expiresAt).slice(0, 10)}`)
+      // One package per line, in the order the station lists them, with the
+      // model scope and the expiry the station reports for each.
+      const packageLine = (entry) => [
+        `${entry.name} ${entry.kind === 'times' ? `${entry.remaining} ${t('meterUses')}` : formatTokens(entry.remaining)}`,
+        entry.scope === undefined ? undefined : `(${entry.scope})`,
+        until(entry),
+      ].filter(isFilled).join(' · ')
+      const packages = slice !== undefined && Array.isArray(slice.packages) ? slice.packages : []
+      return [
+        'GLM (Z.AI)',
+        planLine,
+        available === undefined ? undefined : `${t('meterBalance')} ${available}`,
+        spent === undefined ? undefined : `${t('meterSpent')} ${spent}`,
+        ...packages.map(packageLine),
+        slice !== undefined && Array.isArray(slice.errors) && slice.errors.length > 0
+          ? `${t('meterReadingUnavailable')} (${slice.errors.join(', ')})`
+          : undefined,
+        ...tokenLines(meter, t),
+      ].filter(isFilled)
+    }
     const balance = meter?.deepseek
     const account = meter?.account?.kind
     const pricing = meter?.pricing
@@ -2004,7 +2129,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const session = meter?.usage?.session
     if (session === undefined || session === null || session.calls === 0) return null
     const usage = session.usage ?? {}
-    const label = provider === PROVIDER_ID ? 'OpenAI' : 'DeepSeek'
+    const label = provider === PROVIDER_ID ? 'OpenAI' : provider === ZHIPU_PROVIDER_ID ? 'GLM' : 'DeepSeek'
     const parts = [`${t('meterSession')} ${formatTokens(usage.promptTokens ?? 0)} → ${formatTokens(usage.outputTokens ?? 0)}`]
     const ratio = session.cacheHitRatio
     if (typeof ratio === 'number' && Number.isFinite(ratio)) {
@@ -2044,7 +2169,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         // and reloading only on the provider would keep the old totals visible.
         if (!sessionId) return
         try {
-          const payload = await getJson(`${API.meterUsage}?sessionId=${encodeURIComponent(sessionId)}`)
+          const payload = await getJson(meterUsageUrl(currentProvider, sessionId))
           if (!cancelled && generationRef.current === generation) setMeter(payload.data)
         } catch {
           // A missing meter leaves the line hidden rather than showing stale money.
@@ -2145,6 +2270,8 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       formatTokens,
       indicatorHeadline,
       indicatorTooltip,
+      meterUsageUrl,
+      sessionUsageLine,
       // Mounted directly by tests: every slot component nests inside a page
       // component, and a shallow harness cannot drive a nested component's
       // effects, so this one is reachable only through the test surface.
