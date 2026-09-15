@@ -2175,11 +2175,12 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         amountTextOf(meter?.usage?.today) === undefined ? undefined : `${t('meterToday')} ${amountTextOf(meter?.usage?.today)}`,
         amountTextOf(meter?.usage?.month) === undefined ? undefined : `${t('meterMonth')} ${amountTextOf(meter?.usage?.month)}`,
         priceSourceLine(pricing, t),
+        unpricedModelsLine(pricing, provider, t),
       ].filter(isFilled)
     }
     // A route the host meters without an account reading of its own: the card
     // states the route and its token totals, and claims nothing about money.
-    return [provider, ...tokenLines(meter, t)].filter(isFilled)
+    return [provider, ...tokenLines(meter, t), unpricedModelsLine(meter?.pricing, provider, t)].filter(isFilled)
   }
 
   /**
@@ -2206,6 +2207,29 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         return `${label} ${formatTokens(summary.usage?.promptTokens ?? 0)} → ${formatTokens(summary.usage?.outputTokens ?? 0)}`
       })
       .filter(isFilled)
+  }
+
+  /**
+   * The models of one route this deployment has no rate for, named so they can be
+   * added.
+   *
+   * Only a missing rate is listed. A vendor that publishes no price table at all
+   * is not a gap in anything, so it never appears here, and the list is filtered
+   * to the route the card describes: another vendor's missing rate is not this
+   * one's business.
+   * @param {object|undefined} pricing - meter view `pricing` slice.
+   * @param {string} provider
+   * @param {(key: string) => string} t
+   * @returns {string|undefined}
+   */
+  function unpricedModelsLine(pricing, provider, t) {
+    const models = pricing?.unpricedModels
+    if (!Array.isArray(models)) return undefined
+    const named = models
+      .filter((entry) => entry !== null && typeof entry === 'object' && entry.provider === provider && typeof entry.model === 'string')
+      .map((entry) => `${entry.model} ×${Number.isFinite(entry.calls) ? entry.calls : 1}`)
+    if (named.length === 0) return undefined
+    return `${t('meterNoPrice')}: ${named.join(' · ')}`
   }
 
   /**

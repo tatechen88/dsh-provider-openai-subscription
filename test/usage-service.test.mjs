@@ -329,4 +329,32 @@ test('the configuration exposes exactly the switches the settings page renders',
   // request, and the settings page renders this same switch.
   assert.equal(normalizeMeterConfig({ deepseekBalance: false }).deepseekBalance, false)
   assert.equal(normalizeMeterConfig({}).deepseekBalance, true)
+  // The auto switch defaults on: a provider another plugin registers is metered
+  // without a release here, and turning it off restores the fixed registry.
+  assert.equal(normalizeMeterConfig({}).autoProviders, true)
+  assert.equal(normalizeMeterConfig({ autoProviders: false }).autoProviders, false)
+})
+
+test('the view names the models its price table does not cover', async () => {
+  const ledger = await openedLedger()
+  const meter = new UsageMeterService({ ledger, now: () => NOW })
+
+  // A model the built-in table does not know, next to one it does and one on a
+  // vendor that publishes no table at all.
+  meter.recordUsage(fact({ callId: 'new-model', model: 'deepseek-v5' }))
+  meter.recordUsage(fact({ callId: 'known-model' }))
+  meter.recordUsage(fact({ callId: 'glm', provider: 'zai-coding-cn', model: 'glm-5.3' }))
+
+  assert.deepEqual(
+    meter.view({ provider: 'deepseek-official' }).pricing.unpricedModels,
+    [{
+      provider: 'deepseek-official',
+      model: 'deepseek-v5',
+      calls: 1,
+      lastSeenAt: Date.UTC(2026, 8, 15, 20, 0),
+      reason: 'unknown-model',
+    }],
+    'the card can name the gap a new model leaves behind',
+  )
+  await ledger.close()
 })

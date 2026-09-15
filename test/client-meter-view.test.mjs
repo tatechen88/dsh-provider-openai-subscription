@@ -290,3 +290,24 @@ test('a session line labels a discovered route by its own name', () => {
   assert.equal(line.detail, 'acme-llm 用量与费用')
   assert.ok(!line.text.includes('¥'), 'no estimate is attached to a route the meter cannot price')
 })
+
+test('a card names the models its own price table does not cover', () => {
+  const meter = deepseekMeter()
+  meter.pricing.unpricedModels = [
+    { provider: 'deepseek-official', model: 'deepseek-v5', calls: 3, lastSeenAt: 1 },
+    { provider: 'zai-coding-cn', model: 'glm-5.3', calls: 9, lastSeenAt: 1 },
+  ]
+  const deepseek = indicatorTooltip({ provider: 'deepseek-official', meter, quota: null, t })
+  assert.match(deepseek, /未配置价格: deepseek-v5 ×3/, 'a missing rate is named with how often it was used')
+  assert.doesNotMatch(deepseek, /glm-5\.3/, 'another vendor missing rate is not this card business')
+
+  const plan = deepseekMeter()
+  plan.metered = { auto: true, providers: ['zai-coding-cn'] }
+  plan.zhipu = { status: 'ok', fetchedAt: 1, plan: { applicable: true, windows: [] }, packages: [], errors: [] }
+  plan.pricing.unpricedModels = [{ provider: 'deepseek-official', model: 'deepseek-v5', calls: 3 }]
+  assert.doesNotMatch(
+    indicatorTooltip({ provider: 'zai-coding-cn', meter: plan, quota: null, t }),
+    /deepseek-v5/,
+    'a vendor that publishes no table never lists one',
+  )
+})

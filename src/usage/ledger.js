@@ -405,4 +405,37 @@ export class UsageLedger {
   sessionFacts(sessionId) {
     return this.entries.filter((entry) => entry.fact.sessionId === sessionId)
   }
+
+  /**
+   * Models that ran without a rate, most used first.
+   *
+   * Only a route whose vendor publishes a price table can be missing a rate: a
+   * vendor that publishes none records every call as unpriced by design, which is
+   * its normal state rather than a gap anyone can close. A caller that knows
+   * which routes are priced passes them, and gets back only the real gaps — the
+   * shape a model takes on the day it ships.
+   * @param {readonly string[]} [providers] - routes to consider; every route when omitted.
+   * @returns {Array<{provider: string, model: string, calls: number, lastSeenAt: number, reason: string}>}
+   */
+  unpricedModels(providers) {
+    const wanted = Array.isArray(providers) && providers.length > 0 ? new Set(providers) : undefined
+    const seen = new Map()
+    for (const entry of this.entries) {
+      const quote = entry.quote
+      if (quote === null || typeof quote !== 'object' || quote.status !== 'unpriced') continue
+      if (wanted !== undefined && !wanted.has(entry.fact.provider)) continue
+      const key = `${entry.fact.provider}\u0000${entry.fact.model}`
+      const current = seen.get(key) ?? {
+        provider: entry.fact.provider,
+        model: entry.fact.model,
+        calls: 0,
+        lastSeenAt: 0,
+        reason: quote.reason,
+      }
+      current.calls += 1
+      current.lastSeenAt = Math.max(current.lastSeenAt, entry.fact.startedAt ?? 0)
+      seen.set(key, current)
+    }
+    return [...seen.values()].sort((left, right) => right.calls - left.calls || left.model.localeCompare(right.model))
+  }
 }

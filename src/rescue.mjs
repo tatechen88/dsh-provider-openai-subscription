@@ -18,6 +18,10 @@ import {
   dshHome, pluginStateDir, killSwitchPath, enableKillSwitch, disableKillSwitch,
   usageLedgerPath, meterSettingsPath, retiredCostMeterLedgerPath,
 } from './state.js'
+import { pricedVendors } from './usage/vendors.js'
+
+/** Routes whose vendor publishes a price table, so a missing rate can be named. */
+const PRICED_PROVIDER_IDS = Object.freeze(pricedVendors().flatMap((vendor) => vendor.providers))
 
 const HELP = `dsh-openai-subscription-rescue
 
@@ -98,6 +102,9 @@ async function commandMeter() {
     facts: Array.isArray(parsed.entries) ? parsed.entries.length : undefined,
     oldestFactAt: Array.isArray(parsed.entries) && parsed.entries.length > 0 ? parsed.entries[0]?.fact?.startedAt : undefined,
     newestFactAt: Array.isArray(parsed.entries) && parsed.entries.length > 0 ? parsed.entries[parsed.entries.length - 1]?.fact?.startedAt : undefined,
+    // The models a price table does not cover yet, so a newly shipped model is
+    // something the operator can see here instead of guessing from a bare count.
+    unpricedModels: unpricedFromEntries(parsed.entries, PRICED_PROVIDER_IDS),
   }))
   const settings = await describeJson(settingsPath, (parsed) => ({
     revision: parsed.revision,
@@ -116,6 +123,36 @@ async function commandMeter() {
     retiredCostMeterLedger: { path: legacyPath, present: await exists(legacyPath), note: 'read by this plugin: never' },
     note: 'Read-only report: no ledger entry, credential or account number is printed.',
   }, null, 2))
+}
+
+/**
+ * Models whose calls the ledger could not price, most used first.
+ *
+ * Only a route whose vendor publishes a price table can be missing a rate: a
+ * vendor that publishes none records every call as unpriced by design, which is
+ * its normal state. This projection is also why the report never has to print a
+ * raw ledger entry.
+ * @param {unknown} entries
+ * @param {readonly string[]} providers - routes whose vendor publishes a table.
+ * @returns {Array<{provider: string, model: string, calls: number, reason: string}>}
+ */
+function unpricedFromEntries(entries, providers) {
+  if (!Array.isArray(entries)) return []
+  const wanted = new Set(providers)
+  const seen = new Map()
+  for (const entry of entries) {
+    const quote = entry === null || typeof entry !== 'object' ? undefined : entry.quote
+    if (quote === null || typeof quote !== 'object' || quote.status !== 'unpriced') continue
+    const provider = entry.fact === null || typeof entry.fact !== 'object' ? undefined : entry.fact.provider
+    const model = entry.fact === null || typeof entry.fact !== 'object' ? undefined : entry.fact.model
+    if (typeof provider !== 'string' || typeof model !== 'string') continue
+    if (!wanted.has(provider)) continue
+    const key = `${provider}\u0000${model}`
+    const current = seen.get(key) ?? { provider, model, calls: 0, reason: quote.reason }
+    current.calls += 1
+    seen.set(key, current)
+  }
+  return [...seen.values()].sort((left, right) => right.calls - left.calls || left.model.localeCompare(right.model))
 }
 
 /**

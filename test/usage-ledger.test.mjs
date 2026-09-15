@@ -145,3 +145,27 @@ test('unpriced facts count tokens without inventing money', async () => {
   assert.deepEqual(summary.amountMicrosByCurrency, {})
   await ledger.close()
 })
+
+test('the ledger names the models it had no rate for, and only those', async () => {
+  const path = await ledgerPath()
+  const ledger = new UsageLedger({ path, now: () => 1 })
+  await ledger.open()
+  // Two calls of a model the table does not know, one call of a model it does,
+  // and one call on a vendor that publishes no table at all.
+  ledger.record(fact({ callId: 'v5-a', model: 'deepseek-v5', startedAt: 100 }), { status: 'unpriced', reason: 'unknown-model' })
+  ledger.record(fact({ callId: 'v5-b', model: 'deepseek-v5', startedAt: 500 }), { status: 'unpriced', reason: 'unknown-model' })
+  ledger.record(fact({ callId: 'flash', model: 'deepseek-flash' }), priced)
+  ledger.record(fact({ callId: 'glm', provider: 'zai-coding-cn', model: 'glm-5.3' }), { status: 'unpriced', reason: 'no-schedule' })
+
+  assert.deepEqual(
+    ledger.unpricedModels(['deepseek-official']),
+    [{ provider: 'deepseek-official', model: 'deepseek-v5', calls: 2, lastSeenAt: 500, reason: 'unknown-model' }],
+    'a priced route missing one rate is a gap; a plan-priced vendor is not',
+  )
+  assert.deepEqual(
+    ledger.unpricedModels().map((entry) => entry.model).sort(),
+    ['deepseek-v5', 'glm-5.3'],
+    'and a caller that names no route sees every unpriced model, with its reason',
+  )
+  await ledger.close()
+})

@@ -10,7 +10,7 @@
  */
 
 import { assertUsageFact, cacheHitRatio } from './types.js'
-import { buildSchedules, quoteUsage, resolveSchedule, scheduleCovers, PUBLIC_SCHEDULES } from './pricing.js'
+import { buildSchedules, quoteUsage, resolveSchedule, scheduleCovers, PUBLIC_SCHEDULES, UNPRICED_UNKNOWN_MODEL } from './pricing.js'
 import { fetchDeepSeekBalance } from './deepseek-balance.js'
 import { fetchZhipuAccount } from './zhipu-account.js'
 import { ReadingSlot } from './reading-slot.js'
@@ -22,6 +22,14 @@ export const ACCOUNT_READING_TTL_MS = 5 * 60 * 1000
 
 /** The registry id of the vendor whose reading is the Zhipu account. */
 const ZHIPU_VENDOR_ID = 'zhipu'
+
+/**
+ * The routes whose vendor publishes a price table.
+ *
+ * Only these can be missing a rate for one model; every other route is priced by
+ * a plan, so its unpriced calls are its normal state rather than a gap.
+ */
+const PRICED_PROVIDER_IDS = Object.freeze(pricedVendors().flatMap((vendor) => vendor.providers))
 
 /**
  * Build the browser-facing view of one aggregate.
@@ -171,14 +179,23 @@ export class UsageMeterService {
   recordUsage(rawFact) {
     try {
       const fact = assertUsageFact(rawFact)
+      const schedules = this.schedules()
       const schedule = resolveSchedule({
         provider: fact.provider,
         model: fact.model,
         at: fact.startedAt,
         accountKind: this.config.accountKind,
-        schedules: this.schedules(),
+        schedules,
       })
-      const quote = quoteUsage(fact, schedule)
+      // Why a call went unpriced is worth recording: a vendor whose table simply
+      // has no row for this model is a gap somebody can close, while a vendor that
+      // publishes no table is priced by its plan. `resolveSchedule` only reports
+      // "nothing matched", so the difference is recovered from what it searched.
+      const quote = quoteUsage(fact, schedule, {
+        reason: schedules.some((candidate) => candidate.provider === fact.provider)
+          ? UNPRICED_UNKNOWN_MODEL
+          : undefined,
+      })
       const stored = this.ledger.record(fact, quote)
       return { ok: true, stored, quote }
     } catch (error) {
@@ -349,6 +366,9 @@ export class UsageMeterService {
         contractual: this.contractualStatus(),
         estimated: true,
         basis: 'request-start-assumption',
+        // Models this deployment has no rate for: the list a newly shipped model
+        // appears in, instead of quietly costing nothing.
+        unpricedModels: this.ledger.unpricedModels(PRICED_PROVIDER_IDS),
       },
       usage: {
         // The route is part of the read, not a filter the caller applies later:

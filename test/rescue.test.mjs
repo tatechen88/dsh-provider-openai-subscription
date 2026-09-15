@@ -199,6 +199,32 @@ test('rescue meter reports ledger and settings state without echoing content', a
   }
 })
 
+test('rescue meter names the models the price table does not cover', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-rescue-'))
+  dirs.push(dir)
+  const ledgerDir = join(dir, 'storages', 'openai-subscription-meter')
+  await mkdir(ledgerDir, { recursive: true })
+  const entry = (callId, provider, model, quote) => ({ callId, fact: { provider, model, startedAt: 1 }, quote })
+  await writeFile(join(ledgerDir, 'usage.json'), JSON.stringify({
+    schemaVersion: 1,
+    entries: [
+      entry('SECRET-1', 'deepseek-official', 'deepseek-v5', { status: 'unpriced', reason: 'unknown-model' }),
+      entry('SECRET-2', 'deepseek-official', 'deepseek-v5', { status: 'unpriced', reason: 'unknown-model' }),
+      entry('SECRET-3', 'zai-coding-cn', 'glm-5.3', { status: 'unpriced', reason: 'no-schedule' }),
+      entry('SECRET-4', 'deepseek-official', 'deepseek-flash', { status: 'priced', amountMicros: 1 }),
+    ],
+  }))
+
+  const { stdout } = await runRescue(['meter'], { DSH_HOME: dir })
+  const report = JSON.parse(stdout)
+  assert.deepEqual(
+    report.ledger.unpricedModels,
+    [{ provider: 'deepseek-official', model: 'deepseek-v5', calls: 2, reason: 'unknown-model' }],
+    'the report names the models with no rate, most used first',
+  )
+  assert.equal(stdout.includes('SECRET'), false, 'a model name is reported, never a call or a session')
+})
+
 test('rescue meter reports a fresh home as absent', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-rescue-'))
   dirs.push(dir)
