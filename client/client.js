@@ -38,12 +38,17 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
 
   const PACKAGE_NAME = 'dsh-provider-openai-subscription'
   const PROVIDER_ID = 'openai-subscription'
+  /** DSH's official DeepSeek route, the second account the indicator follows. */
+  const DEEPSEEK_PROVIDER_ID = 'deepseek-official'
   const CARD_KEY = 'llm-openai-subscription'
   const SECTION_ID = 'openai-subscription'
   const ONBOARDING_STEP_ID = 'openai-subscription-connect'
   const SIDEBAR_ID = 'dsh-provider-openai-subscription-balance'
+  const SESSION_DOCK_ID = 'dsh-provider-openai-subscription-usage'
   const STATUS_POLL_MS = 60 * 1000
   const BALANCE_POLL_MS = 5 * 60 * 1000
+  /** Meter polling: fast enough to trail a call, slow enough to stay free. */
+  const METER_POLL_MS = 30 * 1000
   /** localStorage slot remembering where the dragged balance panel sits. */
   const PANEL_STORE_KEY = 'dsh-provider-openai-subscription.balance-panel'
   /** Pointer travel, in px, that turns a press on the indicator into a drag. */
@@ -70,6 +75,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     models: '/plugins/openai-subscription/models',
     modelsRefresh: '/plugins/openai-subscription/models/refresh',
     migrationBackup: '/plugins/openai-subscription/migration/backup',
+    meterUsage: '/plugins/openai-subscription/meter/usage',
+    meterRefresh: '/plugins/openai-subscription/meter/deepseek/refresh',
+    meterSettings: '/plugins/openai-subscription/meter/settings',
   }
 
   /** Bilingual UI copy. Both dictionaries share the same key set. */
@@ -127,6 +135,32 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       onboardingLater: '稍后配置',
       account: '账号',
       panelDragHint: '拖动可移动位置，双击复位',
+      meterTitle: '用量与费用',
+      meterSession: '本会话',
+      meterToday: '今日',
+      meterMonth: '本月',
+      meterTokens: 'Token',
+      meterCacheHit: '缓存命中',
+      meterEstimated: '估算',
+      meterPublicPrice: '公开价',
+      meterContractPrice: '合同价',
+      meterNoPrice: '未配置价格',
+      meterAccountKind: '账号类型',
+      meterAccountUnknown: '未声明',
+      meterAccountPersonal: '个人',
+      meterAccountEnterprise: '企业（用户声明）',
+      meterAccountHint: '公开 API 不返回实名类型，企业身份始终是用户声明。',
+      meterHideBalance: '隐藏余额',
+      meterHideCost: '隐藏费用',
+      meterDisplayCurrency: '显示币种',
+      meterTimeZone: '统计时区',
+      meterSave: '保存',
+      meterSaved: '已保存',
+      meterRefresh: '刷新余额',
+      meterUnavailable: '余额不可用',
+      meterNoUsage: '暂无用量',
+      meterPriceSource: '价格来源',
+      meterInactive: '当前模型不在统计范围',
     },
     en: {
       nav: 'OpenAI Connect',
@@ -181,6 +215,32 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       onboardingLater: 'Configure later',
       account: 'Account',
       panelDragHint: 'Drag to move, double-click to reset',
+      meterTitle: 'Usage and cost',
+      meterSession: 'Session',
+      meterToday: 'Today',
+      meterMonth: 'Month',
+      meterTokens: 'Tokens',
+      meterCacheHit: 'Cache hit',
+      meterEstimated: 'estimated',
+      meterPublicPrice: 'Public price',
+      meterContractPrice: 'Contract price',
+      meterNoPrice: 'No configured price',
+      meterAccountKind: 'Account type',
+      meterAccountUnknown: 'Not declared',
+      meterAccountPersonal: 'Personal',
+      meterAccountEnterprise: 'Enterprise (user-declared)',
+      meterAccountHint: 'The public API does not report verification type; enterprise identity is always user-declared.',
+      meterHideBalance: 'Hide balance',
+      meterHideCost: 'Hide cost',
+      meterDisplayCurrency: 'Display currency',
+      meterTimeZone: 'Accounting time zone',
+      meterSave: 'Save',
+      meterSaved: 'Saved',
+      meterRefresh: 'Refresh balance',
+      meterUnavailable: 'Balance unavailable',
+      meterNoUsage: 'No usage yet',
+      meterPriceSource: 'Price source',
+      meterInactive: 'The current model is not metered',
     },
   }
 
@@ -329,6 +389,8 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     intro: { color: '#d1d5db', margin: '4px 0 8px' },
     title: { margin: '0 0 8px', fontSize: 16 },
     cardTitle: { margin: '0 0 8px', fontSize: 14 },
+    sessionDock: { textAlign: 'center', fontSize: 12, lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary, #9ca3af)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+    checkRow: { display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0' },
   }
 
   function selectionFromStore(store) {
@@ -337,6 +399,22 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     return snapshot && snapshot.current && typeof snapshot.current.provider === 'string'
       ? snapshot.current
       : null
+  }
+
+  /**
+   * Identity of the session the page currently shows.
+   * @param {object|undefined} sessionsService
+   * @returns {string|undefined}
+   */
+  function currentSessionId(sessionsService) {
+    try {
+      const snapshot = sessionsService?.list?.getSnapshot?.()
+      return snapshot !== null && typeof snapshot === 'object' && typeof snapshot.current === 'string'
+        ? snapshot.current
+        : undefined
+    } catch {
+      return undefined
+    }
   }
 
   /**
@@ -856,6 +934,102 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   }
 
   /**
+   * Meter settings: the account declaration, the display choices, and the two
+   * privacy switches.
+   *
+   * The account type is a declaration, never a detection: the panel says so
+   * where the choice is made, so nobody reads the label as verified identity.
+   * @param {object} props - inject face plus the translator.
+   * @returns {object} element tree.
+   */
+  function MeterSettingsPanel({ t }) {
+    const [state, setState] = useState(null)
+    const [draft, setDraft] = useState(null)
+    const [notice, setNotice] = useState(null)
+
+    useEffect(() => {
+      let cancelled = false
+      async function load() {
+        try {
+          const payload = await getJson(API.meterSettings)
+          if (cancelled) return
+          setState({ revision: payload.data.revision, config: payload.data.config })
+          setDraft(payload.data.config)
+        } catch {
+          if (!cancelled) setNotice('unavailable')
+        }
+      }
+      load()
+      return () => { cancelled = true }
+    }, [])
+
+    if (state === null || draft === null) return null
+
+    const patch = (next) => setDraft({ ...draft, ...next })
+    const save = async () => {
+      try {
+        const payload = await postJson(API.meterSettings, { patch: draft, expectedRevision: state.revision })
+        setState({ revision: payload.data.revision, config: payload.data.config })
+        setDraft(payload.data.config)
+        setNotice('saved')
+      } catch (error) {
+        setNotice(messageOf(error))
+      }
+    }
+    const toggle = (key) => h('label', { style: s.checkRow, key }, [
+      h('input', {
+        type: 'checkbox',
+        checked: draft[key] === true,
+        onChange: (event) => patch({ [key]: event.target.checked }),
+      }),
+      h('span', null, t(key === 'hideBalance' ? 'meterHideBalance' : 'meterHideCost')),
+    ])
+
+    return h('div', { style: s.block }, [
+      h('h3', { style: s.cardTitle, key: 'title' }, t('meterTitle')),
+      h('div', { key: 'account', style: s.row }, [
+        h('span', null, t('meterAccountKind')),
+        h('select', {
+          style: s.input,
+          value: draft.accountKind,
+          onChange: (event) => patch({ accountKind: event.target.value }),
+        }, [
+          h('option', { key: 'unknown', value: 'unknown' }, t('meterAccountUnknown')),
+          h('option', { key: 'personal', value: 'personal' }, t('meterAccountPersonal')),
+          h('option', { key: 'enterprise', value: 'enterprise' }, t('meterAccountEnterprise')),
+        ]),
+      ]),
+      h('p', { key: 'hint', style: s.note }, t('meterAccountHint')),
+      h('div', { key: 'display', style: s.row }, [
+        h('span', null, t('meterDisplayCurrency')),
+        h('select', {
+          style: s.input,
+          value: draft.displayCurrency,
+          onChange: (event) => patch({ displayCurrency: event.target.value }),
+        }, ['CNY', 'USD', 'EUR'].map((code) => h('option', { key: code, value: code }, code))),
+      ]),
+      h('div', { key: 'zone', style: s.row }, [
+        h('span', null, t('meterTimeZone')),
+        h('select', {
+          style: s.input,
+          value: draft.timeZone,
+          onChange: (event) => patch({ timeZone: event.target.value }),
+        }, [
+          h('option', { key: 'system', value: 'system' }, 'system'),
+          h('option', { key: 'UTC', value: 'UTC' }, 'UTC'),
+          h('option', { key: 'Asia/Shanghai', value: 'Asia/Shanghai' }, 'Asia/Shanghai'),
+        ]),
+      ]),
+      toggle('hideBalance'),
+      toggle('hideCost'),
+      h('div', { key: 'actions', style: { display: 'flex', gap: 8, alignItems: 'center' } }, [
+        h(ActionButton, { key: 'save', label: t('meterSave'), onClick: () => { void save() } }),
+        notice === 'saved' ? h('span', { key: 'saved', style: s.success }, t('meterSaved')) : null,
+      ]),
+    ])
+  }
+
+  /**
    * The shared connection content: inactive guidance, login flow, signed-in
    * panel, and legacy migration in one vertical arrangement.
    * @param {object} props
@@ -907,6 +1081,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
             signedIn
               ? h(SignedInPanel, { key: 'signed-in', flow, currentProvider, t })
               : h(LoginFlow, { key: 'login', flow, t }),
+            h(MeterSettingsPanel, { key: 'meter', t }),
           ])
         : null,
     ])
@@ -991,6 +1166,82 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     }, [
       h('div', { style: { background: '#111827', border: '1px solid #374151', borderRadius: 12, padding: 18, maxWidth: 430, width: '92%', color: '#e5e7eb' } }, body),
     ])
+  }
+
+  /** Currency symbols the indicator can print; unknown codes render as the code. */
+  const CURRENCY_SYMBOLS = { CNY: '¥', USD: '$', EUR: '€' }
+
+  /**
+   * Format a fixed-point micro amount for display.
+   *
+   * Amounts arrive as integer micro units so the Host never ships a float that
+   * rounds differently on a second render.
+   * @param {unknown} micros - integer micro units of the currency.
+   * @param {string|undefined} currency
+   * @returns {string|undefined} e.g. "¥0.42", or undefined when there is nothing to show.
+   */
+  function formatAmount(micros, currency) {
+    if (typeof micros !== 'number' || !Number.isFinite(micros)) return undefined
+    const symbol = CURRENCY_SYMBOLS[currency] ?? (typeof currency === 'string' && currency.length > 0 ? `${currency} ` : '')
+    const units = micros / 1_000_000
+    // Below one unit the useful precision is finer than a cent; above it two
+    // decimals match how the provider's own console prints money.
+    const text = units >= 1 ? units.toFixed(2) : units.toFixed(4).replace(/0+$/, '').replace(/\.$/, '.00')
+    return `${symbol}${text}`
+  }
+
+  /**
+   * Format a token count compactly.
+   * @param {unknown} value
+   * @returns {string}
+   */
+  function formatTokens(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '0'
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`
+    if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1)}K`
+    return String(Math.round(value))
+  }
+
+  /**
+   * Pick the amount to show for one aggregate in the configured currency.
+   * @param {object|undefined} aggregate
+   * @returns {string|undefined}
+   */
+  function amountTextOf(aggregate) {
+    if (aggregate === null || aggregate === undefined) return undefined
+    return formatAmount(aggregate.amountMicros, aggregate.amountCurrency)
+  }
+
+  /**
+   * Headline text of the unified indicator for one provider view.
+   *
+   * Pure so the provider-switch behavior is testable without rendering: the
+   * same inputs always produce the same one-line summary.
+   * @param {object} input
+   * @param {string|null} input.provider - current session provider id.
+   * @param {object|null} input.meter - `/meter/usage` payload.
+   * @param {object|null} input.quota - `/balance` payload for the subscription.
+   * @param {(key: string) => string} input.t
+   * @returns {{provider: string, text: string}|null} null when nothing should render.
+   */
+  function indicatorHeadline({ provider, meter, quota, t }) {
+    if (provider !== PROVIDER_ID && provider !== DEEPSEEK_PROVIDER_ID) return null
+    if (provider === PROVIDER_ID) {
+      const windows = quota !== null && quota !== undefined && Array.isArray(quota.windows) ? quota.windows : []
+      const parts = windows
+        .filter((window) => window.id === 'primary' || window.id === 'secondary')
+        .map((window) => `${windowShortLabel(t, window)} ${window.remainingPercent}%`)
+      return { provider, text: parts.length > 0 ? `OpenAI ${parts.join(' · ')}` : 'OpenAI …' }
+    }
+    const balance = meter === null || meter === undefined ? undefined : meter.deepseek
+    const hidden = balance !== undefined && balance.hidden === true
+    const primary = hidden ? undefined : balance?.primary
+    const today = meter?.usage?.today
+    const spent = amountTextOf(today)
+    const pieces = []
+    if (primary !== undefined) pieces.push(formatAmount(Math.round(primary.total * 1_000_000), primary.currency))
+    if (spent !== undefined) pieces.push(`${t('meterToday')} ${spent}`)
+    return { provider, text: pieces.length > 0 ? `DeepSeek ${pieces.join(' · ')}` : 'DeepSeek …' }
   }
 
   /**
@@ -1214,39 +1465,62 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const { sessionsService, modelDirectories, getLocale } = props
     const t = useT(getLocale)
     const currentProvider = useCurrentProvider(sessionsService, modelDirectories)
-    const [balance, setBalance] = useState(null)
+    const [meter, setMeter] = useState(null)
+    const [quota, setQuota] = useState(null)
     const [panel, setPanel] = useState(readStoredPanel)
     const [dragging, setDragging] = useState(false)
     const nodeRef = useRef(null)
     const dragRef = useRef(null)
+    // One indicator follows the model switch. Every poll carries the provider
+    // it was started for, and a response whose provider is no longer current is
+    // dropped: a slow DeepSeek answer can never repaint an OpenAI session.
+    const generationRef = useRef(0)
     const floating = panel !== null
-    const windows = balance && Array.isArray(balance.windows) ? balance.windows : []
-    const parts = windows
-      .filter((window) => window.id === 'primary' || window.id === 'secondary')
-      .map((window) => `${windowShortLabel(t, window)} ${window.remainingPercent}%`)
-    const summary = parts.length > 0 ? `OpenAI ${parts.join(' · ')}` : 'OpenAI …'
+    const headline = indicatorHeadline({ provider: currentProvider, meter, quota, t })
+    const summary = headline === null ? '' : headline.text
 
     useEffect(() => {
-      if (currentProvider !== PROVIDER_ID) {
-        setBalance(null)
+      if (currentProvider !== PROVIDER_ID && currentProvider !== DEEPSEEK_PROVIDER_ID) {
+        generationRef.current += 1
+        setMeter(null)
+        setQuota(null)
         return undefined
       }
+      const generation = generationRef.current + 1
+      generationRef.current = generation
+      const metered = currentProvider === DEEPSEEK_PROVIDER_ID
+      const cadence = metered ? METER_POLL_MS : BALANCE_POLL_MS
       let cancelled = false
       async function load() {
+        const sessionId = currentSessionId(sessionsService)
+        const url = `${API.meterUsage}${sessionId === undefined ? '' : `?sessionId=${encodeURIComponent(sessionId)}`}`
+        let nextMeter
+        let nextQuota
         try {
-          const payload = await getJson(`${API.balance}?provider=${encodeURIComponent(currentProvider)}`)
-          if (!cancelled) setBalance(payload.data)
+          const payload = await getJson(url)
+          nextMeter = payload.data
         } catch {
-          if (!cancelled) setBalance(null)
+          nextMeter = null
         }
+        if (metered === false) {
+          try {
+            const payload = await getJson(`${API.balance}?provider=${encodeURIComponent(PROVIDER_ID)}`)
+            nextQuota = payload.data
+          } catch {
+            nextQuota = null
+          }
+        }
+        if (cancelled || generationRef.current !== generation) return
+        setMeter(nextMeter)
+        setQuota(nextQuota ?? null)
       }
       load()
-      const timer = setInterval(() => { void load() }, BALANCE_POLL_MS)
+      const timer = setInterval(() => { void load() }, cadence)
       return () => {
         cancelled = true
         clearInterval(timer)
       }
-    }, [currentProvider])
+    }, [currentProvider, sessionsService])
 
     // Persist once the panel settles, so a drag writes after the last move
     // instead of on every pointer event.
@@ -1280,13 +1554,13 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     // indicator is docked it is allowed to start a line of its own above the
     // others. The wrap belongs to the seat, so it is restored on the way out.
     useEffect(() => {
-      if (floating === true || currentProvider !== PROVIDER_ID) return undefined
+      if (floating === true || headline === null) return undefined
       const seat = flexSeatOf(nodeRef.current)
       if (seat === null) return undefined
       const previousWrap = seat.style.flexWrap
       seat.style.flexWrap = 'wrap'
       return () => { seat.style.flexWrap = previousWrap }
-    }, [floating, currentProvider])
+    }, [floating, headline === null])
 
     // A shrinking window must not strand the panel outside the viewport.
     useEffect(() => {
@@ -1302,7 +1576,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       return () => { window.removeEventListener('resize', onResize) }
     }, [])
 
-    if (currentProvider !== PROVIDER_ID) return null
+    if (headline === null) return null
 
     /** Measure the rendered node into viewport coordinates. */
     function boxOf(node) {
@@ -1430,7 +1704,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         touchAction: 'none',
         userSelect: 'none',
       },
-      title: `OpenAI (ChatGPT OAuth) — ${parts.join(' / ')} · ${t('panelDragHint')}`,
+      title: `${indicatorTooltip({ provider: currentProvider, meter, quota, t })} · ${t('panelDragHint')}`,
       onPointerDown,
       onPointerMove,
       onPointerUp: endDrag,
@@ -1438,6 +1712,110 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       onDoubleClick,
       onKeyDown,
     }, summary)
+  }
+
+  /**
+   * Detail line behind the indicator: provider-specific facts plus the price
+   * provenance, so a cost shown in the sidebar is always explainable.
+   * @param {object} input - same inputs as {@link indicatorHeadline}.
+   * @returns {string}
+   */
+  function indicatorTooltip({ provider, meter, quota, t }) {
+    if (provider === PROVIDER_ID) {
+      const windows = quota !== null && quota !== undefined && Array.isArray(quota.windows) ? quota.windows : []
+      const detail = windows
+        .filter((window) => window.id === 'primary' || window.id === 'secondary')
+        .map((window) => `${windowLabel(t, window)} ${window.remainingPercent}%`)
+        .join(' / ')
+      const session = meter?.usage?.session
+      const tokens = session === undefined ? undefined : `${t('meterSession')} ${formatTokens(session.usage?.promptTokens)} → ${formatTokens(session.usage?.outputTokens)}`
+      return [`OpenAI (ChatGPT OAuth)`, detail, tokens].filter((part) => typeof part === 'string' && part.length > 0).join(' · ')
+    }
+    const balance = meter?.deepseek
+    const account = meter?.account?.kind
+    const parts = [
+      `DeepSeek`,
+      balance?.primary === undefined ? undefined : `${balance.primary.currency} ${balance.primary.total}`,
+      balance?.status === 'stale' ? t('meterUnavailable') : undefined,
+      account === 'enterprise' ? t('meterAccountEnterprise') : account === 'personal' ? t('meterAccountPersonal') : t('meterAccountUnknown'),
+      `${t('meterToday')} ${amountTextOf(meter?.usage?.today) ?? '—'} (${t('meterEstimated')})`,
+      `${t('meterPriceSource')}: ${t('meterPublicPrice')} ${meter?.pricing?.retrievedAt ?? ''}`.trim(),
+    ]
+    return parts.filter((part) => typeof part === 'string' && part.length > 0).join(' · ')
+  }
+
+  /**
+   * One-line session usage for the composer dock.
+   *
+   * OpenAI sessions show tokens and cache behaviour without money, because a
+   * ChatGPT subscription has no per-token cash settlement. DeepSeek sessions add
+   * the locally estimated cost of exactly those tokens.
+   * @param {object} input
+   * @param {string|null} input.provider
+   * @param {object|null} input.meter
+   * @param {(key: string) => string} input.t
+   * @returns {{text: string, detail: string}|null}
+   */
+  function sessionUsageLine({ provider, meter, t }) {
+    if (provider !== PROVIDER_ID && provider !== DEEPSEEK_PROVIDER_ID) return null
+    const session = meter?.usage?.session
+    if (session === undefined || session === null || session.calls === 0) return null
+    const usage = session.usage ?? {}
+    const label = provider === PROVIDER_ID ? 'OpenAI' : 'DeepSeek'
+    const parts = [`${t('meterSession')} ${formatTokens(usage.promptTokens ?? 0)} → ${formatTokens(usage.outputTokens ?? 0)}`]
+    const ratio = session.cacheHitRatio
+    if (typeof ratio === 'number' && Number.isFinite(ratio)) {
+      const percent = ratio * 100
+      parts.push(`${t('meterCacheHit')} ${percent === 0 || percent >= 99.5 ? percent.toFixed(0) : percent.toFixed(1)}%`)
+    }
+    const cost = provider === DEEPSEEK_PROVIDER_ID ? amountTextOf(session) : undefined
+    if (cost !== undefined) parts.push(`${cost} ${t('meterEstimated')}`)
+    return { text: `${label} · ${parts.join(' · ')}`, detail: `${label} ${t('meterTitle')}` }
+  }
+
+  /**
+   * Session usage below the composer card. It shares the sidebar's data source,
+   * so the two views can never disagree about the same session.
+   * @param {object} props - owner props plus the inject face.
+   * @returns {object|null}
+   */
+  function SessionUsageDock(props) {
+    const { sessionsService, modelDirectories, getLocale } = props
+    const t = useT(getLocale)
+    const currentProvider = useCurrentProvider(sessionsService, modelDirectories)
+    const [meter, setMeter] = useState(null)
+    const generationRef = useRef(0)
+
+    useEffect(() => {
+      if (currentProvider !== PROVIDER_ID && currentProvider !== DEEPSEEK_PROVIDER_ID) {
+        generationRef.current += 1
+        setMeter(null)
+        return undefined
+      }
+      const generation = generationRef.current + 1
+      generationRef.current = generation
+      let cancelled = false
+      async function load() {
+        const sessionId = currentSessionId(sessionsService)
+        if (sessionId === undefined) return
+        try {
+          const payload = await getJson(`${API.meterUsage}?sessionId=${encodeURIComponent(sessionId)}`)
+          if (!cancelled && generationRef.current === generation) setMeter(payload.data)
+        } catch {
+          // A missing meter leaves the line hidden rather than showing stale money.
+        }
+      }
+      load()
+      const timer = setInterval(() => { void load() }, METER_POLL_MS)
+      return () => {
+        cancelled = true
+        clearInterval(timer)
+      }
+    }, [currentProvider, sessionsService])
+
+    const line = sessionUsageLine({ provider: currentProvider, meter, t })
+    if (line === null) return null
+    return h('div', { style: s.sessionDock, title: line.detail }, line.text)
   }
 
   const inject = ['slots', 'sessions', 'modelDirectories']
@@ -1502,6 +1880,12 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       id: SIDEBAR_ID,
       inject: baseInject(ctx),
     }, BalanceSidebarIndicator))
+    attempt('conversation.composer.dock', () => ctx.slots.register({
+      name: 'conversation.composer.dock',
+      id: SESSION_DOCK_ID,
+      order: 6,
+      inject: baseInject(ctx),
+    }, SessionUsageDock))
   }
 
   const descriptor = { name: PACKAGE_NAME, inject, apply }
@@ -1517,6 +1901,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       clampFloatingPanel,
       avoidPanelCollisions,
       parseStoredPanel,
+      formatAmount,
+      formatTokens,
+      indicatorHeadline,
     },
     enumerable: false,
   })
