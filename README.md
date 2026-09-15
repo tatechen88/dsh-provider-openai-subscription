@@ -64,6 +64,7 @@ dsh plugin --profile web add ../dsh-provider-openai-subscription
       accountKind: unknown      # unknown | personal | enterprise
       displayCurrency: CNY
       timeZone: system          # system | UTC | Asia/Shanghai
+      deepseekBalance: true     # 读取 DeepSeek 官方余额；关掉则完全不发该请求
       hideBalance: false
       hideCost: false
       contractualSchedules: []  # 企业合同价，见「企业合同价」一节

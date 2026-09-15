@@ -74,7 +74,7 @@
 
 - `sidebar.footer.action`：唯一指示器，按 Provider 切换内容，带 generation 守卫丢弃过期响应；复用拖拽、位置持久化、视口夹取与碰撞避让，停靠时排在已有 footer UI 上方。
 - `conversation.composer.dock`：会话用量一行，与侧栏共用同一数据源，避免两处数字不一致。
-- `settings.section`：账号类型、显示币种、统计时区、隐藏余额/隐藏费用。
+- `settings.section`：账号类型、显示币种、统计时区、读取 DeepSeek 官方余额（关掉则完全不发该请求）、隐藏余额/隐藏费用。每一项都在面板里可达，改动只提交与当前值不同的键。
 
 侧栏与输入框下方的两个席位分别在 `ui-sidebar` 和 `ui-conversation` 中声明，但它们的包名**不**进 `package.json` 的 `dsh.client.inject`：`inject` 声明的是「本 bundle 执行前必须已 materialize 的包行」，属于加载顺序与预取元数据；bundle 通过模块表 `require` 的包才写在 `dsh.client.external` 里。席位既不是前者也不是后者——它是运行时查表，且失败被 `attempt()` 包住，所以两个字段都不该出现它。
 

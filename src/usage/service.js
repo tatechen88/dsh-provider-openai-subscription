@@ -67,6 +67,8 @@ export class UsageMeterService {
     this.balance = { status: 'idle', infos: [], fetchedAt: 0, message: '' }
     /** @type {Promise<object>|undefined} */
     this.balanceInFlight = undefined
+    /** When the last attempt started, so a failing endpoint is not retried per read. */
+    this.balanceAttemptAt = 0
     /** Bumped whenever the configuration changes, so stale async work is dropped. */
     this.generation = 0
   }
@@ -127,9 +129,16 @@ export class UsageMeterService {
    * @returns {Promise<object>} the current balance view.
    */
   async refreshDeepSeekBalance({ force = false } = {}) {
+    if (!this.config.deepseekBalance) {
+      // The outbound request is switched off, and that is the state to report:
+      // showing a failure would invite the user to retry a disabled feature.
+      this.balance = { status: 'off', infos: [], fetchedAt: 0, message: '' }
+      return this.balance
+    }
     const fresh = this.now() - this.balance.fetchedAt < this.balanceTtlMs
     if (!force && (this.balance.status === 'ok' || this.balance.status === 'stale') && fresh) return this.balance
     if (this.balanceInFlight !== undefined) return this.balanceInFlight
+    this.balanceAttemptAt = this.now()
 
     const generation = this.generation
     const task = (async () => {
@@ -166,6 +175,17 @@ export class UsageMeterService {
     } finally {
       if (this.balanceInFlight === task) this.balanceInFlight = undefined
     }
+  }
+
+  /**
+   * Whether a balance reading is due.
+   *
+   * Measured from the last attempt rather than the last success, so a failing
+   * endpoint is retried once per TTL instead of on every read.
+   * @returns {boolean}
+   */
+  balanceDue() {
+    return this.now() - this.balanceAttemptAt >= this.balanceTtlMs
   }
 
   /**
@@ -233,6 +253,10 @@ export class UsageMeterService {
       const { amountsMicrosByCurrency, amountMicros, amountCurrency, ...tokensOnly } = base
       return tokensOnly
     }
+    // A read that finds no balance reading asks for one without waiting for it:
+    // the sidebar polls this route, so the next poll shows the balance instead
+    // of the reading waiting for somebody to press refresh.
+    if (this.config.deepseekBalance && this.balanceDue()) void this.refreshDeepSeekBalance()
     return {
       generatedAt: this.now(),
       account: { kind: this.config.accountKind, declared: this.config.accountKind !== 'unknown' },

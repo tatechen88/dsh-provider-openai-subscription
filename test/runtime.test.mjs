@@ -77,18 +77,15 @@ test('applyRuntime registers provider, directory, and routes', async () => {
   assert.ok(paths.includes(`${ROUTE_PREFIX}/meter/settings`), 'the meter settings are editable')
   assert.equal(paths.length, new Set(paths).size, 'no route is registered twice')
   assert.equal(effects.length, 1)
-  // Disposer should tear down registrations.
-  effects[0].disposer()
+  // Disposer should tear down registrations, and finish the ledger flush before
+  // it resolves: polling for "some file appeared" would accept the temp file a
+  // rename has not landed on yet.
+  await effects[0].disposer()
   assert.equal(llm.adapters, undefined)
   assert.equal(llm.directory, undefined)
   assert.equal(routes.length, 0)
   const meterDir = join(home, 'storages', 'openai-subscription-meter')
-  let residue = []
-  // The disposer flushes without being awaited, so give the write a moment.
-  for (let attempt = 0; attempt < 100 && residue.length === 0; attempt += 1) {
-    residue = await readdir(meterDir).catch(() => [])
-    if (residue.length === 0) await new Promise((resolve) => { setTimeout(resolve, 10) })
-  }
+  const residue = await readdir(meterDir).catch(() => [])
   assert.deepEqual(residue, ['usage.json'], 'the meter writes only inside the injected home')
 })
 

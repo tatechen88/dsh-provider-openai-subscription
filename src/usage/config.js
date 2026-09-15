@@ -29,6 +29,7 @@ export const DEFAULT_METER_CONFIG = Object.freeze({
   timeZone: 'system',
   hideBalance: false,
   hideCost: false,
+  deepseekBalance: true,
   contractualSchedules: Object.freeze([]),
 })
 
@@ -163,6 +164,7 @@ export function normalizeMeterConfig(raw) {
     timeZone: METER_TIME_ZONES.includes(record.timeZone) ? record.timeZone : DEFAULT_METER_CONFIG.timeZone,
     hideBalance: record.hideBalance === true,
     hideCost: record.hideCost === true,
+    deepseekBalance: record.deepseekBalance !== false,
     contractualSchedules: contracts
       .map((entry, index) => toContractualSchedule(entry, index))
       .filter((entry) => entry !== undefined),

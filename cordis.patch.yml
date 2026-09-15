@@ -24,6 +24,9 @@
           displayCurrency: CNY
           # 'system' | 'UTC' | 'Asia/Shanghai' — the zone "today" and "month" use.
           timeZone: system
+          # Read the official DeepSeek balance. Turning it off makes no request;
+          # the settings page exposes the same switch.
+          deepseekBalance: true
           # Hide money / balance on shared screens; token counts stay visible.
           hideBalance: false
           hideCost: false

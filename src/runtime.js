@@ -165,11 +165,21 @@ export async function applyRuntime(ctx, config, options = {}) {
       if (ctx.on !== undefined) {
         disposers.push(ctx.on('llm/stream', meter.collector, { global: true }))
       }
-      disposers.push(() => { void meter.dispose() })
-      return () => {
-        for (const dispose of disposers) dispose()
-        void attempts.dispose()
-        void devices.dispose()
+      disposers.push(() => meter.dispose())
+      return async () => {
+        // Sequential and individually guarded: the ledger flush is the last
+        // step and the only one that can lose data, so one failing surface must
+        // not strand it. Returning the promise lets a caller that awaits the
+        // disposer observe a finished flush instead of racing it.
+        for (const dispose of disposers) {
+          try {
+            await dispose()
+          } catch (error) {
+            logger?.warn?.(`${PACKAGE_NAME}: a teardown step failed`, error)
+          }
+        }
+        await attempts.dispose().catch(() => {})
+        await devices.dispose().catch(() => {})
       }
     }, `${PACKAGE_NAME}: provider, routes and state`)
   } else {
@@ -278,6 +288,10 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
     config: settings.raw(),
     readDeepSeekCredential: () => resolveDeepSeekCredential(ctx, credentials),
   })
+  // Warm the reading once: the sidebar shows a balance only once one has been
+  // read, and leaving that to the panel's refresh button means an empty balance
+  // until somebody presses it. A failure already lands in the status.
+  void service.refreshDeepSeekBalance().catch(() => {})
   collector = createUsageCollector({
     record: (fact) => {
       const stored = service.recordUsage(fact)

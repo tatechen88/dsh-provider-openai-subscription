@@ -319,12 +319,14 @@ test('concurrent balance refreshes share one request', async () => {
   await ledger.close()
 })
 
-test('the configuration carries no switch the settings page cannot reach', () => {
-  // `showSidebar` and `showSessionDock` were accepted and never read, and
-  // `deepseekBalance` was readable but had no control in the panel. All three
-  // are gone on purpose: a knob nobody can turn is worse than no knob.
-  const config = normalizeMeterConfig({ showSidebar: false, showSessionDock: false, deepseekBalance: false })
+test('the configuration exposes exactly the switches the settings page renders', () => {
+  // `showSidebar` and `showSessionDock` were accepted and never read; they are
+  // gone on purpose, because a knob nobody can turn is worse than no knob.
+  const config = normalizeMeterConfig({ showSidebar: false, showSessionDock: false })
   assert.equal('showSidebar' in config, false)
   assert.equal('showSessionDock' in config, false)
-  assert.equal('deepseekBalance' in config, false)
+  // `deepseekBalance` stays: a deployment may forbid the outbound balance
+  // request, and the settings page renders this same switch.
+  assert.equal(normalizeMeterConfig({ deepseekBalance: false }).deepseekBalance, false)
+  assert.equal(normalizeMeterConfig({}).deepseekBalance, true)
 })

@@ -293,7 +293,18 @@ test('the meter settings panel edits an enterprise agreement, and an old host le
     }
     return new Response(JSON.stringify({
       ok: true,
-      data: { revision: 2, config: { accountKind: 'enterprise', displayCurrency: 'CNY', timeZone: 'Asia/Shanghai', contractualSchedules: [] } },
+      data: {
+        revision: 2,
+        config: {
+          accountKind: 'enterprise',
+          displayCurrency: 'CNY',
+          timeZone: 'Asia/Shanghai',
+          deepseekBalance: true,
+          hideBalance: false,
+          hideCost: false,
+          contractualSchedules: [],
+        },
+      },
     }), { status: 200, headers: { 'content-type': 'application/json' } })
   }
   try {
@@ -303,6 +314,14 @@ test('the meter settings panel edits an enterprise agreement, and an old host le
     const textarea = nodes.find((entry) => entry.type === 'textarea')
     assert.notEqual(textarea, undefined, 'a declared enterprise account gets the agreement editor')
     assert.match(textarea.props.placeholder, /acme-2026/)
+
+    // Every switch the panel renders is one the plugin actually reads.
+    const checkboxes = nodes.filter((entry) => entry.type === 'input' && entry.props.type === 'checkbox')
+    assert.deepEqual(
+      checkboxes.map((entry) => entry.props.checked),
+      [true, false, false],
+      'the balance reading is on, both hiding switches are off',
+    )
 
     // A malformed document is reported and blocks the save rather than being
     // silently dropped.

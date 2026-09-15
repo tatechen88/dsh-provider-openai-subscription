@@ -166,6 +166,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterContractInvalid: '合同价 JSON 无法解析',
       meterHideBalance: '隐藏余额',
       meterHideCost: '隐藏费用',
+      meterDeepseekBalance: '读取 DeepSeek 官方余额',
       meterDisplayCurrency: '显示币种',
       meterTimeZone: '统计时区',
       meterSave: '保存',
@@ -248,6 +249,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterContractInvalid: 'The agreement JSON could not be parsed',
       meterHideBalance: 'Hide balance',
       meterHideCost: 'Hide cost',
+      meterDeepseekBalance: 'Read the official DeepSeek balance',
       meterDisplayCurrency: 'Display currency',
       meterTimeZone: 'Accounting time zone',
       meterSave: 'Save',
@@ -1091,13 +1093,14 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         setContractsError(messageOf(error))
       }
     }
-    const toggle = (key) => h('label', { style: s.checkRow, key }, [
+    /** One boolean setting, rendered as a labelled checkbox. */
+    const toggle = (key, labelKey) => h('label', { style: s.checkRow, key }, [
       h('input', {
         type: 'checkbox',
         checked: draft[key] === true,
         onChange: (event) => patch({ [key]: event.target.checked }),
       }),
-      h('span', null, t(key === 'hideBalance' ? 'meterHideBalance' : 'meterHideCost')),
+      h('span', null, t(labelKey)),
     ])
 
     return h('div', { style: s.block }, [
@@ -1149,8 +1152,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
             contractsError === null ? null : h('p', { style: s.error, role: 'alert' }, `${t('meterContractInvalid')}: ${contractsError}`),
           ])
         : null,
-      toggle('hideBalance'),
-      toggle('hideCost'),
+      toggle('deepseekBalance', 'meterDeepseekBalance'),
+      toggle('hideBalance', 'meterHideBalance'),
+      toggle('hideCost', 'meterHideCost'),
       h('div', { key: 'actions', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } }, [
         h(ActionButton, { key: 'save', label: t('meterSave'), disabled: contractsError !== null, onClick: () => { void save() } }),
         h(ActionButton, { key: 'balance', label: t('meterRefresh'), onClick: () => { void refreshBalance() } }),

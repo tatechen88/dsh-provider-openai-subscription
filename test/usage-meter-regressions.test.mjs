@@ -263,3 +263,61 @@ test('dispatch runs inside the meter-depth marker, so a router re-entry is not b
   })
   assert.equal(nestedReturnedUnwrapped, true, 'a call started while dispatching belongs to the outer record')
 })
+
+test('a read with no balance reading asks for one, so the sidebar can show it', async () => {
+  const dir = await freshDir()
+  const ledger = new UsageLedger({ path: join(dir, 'usage.json'), debounceMs: 60_000, now: () => 1 })
+  await ledger.open()
+  let calls = 0
+  const meter = new UsageMeterService({
+    ledger,
+    now: () => 1_000,
+    balanceTtlMs: 0,
+    readDeepSeekCredential: async () => ({ apiKey: 'sk-test' }),
+    fetchImpl: async () => {
+      calls += 1
+      return new Response(JSON.stringify({
+        is_available: true,
+        balance_infos: [{ currency: 'CNY', total_balance: '12.30', granted_balance: '2.30', topped_up_balance: '10.00' }],
+      }), { status: 200 })
+    },
+  })
+
+  const before = meter.view({ sessionId: 's1' })
+  assert.equal(before.deepseek.status, 'idle', 'nothing has been read yet')
+  assert.equal(before.deepseek.primary, undefined, 'and so there is no balance to show')
+
+  await new Promise((resolve) => { setTimeout(resolve, 5) })
+  assert.equal(calls, 1, 'the read path asked for the first reading instead of waiting for a button')
+
+  const after = meter.view({ sessionId: 's1' })
+  assert.equal(after.deepseek.status, 'ok')
+  assert.equal(after.deepseek.primary.currency, 'CNY')
+  assert.equal(after.deepseek.primary.total, 12.3)
+  await ledger.close()
+})
+
+test('the settings switch can forbid the outbound balance request entirely', async () => {
+  const dir = await freshDir()
+  const ledger = new UsageLedger({ path: join(dir, 'usage.json'), debounceMs: 60_000, now: () => 1 })
+  await ledger.open()
+  let calls = 0
+  const meter = new UsageMeterService({
+    ledger,
+    config: { deepseekBalance: false },
+    now: () => 1_000,
+    readDeepSeekCredential: async () => ({ apiKey: 'sk-test' }),
+    fetchImpl: async () => {
+      calls += 1
+      return new Response('{}', { status: 200 })
+    },
+  })
+
+  const balance = await meter.refreshDeepSeekBalance({ force: true })
+  assert.equal(balance.status, 'off', 'a disabled reading reports itself as off, not as a failure')
+  meter.view({ sessionId: 's1' })
+  await new Promise((resolve) => { setTimeout(resolve, 5) })
+  assert.equal(calls, 0, 'no request is made, not even by the read path')
+  assert.equal(meter.view({ sessionId: 's1' }).deepseek.status, 'off')
+  await ledger.close()
+})
