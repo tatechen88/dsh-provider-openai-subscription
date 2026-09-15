@@ -19,6 +19,12 @@
 ## 最近在做什么
 
 ```
+449e096 2026-09-15 feat: expire the model catalog cache
+7a61c4b 2026-09-15 feat: refresh the price table from the vendor page
+2d6b650 2026-09-15 feat: name the models the price table does not cover
+0787507 2026-09-15 feat: meter every registered route without a registry entry
+8bdb623 2026-09-15 fix: scope the meter totals to the route they describe
+0d4d6cd 2026-09-15 test: add the official DeepSeek pricing page fixture
 cc73b0f 2026-09-15 fix: float the meter card and panel above the sidebar and retract them
 45fe074 2026-09-15 docs: hand off the GLM meter round
 54b7284 2026-09-15 feat: show the GLM plan and packages in the meter
@@ -33,6 +39,24 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 907a59a 2026-09-15 feat: reduce the meter settings to the display currency
 6213f43 2026-09-15 docs: record the OpenAI panel balance fix in the handoff
 ```
+
+### 新模型自动出现（本轮）
+
+用户的原话是「模型经常变换，每次有新的模型出现时，这个项目也要能自动检测出来并加上」。今天一个模型/Provider 从未见过的样子有三种，分别处理：
+
+1. **Provider 没注册过**（`0787507`）。`vendors.js` 的职责收窄成「谁能读到账号读数、谁有价格表」，**不再决定谁被记账**：`runtime.js` 的 `createMeterRoutes(ctx)` 把 `METERED_PROVIDERS` 和 `ctx.llm.listProviders()` 合起来，5 秒记忆化，collector 的门禁从冻结名单换成这个活判定；`view().metered` 把同一个清单交给页面，客户端不再自带名单（旧宿主没有该字段时回退到内置三家）。判定抛错只当作「不计量」——这个监听器观察模型调用，绝不能因为一次判定失败让调用失败。**边界**：自动覆盖只给 token，账号读数与价格表仍要显式登记，所以新厂商的「还剩多少」不会凭空出现。
+2. **数字串台**（`8bdb623`，顺序上先修）。此前 `ledger.summary(range)` 不按 Provider 过滤，三家的 token 混在同一个「今日/本月」里；不先修，自动纳入越多越糊。现在 `summary(range, provider?)` / `sessionSummary(sessionId, provider?)` 的第二个参数是**归属**，`view` 带提示时按它收窄，不传保持全局。
+3. **新模型没费率**（`2d6b650` + `7a61c4b`）。先点名：`ledger.unpricedModels(providers)` 按 `(provider, model)` 汇总未定价调用，`view().pricing.unpricedModels` 交给卡片（`未配置价格: deepseek-v5 ×3`），`rescue meter` 报同一段。再（可选、默认关）让表自己去官方页更新。
+
+价格页那一步值得单独记：`resolveSchedule` 找不到费率时返回 undefined，所以 `recordUsage` 原先把「表里没这个模型」和「这个厂商根本没有表」都记成 `no-schedule`。现在它按搜过的 `schedules` 里有没有该 provider 来区分——新模型因此记成 `unknown-model`，这也成了触发刷新（和 `unpricedModels` 过滤）的信号。学到的表排在快照之前，`byPrecedence` 用 `retrievedAt` 让它在自己覆盖的模型上胜出、缺的模型回退快照，合同价仍压过两者——**解析器一行没改**。
+
+三条铁律写进了代码与注释：**整表解析成功才采用**（缺行/非人民币/两档颠倒一律整表拒绝，旧表继续生效，原因记进 `prices.json` 并显示在卡片上）；**绝不编价**（页面没写的费率不推算，也不拿别的模型顶替）；**改表不改历史**（每条事实存当时的价格表 ID）。旧模型别名只在页面仍提到它、且目标模型仍在页面上时保留。
+
+实测（阶段 0 与收尾各一次）：线上价格页 21493 字节，只有一张转置表；模型 slug 与内置快照的键完全一致；脚注 (3) 自述高峰时段「周一至周五 9:00-12:00、14:00-18:00」与内置 `PEAK_WINDOWS` 一字不差，脚注 (1) 给出两个旧模型名及其按 Flash 计价的归属；`fetchPricingPage` + `parsePricingPage` 对线上页面端到端跑通，产出与快照逐项相同。夹具 `test/fixtures/deepseek-pricing-page.html` 是同一页面裁到「表 + 脚注」（服务端页面里有一个 NUL 字节，已在夹具头注明被剥掉）。
+
+`449e096` 顺带修了另一个「新模型不出现」的老问题：adapter 的目录缓存是**进程级永久**的，`/models/refresh` 也只是返回缓存。现在 TTL 10 分钟，并新增 `invalidateCatalog()`，路由先清缓存再列。
+
+本轮**未发版**：`package.json` 仍是 1.2.0，是否 release 由使用者决定（1.2.0 那次是显式要求后才打的 tag）。
 
 ### 浮动与自动收回（本轮）
 
