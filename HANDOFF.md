@@ -19,19 +19,20 @@
 ## 最近在做什么
 
 ```
+5367490 2026-09-15 fix: read the account quota on the OpenAI panel whatever the session runs
 eedd2c0 2026-09-15 feat: read the DeepSeek balance on demand and expose its switch
 3fab498 2026-09-15 test: render the connection surfaces and read the balance on open
 dd0e7d9 2026-09-15 docs: 增加 HANDOFF.md
 107df56 2026-09-15 chore: 接入 SkillsHub 工程流程约定
-d86c8e0 2026-09-15 feat: merge concurrent ledger writers and drop unreachable knobs
 ```
 
 近期主线是计量正确性：并发 ledger 写入合并（重读＋按 callId 合并，写前 fsync）、审计发现的 metering / settings 缺陷修复、provider 级定价的测试覆盖、连接链路的页面级渲染测试（`test/client-page-render.test.mjs`），以及余额读取链路。
 
-两个「只有真跑起来才会发现」的缺陷，都已修复并有回归测试：
+三个「只有真跑起来才会发现」的缺陷，都已修复并有回归测试：
 
 1. 登录后的设置页从不做首次余额读取，只起了 5 分钟轮询（打开即读已修）。
 2. 侧栏只显示「今日消费」不显示余额：`balanceView()` 只读缓存，而余额唯一的触发点是设置页那个刷新按钮，进程重启后 `status` 一直停在 `idle`，于是指示器里没有 `primary` 可显示。现在 `view()` 发现读数缺失/过期会**不等待地触发一次读取**（`balanceDue()` 按上次尝试计时，失败不会按每次轮询重试），插件启动时也会预热一次；`meter.deepseekBalance` 同时作为设置页里可达的开关 —— 关掉即完全不发该请求，状态报 `off`。
+3. 设置页里的 Balance 永远「暂无数据」：`useOpenAISubscriptionFlow` 的 `provider` 传的是**当前会话的** Provider，而 `refreshBalance()` 在 `provider !== 'openai-subscription'` 时直接返回并把余额清空 —— 于是在 DeepSeek 会话里打开 OpenAI 面板，配额块永远空白、刷新按钮也点不动。该页面是 OpenAI 账号自己的面板，现已固定用 `PROVIDER_ID`；侧栏仍跟随当前模型（那是它的职责）。
 
 拆除顺序也顺带修了：`applyRuntime` 的 disposer 现在逐项 try/catch 且按序 await，最后的 ledger flush 不会因为前面某个 surface 抛错而被跳过，调用方 await 它就能等到落盘完成。
 
