@@ -15,9 +15,10 @@
 - 支持授权码、手动回调和设备码三种 ChatGPT OAuth 登录流程。
 - 注册独立 Provider ID `openai-subscription`，不占用 `dsh-codex`、`dsh-codex-connect` 或 `llm-pi-ai/openai-codex` 的标识。
 - 构造 OpenAI Responses 请求，并将 SSE 事件转换为 DSH 流式输出。
-- 上报 token 用量，包括缓存命中（cached input）与 reasoning token，供 DSH 消息用量与 `dsh-cost-meter` 统计使用。
+- 上报 token 用量，包括缓存命中（cached input）与 reasoning token，供 DSH 消息用量与统计使用。
 - 查询模型目录，包括上下文窗口和 reasoning effort 信息。
 - 查询订阅额度，支持缓存、并发请求合并和过期数据回退。
+- 内置用量与费用统计：指示器跟随当前模型在 OpenAI 订阅与 DeepSeek 之间切换，显示订阅额度、DeepSeek 官方余额、本会话/今日/本月 token 与 DeepSeek 费用估算。
 - 在侧边栏底部显示额度指示器，可拖拽到任意位置并记住位置；恢复、拖动结束或窗口变化时避让该位置已有的 UI。
 - 提供 DSH Web 设置页、首次启动引导、模型列表和退出登录功能。
 - 检测旧 `openai-codex` Provider，并支持对旧凭据创建加密备份。
@@ -107,6 +108,49 @@ Responses 的终止事件会携带 `usage`，插件在 finish 之前把它转换
 
 用量转换位于 Host 侧，升级插件后需要重新启动对应 DSH profile 才会生效。
 
+## 用量与费用（内置 meter）
+
+插件自身就是一个用量与费用模块，不再需要额外安装 `dsh-cost-meter`。它监听 DSH 的全局 `llm/stream`，把每次模型调用最终上报的 usage 记成一条事实，再用带版本的价格表估算费用。
+
+### 指示器跟随模型切换
+
+侧边栏底部只有一个指示器，按当前会话选中的 Provider 切换内容：
+
+| 当前 Provider | 显示 |
+|---|---|
+| `openai-subscription` | `OpenAI 5小时 82% · 每周 64%`，悬停见本会话 token |
+| `deepseek-official` | `DeepSeek ¥86.20 · 今日 ¥0.42`，悬停见账号类型、价格来源与估算口径 |
+| 其他 | 不显示 |
+
+切换 Provider 时同一个节点就地换内容；每次请求都带着发起时的 Provider 代号，迟到的响应会被丢弃，因此快速来回切换不会让旧账号的金额覆盖新账号。
+
+输入框下方另有一行会话用量：OpenAI 显示 token 与缓存命中率，DeepSeek 追加本会话的估算费用。
+
+### 费用口径
+
+- **OpenAI 订阅不显示金额。** ChatGPT 订阅没有按 token 的现金结算，把 API 目录价当成订阅支出是错的。
+- **DeepSeek 显示的是本地估算。** 官方公开接口只提供余额，没有账单历史；费用由本插件按 token 与价格表计算，措辞与 UI 始终标注"估算"。
+- 计价使用**整数定点**：价格以「每百万 token 的货币微元」存储，金额是各桶分子求和后一次性四舍五入，不经过浮点累加。
+- 三个计费桶：未缓存输入、缓存读取、输出。`reasoning` 是输出的子集，只展示不重复计费。官方未公布独立的 cache-write 价格，因此该桶只统计、不计费。
+- 未知模型**不套默认价**，显示为"未配置价格"，避免用别的模型价格编造金额。
+- 价格带版本：当前内置 DeepSeek 公开价快照（2026-09-15，含阶梯时段），每条记录都保存当时采用的价格表 ID，改价不会改写历史。
+
+### 账号类型与企业合同价
+
+账号类型是**用户声明**，不是检测结果：DeepSeek 公开 API 不返回实名类型，官方 FAQ 也说明个人与企业当前在产品功能和权益上无差异，差异主要在认证流程、对公充值与发票抬头。
+
+- 设置页可选 `未声明 / 个人 / 企业（用户声明）`；
+- 只有声明为企业、且配置了在有效期内、模型匹配的合同价时，合同价才生效；
+- 企业身份本身不会自动产生折扣；没有有效合同价时回退到公开价估算；
+- UI 会显示实际采用的是"公开价"还是"合同价"，以及合同表名称与有效期。
+
+### 数据与隐私
+
+- 账本位于 `$DSH_HOME/storages/openai-subscription-meter/usage.json`，只保存调用事实与当时报价，不保存提示词、响应正文或密钥；
+- 设置位于 `$DSH_HOME/plugin-state/openai-subscription-meter.json`，带 revision，冲突写入返回 409 而不是覆盖；
+- 余额查询每次重新解析 `DEEPSEEK_API_KEY`（或 `llm-deepseek.apiKeyEnv` 指定的变量），只允许发往 HTTPS `api.deepseek.com`，禁止重定向；失败保留上一次成功读数；
+- 设置页可分别隐藏余额与费用，token 统计不受影响。
+
 ## DSH 工具权限
 
 Provider 会把 DSH 工具 schema 转换为模型可用的 Responses 工具定义。普通参数保持不变，但不会向模型暴露 `sandbox_permissions` 和 `justification`。
@@ -186,6 +230,15 @@ src/
   oauth/                   PKCE、state、JWT、callback 和 device code
   balance/                 额度客户端、响应归一化与缓存服务
   models/                  模型目录客户端
+  usage/
+    types.js               用量事实模型与校验
+    pricing.js             定点价格表、阶梯时段与报价
+    collector.js           llm/stream 计量监听器
+    ledger.js              持久化账本与聚合
+    deepseek-balance.js    DeepSeek 官方余额客户端与端点门禁
+    config.js              设置归一化与企业合同价解析
+    settings-store.js      带 revision 的插件设置文件
+    service.js             统一视图模型
   provider/
     request-builder.js     Responses 请求构造与工具 schema 转换
     adapter.js             OpenAI 订阅 Provider adapter
@@ -203,6 +256,9 @@ cordis.patch.yml           DSH bundle patch 定义
 - OAuth、模型目录和额度接口的完整验证需要真实账号及明确授权。
 - ChatGPT / Codex 非公开接口可能随时调整协议或返回字段。
 - 缓存命中依赖上游在 `usage.input_tokens_details.cached_tokens` 中上报；未上报时不会显示命中率。
+- DeepSeek 费用是本地估算：价格来自 2026-09-15 的公开价快照，官方改价后需要更新价格表；跨阶梯时段的请求按**请求开始时刻**取档，官方未公开实际结算规则。
+- 账号类型无法自动识别，企业身份始终是用户声明；插件不读取也不展示官方账单、发票或信用额度。
+- 只统计本 DSH 进程内的调用；同账号在其他机器或客户端上的消耗不会进入本地账本。
 - 高级模型配置 UI 尚未覆盖 Provider 的全部参数。
 
 ## 许可证
