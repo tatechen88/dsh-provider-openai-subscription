@@ -58,6 +58,12 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   const COLLISION_GAP_PX = 8
   /** Controls considered occupied when a floating panel settles nearby. */
   const COLLISION_SELECTOR = 'button, a[href], input, textarea, select, [role="button"], [role="link"], [role="dialog"], [role="menu"], [role="toolbar"]'
+  /**
+   * Viewport width below which the meter indicator shows an icon instead of its
+   * numbers. A phone reaching this harness remotely is narrower than any desktop
+   * window, and there the numbers cannot fit the sidebar at all.
+   */
+  const NARROW_VIEWPORT_PX = 640
   /** Currencies the meter settings offer. A composition may still name another. */
   const DISPLAY_CURRENCIES = ['CNY', 'USD']
 
@@ -1531,11 +1537,13 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     const generationRef = useRef(0)
     const floating = panel !== null
     const headline = indicatorHeadline({ provider: currentProvider, meter, quota, t })
-    // The seat shows an icon; the numbers live behind a click. A phone-width or
-    // remote sidebar cannot fit them, and a clipped number is worse than none.
+    // A phone reaching this harness remotely gets an icon and opens the numbers
+    // with a click; a desktop window has room for the numbers themselves, so it
+    // keeps showing the balance (or quota) and the spend.
+    const [narrow, setNarrow] = useState(() => viewportSize().width < NARROW_VIEWPORT_PX)
     const [open, setOpen] = useState(false)
     const details = indicatorDetails({ provider: currentProvider, meter, quota, t })
-    const summary = details.join(' · ')
+    const summary = headline === null ? '' : headline.text
 
     useEffect(() => {
       if (!isMeteredProvider(currentProvider)) {
@@ -1617,20 +1625,24 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     // The home seat is one nowrap flex row that every footer action shares —
     // dsh-cost-meter is a regular occupant of it. Two information widgets
     // cannot share that row without one of them being squeezed, so while the
-    // indicator is docked it is allowed to start a line of its own above the
-    // others. The wrap belongs to the seat, so it is restored on the way out.
+    // indicator shows its text it may start a line of its own above the others.
+    // The wrap belongs to the seat, so it is restored on the way out. An icon
+    // needs no line of its own, so a narrow viewport leaves the seat exactly as
+    // the other occupants laid it out.
     useEffect(() => {
-      if (floating === true || headline === null) return undefined
+      if (floating === true || narrow === true || headline === null) return undefined
       const seat = flexSeatOf(nodeRef.current)
       if (seat === null) return undefined
       const previousWrap = seat.style.flexWrap
       seat.style.flexWrap = 'wrap'
       return () => { seat.style.flexWrap = previousWrap }
-    }, [floating, headline === null])
+    }, [floating, narrow, headline === null])
 
-    // A shrinking window must not strand the panel outside the viewport.
+    // A shrinking window must not strand the panel outside the viewport, and it
+    // decides which of the two renderings the indicator uses.
     useEffect(() => {
       const onResize = () => {
+        setNarrow(viewportSize().width < NARROW_VIEWPORT_PX)
         const size = nodeSize(nodeRef.current)
         setPanel((current) => {
           if (current === null) return null
@@ -1781,34 +1793,46 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     }
 
     const placement = panel === null
-      ? {
-          // The footer-action seat is one flex row shared with every other
-          // registered action, and each occupant owns its button geometry. The
-          // occupant is now a single icon, so the row fits a sidebar of any
-          // width instead of needing room for a sentence.
-          flex: '1 1 100%',
-          order: -1,
-          minWidth: 0,
-          boxSizing: 'border-box',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-        }
+      ? (narrow
+          ? {
+              // An icon is small enough to share the footer row: no line of its
+              // own, and nothing to clip.
+              flex: '0 0 auto',
+              order: -1,
+              boxSizing: 'border-box',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 4,
+            }
+          : {
+              // The footer-action seat is one flex row shared with every other
+              // registered action, and each occupant owns its button geometry.
+              // The numbers need a whole line of that (now wrapping) row, sorted
+              // ahead of the other occupants, and the box clips its own overflow
+              // so it can never cover a neighbour.
+              flex: '1 1 100%',
+              order: -1,
+              minWidth: 0,
+              boxSizing: 'border-box',
+              textAlign: 'left',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            })
       : {
           position: 'fixed',
           left: panel.x,
           top: panel.y,
-          // A detached icon keeps its own size; the measured box still clamps it
-          // and still names the file it is stored in.
+          // Detached, the box sizes to what it holds; `maxWidth` only binds on a
+          // viewport narrower than that, where trimming is the least-bad reading.
           whiteSpace: 'nowrap',
           maxWidth: Math.max(FLOAT_MARGIN_PX * 2, viewportSize().width - FLOAT_MARGIN_PX * 2),
           overflow: 'hidden',
           textOverflow: 'ellipsis',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
+          ...(narrow
+            ? { display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 4 }
+            : {}),
           zIndex: 40,
           boxShadow: '0 6px 18px rgba(0, 0, 0, 0.35)',
         }
@@ -1860,18 +1884,20 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         onDoubleClick,
         onKeyDown,
         onClick,
-      }, h('svg', {
-        key: 'glyph',
-        width: 16,
-        height: 16,
-        viewBox: '0 0 16 16',
-        'aria-hidden': true,
-        focusable: false,
-      }, [
-        h('rect', { key: 'bar-1', x: 2, y: 9, width: 3, height: 5, rx: 1, fill: 'currentColor' }),
-        h('rect', { key: 'bar-2', x: 6.5, y: 5, width: 3, height: 9, rx: 1, fill: 'currentColor' }),
-        h('rect', { key: 'bar-3', x: 11, y: 2, width: 3, height: 12, rx: 1, fill: 'currentColor' }),
-      ])),
+      }, narrow
+        ? h('svg', {
+            key: 'glyph',
+            width: 16,
+            height: 16,
+            viewBox: '0 0 16 16',
+            'aria-hidden': true,
+            focusable: false,
+          }, [
+            h('rect', { key: 'bar-1', x: 2, y: 9, width: 3, height: 5, rx: 1, fill: 'currentColor' }),
+            h('rect', { key: 'bar-2', x: 6.5, y: 5, width: 3, height: 9, rx: 1, fill: 'currentColor' }),
+            h('rect', { key: 'bar-3', x: 11, y: 2, width: 3, height: 12, rx: 1, fill: 'currentColor' }),
+          ])
+        : summary),
       card,
     ])
   }

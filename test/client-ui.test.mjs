@@ -405,23 +405,10 @@ test('sidebar indicator drags into a floating panel and remembers where', async 
       return textOfTree(tree.children)
     }
 
-    const icon = buttonOf(node)
-    assert.equal(iconsOf(icon.children ?? icon).length, 1, 'the indicator renders exactly one icon')
-    assert.equal(textOfTree(icon).trim(), '', 'and no text of its own to overflow the sidebar')
-    assert.equal(cardOf(node), undefined, 'the data starts hidden')
-
-    icon.props.onClick()
-    node = renderOnce()
-    const card = cardOf(node)
-    assert.notEqual(card, undefined, 'clicking the icon reveals the data')
-    assert.equal(card.props['data-details'], 'meter')
-    assert.ok(textOfTree(card).trim().length > 0, 'the revealed card carries the numbers')
-    assert.equal(card.props.style.whiteSpace, 'normal', 'and wraps instead of clipping on a narrow viewport')
-    assert.ok(Number(card.props.style.width) <= window.innerWidth, 'the card never exceeds the viewport')
-
-    buttonOf(node).props.onClick()
-    node = renderOnce()
-    assert.equal(cardOf(node), undefined, 'clicking the icon again hides it')
+    const desktop = buttonOf(node)
+    assert.ok(textOfTree(desktop).trim().length > 0, 'a desktop window shows the numbers themselves')
+    assert.equal(iconsOf(desktop.children ?? desktop).length, 0, 'and no icon in their place')
+    assert.equal(cardOf(node), undefined, 'the card starts hidden')
 
     buttonOf(node).props.onPointerDown(pointer({ button: 0, pointerId: 1, clientX: 100, clientY: 680, currentTarget: anchor }))
     buttonOf(node).props.onPointerMove(pointer({ pointerId: 1, clientX: 102, clientY: 681, currentTarget: anchor }))
@@ -485,6 +472,35 @@ test('sidebar indicator drags into a floating panel and remembers where', async 
     for (const entry of resizeListeners) entry.listener()
     node = renderOnce()
     assert.equal(buttonOf(node).props.style.left, 56, 'the shrunk viewport clamps the panel back inside')
+
+    // A phone-width viewport swaps the numbers for an icon: they cannot fit, so
+    // they wait behind a click and then wrap inside the viewport. Release the
+    // pointer first: a press that moved is a drag, and a drag must not toggle.
+    buttonOf(node).props.onPointerUp(pointer({ pointerId: 2 }))
+    node = renderOnce()
+    assert.equal(window.innerWidth, 320)
+    const narrowButton = buttonOf(node)
+    assert.equal(textOfTree(narrowButton).trim(), '', 'a narrow viewport renders no text to overflow')
+    assert.equal(iconsOf(narrowButton.children ?? narrowButton).length, 1, 'it renders the icon instead')
+    assert.equal(cardOf(node), undefined, 'and still hides the data until asked')
+
+    narrowButton.props.onClick()
+    node = renderOnce()
+    const narrowCard = cardOf(node)
+    assert.notEqual(narrowCard, undefined, 'clicking the icon reveals the data on a narrow viewport too')
+    assert.ok(textOfTree(narrowCard).trim().length > 0, 'the card carries the numbers')
+    assert.equal(narrowCard.props.style.whiteSpace, 'normal', 'and wraps instead of clipping')
+    assert.ok(Number(narrowCard.props.style.width) <= window.innerWidth, 'never exceeding the viewport')
+
+    buttonOf(node).props.onClick()
+    node = renderOnce()
+    assert.equal(cardOf(node), undefined, 'clicking again hides it')
+
+    // Widening the window brings the numbers back without a reload.
+    window.innerWidth = 1000
+    for (const entry of windowListeners.filter((listener) => listener.type === 'resize')) entry.listener()
+    node = renderOnce()
+    assert.ok(textOfTree(buttonOf(node)).trim().length > 0, 'a wide viewport shows the numbers again')
   } finally {
     window.innerWidth = 1000
     // Every mount left a poll interval behind; the remount's runtime is a
