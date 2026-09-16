@@ -59,6 +59,28 @@ export function detectConflicts(providers, configurable, missingServices = []) {
 }
 
 /**
+ * Read one optional service.
+ *
+ * `get` is the only accessor a plugin context may use for a service it did not
+ * declare in `inject`: Cordis throws from `ctx.llm` on such a context, so the
+ * property is a fallback for a plain snapshot only, never the answer for a real
+ * context whose `get` reported the service absent.
+ *
+ * @param {object} ctx - Cordis context or a plain snapshot of one.
+ * @param {string} name - service name.
+ * @returns {unknown} the service, or undefined when it is absent.
+ */
+function optionalService(ctx, name) {
+  if (typeof ctx?.get === 'function') return ctx.get(name)
+  try {
+    return ctx?.[name]
+  } catch {
+    // Absent is a value here, and refusing the property is one way Cordis says so.
+    return undefined
+  }
+}
+
+/**
  * Read the DSH topology through optional services and return a conflict report.
  * Missing services are reported, not thrown.
  *
@@ -67,7 +89,7 @@ export function detectConflicts(providers, configurable, missingServices = []) {
  */
 export async function readConflictReport(ctx) {
   const missingServices = []
-  const llm = ctx?.get?.('llm') ?? ctx?.llm
+  const llm = optionalService(ctx, 'llm')
   let providers = []
   let configurable = []
   if (llm === undefined || typeof llm.listProviders !== 'function') {

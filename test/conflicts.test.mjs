@@ -67,6 +67,25 @@ test('readConflictReport handles absent llm service without throwing', async () 
   assert.deepEqual(report.missingServices, ['llm'])
 })
 
+test('readConflictReport never reads the refusing service property', async () => {
+  // Cordis throws from `ctx.llm` on a plugin context that does not declare
+  // `inject: ['llm']`, and a real activation reaches this check through exactly
+  // such a context. The property fallback that used to be here turned "the llm
+  // service is not there yet" into a throw out of apply(), which one harness
+  // reports as one startup warning and the other as a fatal load failure.
+  const ctx = {
+    get() {
+      return undefined
+    },
+    get llm() {
+      throw new Error('cannot get property "llm" without inject')
+    },
+  }
+  const report = await readConflictReport(ctx)
+  assert.equal(report.ok, false)
+  assert.deepEqual(report.missingServices, ['llm'])
+})
+
 test('readConflictReport handles llm service methods throwing', async () => {
   const ctx = {
     llm: {
