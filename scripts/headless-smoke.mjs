@@ -63,6 +63,7 @@ const probe = spawnSync('dsh --version', { shell: true, encoding: 'utf8' })
 if (probe.error !== undefined || probe.status !== 0) {
   skip('dsh is not available on PATH')
 }
+const runningVersion = (probe.stdout ?? '').trim().split(/\s+/).pop()
 
 // The real install supplies the bundles and the harness packages this run
 // composes; the smoke only borrows them.
@@ -71,8 +72,18 @@ if (realHome === undefined || realHome.length === 0) {
   skip('DSH_HOME is not set, so there is no installed harness to borrow')
 }
 const realModules = join(realHome, 'profiles', 'node_modules')
-if (!existsSync(join(realModules, '@deepseek-ai', 'dsh', 'package.json'))) {
+const borrowedManifest = join(realModules, '@deepseek-ai', 'dsh', 'package.json')
+if (!existsSync(borrowedManifest)) {
   skip(`no installed harness under ${realModules}`)
+}
+
+// Borrowing is only sound between identical installs. DSH heals
+// `profiles/node_modules` by pointing each package at *its own* installation, so
+// a borrowed tree from another version gets rewritten — or refused outright —
+// before this smoke's profile is ever composed.
+const borrowedVersion = JSON.parse(await readFile(borrowedManifest, 'utf8')).version
+if (borrowedVersion !== runningVersion) {
+  skip(`dsh on PATH is ${runningVersion} but ${realModules} holds ${borrowedVersion}; pointing this smoke at another version's install cannot work`)
 }
 
 const home = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-headless-'))
