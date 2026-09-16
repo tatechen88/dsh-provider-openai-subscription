@@ -16,18 +16,29 @@
 - 注册独立 Provider ID `openai-subscription`，不占用 `dsh-codex`、`dsh-codex-connect` 或 `llm-pi-ai/openai-codex` 的标识。
 - 构造 OpenAI Responses 请求，并将 SSE 事件转换为 DSH 流式输出。
 - 上报 token 用量，包括缓存命中（cached input）与 reasoning token，供 DSH 消息用量与统计使用。
-- 查询模型目录，包括上下文窗口和 reasoning effort 信息。
+- 查询模型目录，包括上下文窗口和 reasoning effort 信息；同时通过 DSH 的 model discovery 接缝（`llm.registerModelDiscovery`）把同一个目录提供给设置页的模型探测，两处共用一份来源。未登录时返回明确的拒绝原因，而不是会被读成「这个 Provider 没有模型」的空列表。
 - 查询订阅额度，支持缓存、并发请求合并和过期数据回退。
 - 内置用量与费用统计：指示器跟随当前模型在 OpenAI 订阅、DeepSeek 与智谱 GLM 之间切换，显示订阅额度、DeepSeek 官方余额、GLM Coding Plan 额度与资源包、本会话/今日/本月 token 与 DeepSeek 费用估算。**任何 DSH 已注册的 Provider 都自动纳入 token 计量**，新模型出现无需等插件更新；未定价的模型会被逐个点名，可选打开官方价格页自动更新。
 - 在侧边栏底部显示用量与余额：**桌面宽度下直接显示文字**（DeepSeek 显示余额与今日消费，OpenAI 显示各额度窗口剩余百分比，GLM 显示资源包剩余 token 与今日用量）；**手机宽度或远程接入时自动收成一个柱状图图标**，点击才在图标上方展开数据卡片，卡片按视口夹取并换行，因此不会溢出屏幕。图标可拖拽到任意位置并记住位置，双击复位。数据卡片与拖出的浮动面板都挂在 `document.body` 上，不受侧边栏裁剪；卡片在无人操作 12 秒后自动收回，点击卡片之外、再点一次图标或按 Esc 也会立刻收回。
-- 提供 DSH Web 设置页、首次启动引导、模型列表和退出登录功能。
+- 提供 DSH Web 设置页、首次启动引导、模型列表和退出登录功能，并在 **设置 → 模型** 的 Provider 卡片上提供同一套连接控件。首次启动引导按 DSH 的 `settings.onboarding` 约定拥有自己的模态外壳：显示期间把 `#root` 设为 `inert`，把焦点移入对话框并在其中循环，关闭时把 inert 状态与焦点交还给原处；它是阻塞步骤，只能通过明确的「稍后」按钮离开，Esc 不会隐式关闭。
 - 检测旧 `openai-codex` Provider，并支持对旧凭据创建加密备份。
 - 提供 Rescue CLI，可查看状态、启用或禁用插件、管理快照以及执行安装检查。
-- 使用安全 Bootstrap。插件加载失败时，DSH 仍可继续启动。
+- 组合与引导阶段永不阻止 DSH 启动：默认的 `bootstrap` 状态不加载任何 Runtime。
+
+## 兼容性
+
+| 目标 | 版本 |
+| --- | --- |
+| DSH | `>=0.1.6-alpha.1`（`package.json` 的 `engines.dsh`） |
+| Node.js | `^22.19.0 \|\| >=24.0.0` |
+
+本版本针对 DSH 0.1.6 的接口调整过：流式输出补齐了 `block-start` / `block-end` 语法，Provider 请求改用 DSH 的 `attributionHeaders()`（`User-Agent` 形如 `deepseek-harness/<版本> (+仓库地址)`），激活失败改由 DSH 自身的 optional entry 机制上报。更早的 DSH 版本未经验证。
+
+因为本插件常以 `link:` 方式装进 profile，模块真实路径在 profile 之外，「向上一层找 `node_modules`」这条常规解析路径到不了 harness 包；插件会按「自身路径 → `$DSH_HOME/profiles/node_modules` → `profiles/web/node_modules` → `node_modules`」依次尝试，取到官方 helper 就用它，全都取不到才回落到带版本号的插件自身身份。
 
 ## 安全加载
 
-插件遵循一个简单原则：插件自身可以停用，但不能因为加载失败而阻止 DSH 重启。
+插件遵循一个简单原则：插件自身可以停用，但配置或引导阶段的任何问题都不能阻止 DSH 启动。
 
 Cordis 启动时只加载 `src/index.js` 和 `src/bootstrap.js`。只有同时满足以下条件，插件才会动态加载 Runtime：
 
@@ -35,7 +46,15 @@ Cordis 启动时只加载 `src/index.js` 和 `src/bootstrap.js`。只有同时�
 - `oauth.clientId` 已配置且不为空；
 - 未通过 Rescue CLI 启用 kill switch。
 
-Runtime 加载或初始化失败时，Bootstrap 会捕获错误并停止激活插件，不会把异常继续抛给 DSH Loader。即使 DSH 本身无法进入 Web 设置页，也可以通过独立的 Rescue CLI 禁用插件。
+`bootstrap`、`disabled` 和 kill switch 是正常的「不激活」：插件正常完成加载，不贡献任何 Provider。
+
+显式声明 `state: active` 却无法激活时（缺少 `oauth.clientId`、Runtime 导入失败、缺少 DSH 服务、Provider 或设置命名空间冲突），`apply()` 会以 rejected Promise 结束，把真实原因交给 DSH 的启动审计：
+
+- DSH 会把本条目作为 **optional entry** 记录一条启动警告，**其余插件照常运行**，DSH 不会被阻止启动；
+- 失败原因出现在 DSH 的启动输出里，而不是只留在插件自己的日志里；
+- 部分完成的注册（Adapter、模型目录条目、HTTP 路由）会被逆序回滚，不会留下无人释放的残留。
+
+因此判断标准不是「插件有没有失败」，而是「失败会不会挡住 DSH」。即使 DSH 本身无法进入 Web 设置页，也可以通过独立的 Rescue CLI 禁用插件。
 
 ## 安装与激活
 
@@ -110,6 +129,8 @@ dsh-openai-subscription-rescue disable
 
 插件使用独立的 Provider ID、设置命名空间和凭据键，不会覆盖旧 `openai-codex` Provider 的配置或凭据。
 
+插件向 DSH 导出一个 `Config` schema（无依赖手写的 Standard Schema，同步校验）。**已知字段写错类型会被 DSH 在 `apply()` 之前拒绝**，并在启动审计里点名具体字段——例如 `state: 5` 以前会被静默当成 `bootstrap`（表现是插件莫名其妙不加载），现在直接报错。未知的顶层键与 `meter` 下的任意字段仍然放行，因为向前兼容依赖容忍这个版本还不认识的配置。
+
 ## Web 设置页
 
 Runtime 激活后，插件会在 DSH Web 客户端注册设置入口。登录成功后，可以在页面中查看：
@@ -120,11 +141,17 @@ Runtime 激活后，插件会在 DSH Web 客户端注册设置入口。登录成
 - 默认模型和 reasoning effort 配置；
 - 旧 Provider 的检测与备份状态。
 
+同一套连接控件也出现在 **设置 → 模型** 里本插件所属的 Provider 卡片上（DSH 0.1.6 的 `settings.models.provider-card`，按设置命名空间 `llm-openai-subscription` 分发）。因此不必先找到插件的独立设置页才能登录或退出；卡片只保留连接相关的控件，用量与费用的配置表单仍然只在插件自己的设置页上，不会出现两处编辑同一份设置。
+
 左下角的额度指示器可以拖拽到页面任意位置，双击复位；拖动后按自身文本自适应宽度，完整显示额度内容，位置保存在浏览器本地。恢复位置、拖动结束或窗口变小时，指示器会避让该位置已有的可交互 UI，并自动收回可见区域。
 
 侧边栏底部是所有 footer 操作共享的一行，不是指示器独占的整行（`dsh-cost-meter` 等插件也注册在同一席位）。选中 OpenAI 订阅 Provider、指示器出现时，它会让该行可以换行，并把自己排在其它操作之前、独占一整行，因此显示在已有 UI 的上方，而不是和它们挤在同一行或覆盖它们。指示器浮出、或该 Provider 不再被选中后，这一行的布局会恢复原状。
 
 浏览器只访问插件注册的本地同源路由。OAuth token、额度请求和模型请求均由 DSH Runtime 发往上游接口。
+
+这些路由默认由 **DSH 自己的 Connection 策略**把关：先做 Host/Origin 栅栏（挡住 DNS rebinding——只比较 `Origin` 与 `Host` 的旧写法挡不住它），再校验浏览器会话 Cookie（`HttpOnly; SameSite=Strict`，因此跨站请求拿不到它）。部署里没有 Connection 服务时（例如更精简的 profile），才回落到插件自带的同源比较。
+
+路由的生命周期绑定在 Web 服务本身上：激活时 Web 服务已在，就同步挂载；尚未出现（兄弟插件还在加载，或端口绑定失败等待恢复），则改为注入等待——Web 服务一出现就挂上，被替换或撤下时自动释放。因此**可选的 Web 服务不会让激活空等**（实测 1 ms 内完成），也不会出现「启动时没赶上就永远没有路由」。
 
 ## Token 用量与缓存命中
 
@@ -277,7 +304,6 @@ dsh-openai-subscription-rescue meter
 
 # 检查依赖和激活条件
 dsh-openai-subscription-rescue doctor --profile path/to/profile/package.json
-
 # 创建或回滚快照（rollback 需要 --target；快照目录默认在 plugin-state 下）
 dsh-openai-subscription-rescue snapshot --profile "$DSH_HOME/profiles/web/package.json" --patch "$DSH_HOME/profiles/web/cordis.patch.yml"
 dsh-openai-subscription-rescue rollback --path "$DSH_HOME/plugin-state/openai-subscription-snapshots" --target "$DSH_HOME/profiles/web/package.json"
@@ -288,6 +314,21 @@ dsh-openai-subscription-rescue disable
 ```
 
 所有状态输出都会脱敏。OAuth access token、refresh token 和备份密码不会写入日志或状态响应。
+
+`doctor` 输出带 `schemaVersion` 的 JSON，并在最后给出 DSH 兼容性判定：
+
+```json
+{
+  "schemaVersion": 1,
+  "compatibility": {
+    "declaredDshRange": ">=0.1.6-alpha.1",
+    "installedDsh": "0.1.6-alpha.1",
+    "satisfied": true
+  }
+}
+```
+
+`installedDsh` 是从 profile 的 `node_modules/@deepseek-ai/dsh/package.json` 读到的，不会去启动 DSH。读不到时两项都是 `null`——**未知不等于通过**。只要插件文件缺失，`doctor` 会以非零码退出，因此可以直接用作脚本门禁。
 
 ## 迁移与共存
 
@@ -323,18 +364,30 @@ npm run check             # 语法检查并运行全部单元测试
 npm run test:e2e          # 真实 DeepSeek 余额查询；没有 Key 时安全跳过
 npm run test:integration  # 真实 DSH 组合 smoke：装进真实 Cordis 上下文驱动一次 llm/stream，
                           # 验证它变成一条已计价账本记录；缺少 DSH 依赖时安全跳过
+npm run test:integration:strict   # 同上，但缺 DSH 依赖直接判失败（发布门用）
+npm run test:install:strict       # 安装流程 smoke，缺 dsh / pnpm 直接判失败（发布门用）
 ```
+
+`test:integration` 除了计量路径，还会挂载 DSH 自己的 `llm/stream` 校验器，先用一段**非法**流证明校验器确实生效，再把本插件 adapter 的真实 SSE 翻译结果送进同一校验器。因此它同时证明了两件事：插件输出的 chunk 语法被 DSH 0.1.6 接受，以及这条断言本身不是空跑。
+
+发布前用 `npm run test:release`（单元测试 + strict 组合检查），避免「因为本机没装 DSH 所以绿灯」的假通过。
+
+插件自带一套深色界面，但颜色全部取自 DSH 主题的语义别名（`var(--dsw-alias-*)`），因此浅色主题下会跟着变。`test/client-theme-tokens.test.mjs` 是源码级护栏：一旦有人在客户端包写回字面颜色，或者自己写主题分支，测试立刻失败。
+
+`test/headless-stdout.test.mjs` 守住另一条：插件在 DSH 进程内被加载时不会写 stdout（`dsh --profile headless --json` 的 stdout 是机器可读事件流，只能由 DSH 自己写）。插件内部一律走 DSH 的 logger，只有独立的 Rescue CLI 才打印到 stdout。
+
+**尚未实现**：需要真实 API key 才能产生一次模型调用的 headless `--json` / `--session-id` 端到端 smoke（仓库里没有可离线运行的 mock adapter）。
 
 ## 目录结构
 
 ```text
 src/
   index.js                 Cordis 插件入口
-  bootstrap.js             安全引导与失败隔离
-  runtime.js               Runtime 装配，包括凭据、OAuth、额度、路由和 adapter
+  bootstrap.js             安全引导：区分「正常不激活」与「激活失败」
+  runtime.js               Runtime 装配，包括凭据、OAuth、额度、路由和 adapter；注册失败会逆序回滚
   config.js                配置归一化与激活判断
   state.js                 DSH_HOME 下的 kill switch 状态
-  conflicts.js             Provider、namespace 与凭据冲突检查
+  conflicts.js             Provider、设置命名空间与 configurable provider 冲突检查
   rescue.mjs               Rescue CLI
   credentials/             凭据 schema、repository 和 token manager
   oauth/                   PKCE、state、JWT、callback 和 device code
@@ -350,6 +403,7 @@ src/
     settings-store.js      带 revision 的插件设置文件
     service.js             统一视图模型
   provider/
+    attribution.js         请求归属头：优先使用 DSH 的 attributionHeaders()
     request-builder.js     Responses 请求构造与工具 schema 转换
     adapter.js             OpenAI 订阅 Provider adapter
     event-translator.js    Responses SSE 到 DSH chunk 与 token 用量的转换

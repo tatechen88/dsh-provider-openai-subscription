@@ -6,7 +6,7 @@
 
 面向 DeepSeek Harness（DSH）的独立 OpenAI / ChatGPT 订阅 Provider。使用 ChatGPT OAuth 凭据访问 Codex Responses 接口，向 DSH 提供模型目录、流式生成、token 用量（含缓存命中）、订阅额度查询与 Web 设置界面；额度指示器默认停在侧边栏底部，可拖动。
 
-设计前提（`package.json` 明写）：**安全引导——插件失败绝不能阻止 DSH 启动。**
+设计前提（`package.json` 明写）：**组合与引导阶段绝不阻止 DSH 启动。** 显式 `state: active` 却无法激活时，`apply()` 会 reject，把原因交给 DSH 的 optional entry 启动审计（一条警告，其余插件照常运行）；已完成的注册会先逆序回滚。细节见 README 的「安全加载」。
 
 ## 快速上手
 
@@ -119,6 +119,28 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 3. 设置页里的 Balance 永远「暂无数据」：`useOpenAISubscriptionFlow` 的 `provider` 传的是**当前会话的** Provider，而 `refreshBalance()` 在 `provider !== 'openai-subscription'` 时直接返回并把余额清空 —— 于是在 DeepSeek 会话里打开 OpenAI 面板，配额块永远空白、刷新按钮也点不动。该页面是 OpenAI 账号自己的面板，现已固定用 `PROVIDER_ID`；侧栏仍跟随当前模型（那是它的职责）。
 
 拆除顺序也顺带修了：`applyRuntime` 的 disposer 现在逐项 try/catch 且按序 await，最后的 ledger flush 不会因为前面某个 surface 抛错而被跳过，调用方 await 它就能等到落盘完成。
+
+## DSH 0.1.6 兼容改造（本轮）
+
+对照本机 `dsh-v0.1.6-alpha.1` 源码完成的一轮兼容修复，全部有回归测试：
+
+1. **流式语法**：`event-translator.js` 以前直接发 `text-delta` / `block-end`，没有对应的 `block-start`；DSH 0.1.6 的 `llm/stream` invariant 会拒绝这种流。现在由 translator 自己开关 block，成功 finish 前会关掉仍未闭合的 block，terminal 之后不再产出任何 chunk。`test:integration` 会挂载 DSH 真实的 validator，先用非法流证明它生效，再让本插件 adapter 的真实输出通过它。
+2. **请求归属**：新增 `src/provider/attribution.js`，使用 DSH 的 `attributionHeaders()`。**注意解析方式**：本插件以 `link:` 方式装进 profile 时，模块真实路径在 profile 之外，向上查找永远到不了 profile 的 `node_modules`——所以按「自身路径 → `$DSH_HOME/profiles/node_modules` → `profiles/web/node_modules` → `node_modules`」依次尝试锚点。实测该部署下取到的是 `deepseek-harness/0.1.6-alpha.1 (+https://github.com/deepseek-ai/deepseek-harness)`，而不是回落值。全部找不到时才回落到带版本号的插件自身身份。
+3. **激活失败语义**：`apply()` 返回 Promise。`bootstrap` / `disabled` / kill switch 仍是正常 no-op；显式 `active` 但配置非法、Runtime 导入失败、缺服务或标识冲突时 reject，交给 DSH 的 optional entry 审计，而不是把失败伪装成成功。
+4. **原子注册**：`applyRuntime` 的注册步骤与 `mountRoutes` 各自具备失败回滚——中途失败会逆序释放已完成的 Adapter、目录条目与路由，且 meter 的 ledger 一定会被关闭。同时删除了「没有 ctx.effect 就永久注册」的 fallback。
+5. **冲突预检**：`conflicts.js` 增加 `directoryConflicts`——另一个插件声明了同一 Provider 但尚未激活时，以前两个检查都看不到它，只能在注册时炸掉。
+6. **发布门**：`test:integration:strict` / `test:install:strict` 把「缺 DSH / 缺工具」从 SKIP 变成 FAIL，避免假绿灯。
+7. **请求栅栏**：插件的 HTTP 路由现在优先使用 DSH Connection 的 `requestRejection()`——Host/Origin 栅栏（DNS rebinding 防护）加浏览器会话 Cookie 认证，比原来只用 `Origin` 与 `Host` 比较强得多；没有 Connection 服务时才回落到本地的 `sameOrigin`。
+8. **路由生命周期**：Web 服务已在则同步挂载（沿用原语义，测试不变）；不在则改为 `ctx.inject(['webServer'], …)`，服务出现即挂载、消失即释放。顺带删掉了对可选 Web 服务的 30 秒轮询——实测激活 1 ms 完成，且修复了「启动时没赶上就永远没有路由」。
+9. **Model discovery**：注册 `llm.registerModelDiscovery(SETTINGS_NAMESPACE, …)`，让设置页的模型探测与模型选择器共用同一份带鉴权的目录；`discoverModels` 不报 `maxTokens`（Codex 端点会丢弃该限制），未登录时抛出明确原因而不是空列表。目录读取同时接上了调用方的取消信号。
+10. **首次启动引导的可访问性**：DSH 的 `settings.onboarding` 约定由注册方自己拥有模态外壳。补上 `useRootInert`（显示期间 `#root` 置 inert，关闭时恢复**原值**而不是清成 false）与 `useModalFocus`（初始焦点、Tab/Shift-Tab 圈闭、关闭后焦点归还）。`Modal` 本身只管 Escape 与 `aria-modal`，不管 inert 与焦点——这也是审计说「全文件无 inert」的那处。步骤是阻塞式的，因此 Esc 保持不关闭，与 DSH 自带 `DeepSeekOnboardingDialog` 的 `ignoreImplicitDismiss` 一致。
+11. **Models 页 Provider 卡片**：注册 `settings.models.provider-card`，key 用设置命名空间 `llm-openai-subscription`。0.1.6 把 Provider 配置收进了设置页的 Models 区，没有这张卡片时那里看不到本插件的任何入口。卡片复用 `OpenAISubscriptionContent` 的既有 `page` 分支——那个分支本来就是为「紧凑卡片只保留连接控件」写的，所以用量/费用表单不会出现第二份。该 slot 由 `@deepseek-ai/dsh-client-ui-settings-models` 声明，因此它也进了 `dsh.client.inject`。
+12. **主题 token**：客户端原先写死一整套深色调色板（24 处 hex + 两处 rgba），在浅色主题下仍然显示深色。现已全部改为 `var(--dsw-alias-*)` / `var(--dsw-elevation-panel)`，并各自保留原字面值作为 fallback，所以没有定义这些别名的 shell 看起来和以前完全一样。新增 `test/client-theme-tokens.test.mjs` 作为源码级护栏：剥掉 `var(--dsw-…, #hex)` 后不允许再出现任何 hex，另外禁止 `prefers-color-scheme` / `data-theme` 之类的主题分支（主题选择属于 `ui-theme`）。
+13. **doctor 的兼容性判定**：`doctor` 原来无论插件是否就绪都以 0 退出，因此无法作门禁；现在 `ok` 为假时退出非零。报告新增 `schemaVersion`，以及从 profile 的 `node_modules/@deepseek-ai/dsh/package.json` 读出的 `compatibility.{declaredDshRange, installedDsh, satisfied}`——读不到时是 `null`（未知），绝不当作通过。范围比较实现在 `src/version-range.mjs`（零依赖的最小 SemVer，含 prerelease 优先级），`test/version-range.test.mjs` 直接覆盖那些规则。
+14. **Config schema（fail loud）**：`src/config.js` 现在导出 `Config`，`src/index.js` 再导出它供 Loader 读取。这是手写的 Standard Schema（`~standard.validate`，同步），不是依赖——插件保持零依赖。效果：`state: 5`、`oauth.clientId: 42`、`provider: 'x'` 这类**已知字段的错类型**从此在 `apply()` 之前就被 Cordis 拒绝，并在启动审计里点名字段；以前它们被静默归一化成默认值，表现是"插件莫名其妙不加载"。未知顶层键与全部 `meter` 字段仍放行（向前兼容）。`normalizeConfig` 保持宽容不变——它绝不能在组合 profile 时抛错。
+    - **schema 只判断、不改写**：`validate` 返回行里写的原值，归一化仍然只由 `normalizeConfig` 一处负责，DSH 记录的 config 就是 profile 写的 config。
+    - **`null` 与 `undefined` 同等看待**：YAML 里 `oauth:`（冒号后留空）解析为 `null`，`normalizeConfig` 一直把它读成"未配置"。schema 必须同意，否则一个以前能启动的 profile 会因为空块而拒绝组合——这是对抗式复审抓到的回归点。
+15. **headless stdout 纪律**：`dsh --profile headless --json` 把 stdout 当作机器可读的事件流，插件在 DSH 里被加载时绝不能往那里写任何东西。`test/headless-stdout.test.mjs` 在源码层守住这条：`src/` 下除独立的 rescue CLI 外，以及 `client/client.js`，都不允许出现 `console.*` 或 `process.stdout`；并额外断言那条豁免确实只是 CLI。**注意**：完整的 headless `--json` + `--session-id` 端到端 smoke 需要真实 API key 才能产生一次模型调用，本仓库没有可离线运行的 mock adapter，因此没有实现——这一点如实记录，不要当成已完成。
 
 ## 关键文件
 
