@@ -376,7 +376,7 @@ npm run test:install:strict       # 安装流程 smoke，缺 dsh / pnpm 直接�
 
 `test/headless-stdout.test.mjs` 守住另一条：插件在 DSH 进程内被加载时不会写 stdout（`dsh --profile headless --json` 的 stdout 是机器可读事件流，只能由 DSH 自己写）。插件内部一律走 DSH 的 logger，只有独立的 Rescue CLI 才打印到 stdout。
 
-**尚未实现**：需要真实 API key 才能产生一次模型调用的 headless `--json` / `--session-id` 端到端 smoke（仓库里没有可离线运行的 mock adapter）。
+`npm run test:headless` 跑的是**真实的 `dsh --profile headless --json`**：在一个临时 DSH home 里（`profiles/node_modules` 用链接借用已安装的 harness，不联网、不装包）插入一个 mock 模型路由，然后断言 stdout 每一行都是合法 JSON 事件、流以 `session` 开头以 `final` 结束、账本按该 session 记账，以及同一 session 的第二次运行只追加自己的调用而不重复。它需要 `dsh` 在 PATH 上，否则跳过；`--require-dsh` 把跳过变成失败。`npm run test:release` 会一并跑单元测试、strict 组合检查与 strict headless smoke。
 
 ## 目录结构
 

@@ -140,7 +140,11 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 14. **Config schema（fail loud）**：`src/config.js` 现在导出 `Config`，`src/index.js` 再导出它供 Loader 读取。这是手写的 Standard Schema（`~standard.validate`，同步），不是依赖——插件保持零依赖。效果：`state: 5`、`oauth.clientId: 42`、`provider: 'x'` 这类**已知字段的错类型**从此在 `apply()` 之前就被 Cordis 拒绝，并在启动审计里点名字段；以前它们被静默归一化成默认值，表现是"插件莫名其妙不加载"。未知顶层键与全部 `meter` 字段仍放行（向前兼容）。`normalizeConfig` 保持宽容不变——它绝不能在组合 profile 时抛错。
     - **schema 只判断、不改写**：`validate` 返回行里写的原值，归一化仍然只由 `normalizeConfig` 一处负责，DSH 记录的 config 就是 profile 写的 config。
     - **`null` 与 `undefined` 同等看待**：YAML 里 `oauth:`（冒号后留空）解析为 `null`，`normalizeConfig` 一直把它读成"未配置"。schema 必须同意，否则一个以前能启动的 profile 会因为空块而拒绝组合——这是对抗式复审抓到的回归点。
-15. **headless stdout 纪律**：`dsh --profile headless --json` 把 stdout 当作机器可读的事件流，插件在 DSH 里被加载时绝不能往那里写任何东西。`test/headless-stdout.test.mjs` 在源码层守住这条：`src/` 下除独立的 rescue CLI 外，以及 `client/client.js`，都不允许出现 `console.*` 或 `process.stdout`；并额外断言那条豁免确实只是 CLI。**注意**：完整的 headless `--json` + `--session-id` 端到端 smoke 需要真实 API key 才能产生一次模型调用，本仓库没有可离线运行的 mock adapter，因此没有实现——这一点如实记录，不要当成已完成。
+15. **headless stdout 纪律**：`dsh --profile headless --json` 把 stdout 当作机器可读的事件流，插件在 DSH 里被加载时绝不能往那里写任何东西。`test/headless-stdout.test.mjs` 在源码层守住这条：`src/` 下除独立的 rescue CLI 外，以及 `client/client.js`，都不允许出现 `console.*` 或 `process.stdout`；并额外断言那条豁免确实只是 CLI。
+16. **真实 headless smoke，以及它抓到的缺陷**：`scripts/headless-smoke.mjs` 在临时 DSH home 里（`profiles/node_modules` 用 junction 借用已安装的 harness）插入 `scripts/headless-mock-provider.mjs` 的 mock 路由，跑真实的 `dsh --profile headless --json`，断言 stdout 全是合法 JSON 事件、以 `session` 开头 `final` 结尾、账本按该 session 记账、同一 session 第二次运行只追加不重复。
+    - **它抓到的缺陷**：`createMeterRoutes` 用 `ctx.llm` 读服务列表，而 Cordis 对**未声明 `inject: ['llm']` 的插件上下文直接抛错**（`cannot get property "llm" without inject`）。这个异常落进 `catch` 被读成"没有 Provider"，于是「任何 DSH 已注册的 Provider 都自动纳入计量」这条在**真实进程里从未生效**，只有内置注册表里的厂商被记账。`conflicts.js` 一直用的是 `ctx.get('llm')`，量表的这段没有。
+    - **为什么单测没抓到**：`test/usage-routes.test.mjs` 的假 ctx 是普通对象 `{ llm: {...} }`，乐意把属性递出去，于是"用属性访问"这件事从未被质疑。现在那条测试断言的是真实契约：属性访问抛错的上下文里，走 `get` 仍然能发现 Provider。
+    - 组合 smoke 也没抓到，因为它的 ctx 是 root context，那里读属性是合法的。
 
 ## 关键文件
 
