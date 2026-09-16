@@ -1,7 +1,7 @@
 {
   "name": "dsh-provider-openai-subscription",
   "version": "1.4.0",
-  "description": "Independent OpenAI/ChatGPT OAuth provider, model adapter and balance plugin for DeepSeek Harness. Safe bootstrap: a plugin failure must never prevent DSH from starting.",
+  "description": "Independent OpenAI/ChatGPT OAuth provider, model adapter and balance plugin for DeepSeek Harness. Composition and bootstrap never block DSH startup; a failed activation is reported through DSH's own optional-entry audit.",
   "type": "module",
   "main": "src/index.js",
   "exports": {
@@ -20,10 +20,9 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-cordis-client-runner",
-        "@deepseek-ai/dsh-client-ui-slots",
-        "@deepseek-ai/dsh-client-ui-settings-plugins",
-        "@deepseek-ai/dsh-client-ui-model-selection"
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-model-selection",
+        "@deepseek-ai/dsh-client-ui-settings-models"
       ]
     }
   },
@@ -32,6 +31,9 @@
     "test:e2e": "node --test test/*.e2e.mjs",
     "test:integration": "node scripts/integration-smoke.mjs",
     "test:install": "node scripts/install-smoke.mjs",
+    "test:integration:strict": "node scripts/integration-smoke.mjs --require-dsh",
+    "test:install:strict": "node scripts/install-smoke.mjs --require-tools",
+    "test:release": "npm run test && npm run test:integration:strict",
     "check": "node scripts/check-syntax.mjs && node --test test/*.test.mjs"
   },
   "keywords": [
@@ -45,6 +47,7 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.1.6-alpha.1"
   }
 }

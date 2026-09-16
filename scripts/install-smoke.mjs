@@ -10,7 +10,8 @@
  *
  * The check needs `dsh` and `pnpm` on PATH; without them it reports SKIP and
  * exits zero. Pass `--keep` to leave the temporary home in place for
- * inspection.
+ * inspection. Pass `--require-tools` (or set DSH_REQUIRE_INSTALL=1) for a
+ * release check, where a missing tool is a failure rather than a skip.
  *
  * @module dsh-provider-openai-subscription/scripts/install-smoke
  */
@@ -25,6 +26,9 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const keep = process.argv.includes('--keep')
 const profile = 'install-smoke'
+
+/** Release mode: a skipped check is a failed check. */
+const REQUIRE_TOOLS = process.argv.includes('--require-tools') || process.env.DSH_REQUIRE_INSTALL === '1'
 
 /** The install command is documented as a CLI call, so the smoke test uses one. */
 function cli(command, env) {
@@ -51,6 +55,10 @@ const packageName = manifest.name
 for (const tool of ['dsh', 'pnpm']) {
   const probe = cli(`${tool} --version`, process.env)
   if (probe.error !== undefined || probe.status !== 0) {
+    if (REQUIRE_TOOLS) {
+      process.stderr.write(`FAIL: ${tool} is not available on PATH (--require-tools refuses to skip)\n`)
+      process.exit(1)
+    }
     process.stdout.write(`SKIP: ${tool} is not available on PATH\n`)
     process.exit(0)
   }

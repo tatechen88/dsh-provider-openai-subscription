@@ -151,6 +151,50 @@ test('rescue doctor with profile reports plugin presence', async () => {
   const { stdout } = await runRescue(['doctor', '--profile', packagePath], {})
   const report = JSON.parse(stdout)
   assert.equal(report.profileHasPlugin, true)
+  assert.equal(report.schemaVersion, 1, 'the report carries a version so a consumer can parse it')
+})
+
+test('rescue doctor reports the installed DSH against the declared range', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-profile-'))
+  dirs.push(dir)
+  const packagePath = join(dir, 'package.json')
+  await writeFile(packagePath, JSON.stringify({ dependencies: {} }))
+  // A profile whose own node_modules carries the launcher package.
+  const launcherDir = join(dir, 'node_modules', '@deepseek-ai', 'dsh')
+  await mkdir(launcherDir, { recursive: true })
+  await writeFile(join(launcherDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.6-alpha.1' }))
+
+  const { stdout } = await runRescue(['doctor', '--profile', packagePath], {})
+  const report = JSON.parse(stdout)
+  assert.equal(report.compatibility.installedDsh, '0.1.6-alpha.1')
+  assert.equal(report.compatibility.declaredDshRange, '>=0.1.6-alpha.1')
+  assert.equal(report.compatibility.satisfied, true)
+})
+
+test('rescue doctor calls out a harness older than the declared range', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-profile-'))
+  dirs.push(dir)
+  const packagePath = join(dir, 'package.json')
+  await writeFile(packagePath, JSON.stringify({ dependencies: {} }))
+  const launcherDir = join(dir, 'node_modules', '@deepseek-ai', 'dsh')
+  await mkdir(launcherDir, { recursive: true })
+  await writeFile(join(launcherDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.5-rc.2' }))
+
+  const { stdout } = await runRescue(['doctor', '--profile', packagePath], {})
+  const report = JSON.parse(stdout)
+  assert.equal(report.compatibility.installedDsh, '0.1.5-rc.2')
+  assert.equal(report.compatibility.satisfied, false, '0.1.5 predates every seam this plugin uses')
+})
+
+test('rescue doctor leaves the verdict unknown rather than guessing', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-profile-'))
+  dirs.push(dir)
+  const packagePath = join(dir, 'package.json')
+  await writeFile(packagePath, JSON.stringify({ dependencies: {} }))
+  const { stdout } = await runRescue(['doctor', '--profile', packagePath], { DSH_HOME: dir })
+  const report = JSON.parse(stdout)
+  assert.equal(report.compatibility.installedDsh, null)
+  assert.equal(report.compatibility.satisfied, null, 'an undetectable harness is unknown, never a pass')
 })
 
 test('rescue meter reports ledger and settings state without echoing content', async () => {

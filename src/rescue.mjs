@@ -19,6 +19,7 @@ import {
   usageLedgerPath, meterSettingsPath, retiredCostMeterLedgerPath,
 } from './state.js'
 import { pricedVendors } from './usage/vendors.js'
+import { satisfiesRange } from './version-range.mjs'
 
 /** Routes whose vendor publishes a price table, so a missing rate can be named. */
 const PRICED_PROVIDER_IDS = Object.freeze(pricedVendors().flatMap((vendor) => vendor.providers))
@@ -259,12 +260,50 @@ function isPlaceholderThenBlock(text) {
 }
 
 /**
+ * Read the installed DSH version without booting it.
+ *
+ * The launcher package is what a profile resolves `@deepseek-ai/dsh` to, so the
+ * candidates are the profile's own `node_modules`, the shared `profiles/` one,
+ * and the harness home's own.
+ * @param {string|undefined} profilePackage - the profile package.json, when given.
+ * @returns {Promise<string|null>}
+ */
+async function detectDshVersion(profilePackage) {
+  const candidates = []
+  const relative = join('node_modules', '@deepseek-ai', 'dsh', 'package.json')
+  if (profilePackage !== undefined) {
+    const profileDir = dirname(profilePackage)
+    candidates.push(join(profileDir, relative))
+    candidates.push(join(profileDir, '..', relative))
+  }
+  const home = dshHome()
+  candidates.push(join(home, 'profiles', relative))
+  candidates.push(join(home, relative))
+  for (const candidate of candidates) {
+    const raw = await tryRead(candidate)
+    if (raw === undefined) continue
+    try {
+      const version = JSON.parse(raw).version
+      if (typeof version === 'string' && version.length > 0) return version
+    } catch {
+      // An unreadable manifest is not a version; keep looking.
+    }
+  }
+  return null
+}
+
+/**
  * Print a non-secret doctor/canary readiness report.
  *
  * With `--profile`, it also reads the activation layer beside that
  * package.json, because the two ways to get activation wrong are silent in the
  * composition: the row never activates, or the placeholder is left in place and
  * the profile stops composing.
+ *
+ * The report also states the DSH compatibility verdict, because the seams this
+ * plugin uses (`connection.requestRejection`, `llm.registerModelDiscovery`, the
+ * `llm/stream` block grammar) are all 0.1.6 additions: on an older harness the
+ * plugin still loads but degrades, and only this line says so.
  *
  * @param {string|undefined} profilePackage
  * @returns {Promise<void>}
@@ -312,8 +351,34 @@ async function commandDoctor(profilePackage) {
       }
     }
   }
+  const declared = await declaredDshRange(packagePath)
+  const installed = await detectDshVersion(profilePackage)
   checks.ok = checks.package && checks.runtime && checks.client && checks.patch
+  checks.schemaVersion = 1
+  checks.compatibility = {
+    declaredDshRange: declared,
+    installedDsh: installed,
+    satisfied: declared === null || installed === null ? null : satisfiesRange(installed, declared),
+  }
   print(JSON.stringify({ ok: checks.ok, plugin: PACKAGE_NAME, rowId: ROW_ID, ...checks }, null, 2))
+  // A readiness report that always exits zero cannot gate anything.
+  process.exitCode = checks.ok ? 0 : 1
+}
+
+/**
+ * The `engines.dsh` range this package declares, or null when it declares none.
+ * @param {string} packagePath
+ * @returns {Promise<string|null>}
+ */
+async function declaredDshRange(packagePath) {
+  const raw = await tryRead(packagePath)
+  if (raw === undefined) return null
+  try {
+    const range = JSON.parse(raw).engines?.dsh
+    return typeof range === 'string' && range.length > 0 ? range : null
+  } catch {
+    return null
+  }
 }
 
 /**
