@@ -38,5 +38,6 @@ export const KILL_SWITCH_FILENAME = 'openai-subscription.disabled'
 /** Minimum Node major supported by the runtime. */
 export const MIN_NODE_MAJOR = 22
 
-/** Public attribution sent with provider HTTP requests. */
-export const USER_AGENT = 'deepseek-harness (+https://github.com/deepseek-ai/deepseek-harness)'
+// Provider request attribution is not a constant: it is resolved per process by
+// `src/provider/attribution.js`, which prefers the harness
+// `attributionHeaders()` helper DSH requires on every provider request.

@@ -10,9 +10,11 @@ test('translates text delta and completed', () => {
     ...t.push({ type: 'response.output_text.done', output_index: 0, text: 'Hello' }),
     ...t.push({ type: 'response.completed' }),
   ]
-  assert.deepEqual(chunks[0], { type: 'text-delta', index: 0, text: 'Hel' })
-  assert.equal(chunks[2].type, 'block-end')
-  assert.deepEqual(chunks[3].reason, { kind: 'stop' })
+  assert.deepEqual(chunks[0], { type: 'block-start', index: 0, blockType: 'text' })
+  assert.deepEqual(chunks[1], { type: 'text-delta', index: 0, text: 'Hel' })
+  assert.equal(chunks[3].type, 'block-end')
+  assert.deepEqual(chunks[3].block, { type: 'text', text: 'Hello' })
+  assert.deepEqual(chunks[4].reason, { kind: 'stop' })
 })
 
 test('translates function call deltas', () => {
@@ -145,7 +147,7 @@ test('a completed response emits usage before the finish and only once', () => {
   assert.deepEqual(chunks[0].usage, { inputTokens: 200, outputTokens: 50, totalTokens: 1_050, cacheReadTokens: 800 })
   assert.equal(chunks[1].type, 'finish')
   assert.deepEqual(chunks[1].reason, { kind: 'stop' })
-  assert.deepEqual(t.push(usageEvent), [{ type: 'finish', reason: { kind: 'stop' } }], 'a repeated terminal event adds no second usage')
+  assert.deepEqual(t.push(usageEvent), [], 'a chunk after the terminal finish would break the stream grammar')
 })
 
 test('usage rides the event itself when a gateway flattens the response', () => {
@@ -166,7 +168,159 @@ test('an incomplete response still reports the tokens it billed', () => {
   assert.equal(chunks[1].reason.kind, 'error')
 })
 
+test('a done event without the item id still reaches its own run', () => {
+  // The wire normally repeats `item_id`, but a gateway may drop it and keep only
+  // `output_index`. Opening a second, empty text block would then be legal but
+  // wrong: the message would carry an extra empty block.
+  const t = new ResponsesEventTranslator()
+  const chunks = [
+    ...t.push({ type: 'response.output_text.delta', item_id: 'msg_1', output_index: 0, delta: 'Hi' }),
+    ...t.push({ type: 'response.output_text.done', output_index: 0, text: 'Hi' }),
+    ...t.push({ type: 'response.completed' }),
+  ]
+  const starts = chunks.filter((chunk) => chunk.type === 'block-start')
+  const ends = chunks.filter((chunk) => chunk.type === 'block-end')
+  assert.equal(starts.length, 1, 'the run opens exactly one block')
+  assert.equal(ends.length, 1, 'and closes exactly that one')
+  assert.equal(ends[0].index, starts[0].index)
+  assert.deepEqual(ends[0].block, { type: 'text', text: 'Hi' })
+  assertStreamGrammar(chunks)
+})
+
+test('a tool call whose later events drop the item id keeps one block', () => {
+  const t = new ResponsesEventTranslator()
+  const chunks = [
+    ...t.push({ type: 'response.output_item.added', output_index: 0, item: { id: 'fc_1', type: 'function_call', call_id: 'call_1', name: 'bash' } }),
+    ...t.push({ type: 'response.function_call_arguments.delta', output_index: 0, call_id: 'call_1', delta: '{"c"' }),
+    ...t.push({ type: 'response.function_call_arguments.done', output_index: 0, call_id: 'call_1', name: 'bash', arguments: '{"c":1}' }),
+    ...t.push({ type: 'response.completed' }),
+  ]
+  // `output_index: 0` on the item reserves index 0, so an event with no item id
+  // resolves through the alias to the same block.
+  const starts = chunks.filter((chunk) => chunk.type === 'block-start')
+  assert.equal(starts.length, 1, 'one item, one block')
+  assertStreamGrammar(chunks)
+})
+
 test('a completed response without usage keeps the plain finish chunk', () => {
   const t = new ResponsesEventTranslator()
   assert.deepEqual(t.push({ type: 'response.completed', response: {} }), [{ type: 'finish', reason: { kind: 'stop' } }])
+})
+
+/**
+ * Reproduce the DSH 0.1.6 `llm/stream` grammar check
+ * (packages/llm/llm/src/invariant.ts) so a translator change that would be
+ * rejected by the running harness fails here instead.
+ * @param {Array<Record<string, unknown>>} chunks
+ */
+function assertStreamGrammar(chunks) {
+  const open = new Map()
+  let usageSeen = false
+  let finished = false
+  for (const chunk of chunks) {
+    assert.equal(finished, false, `chunk ${chunk.type} arrived after a terminal finish`)
+    switch (chunk.type) {
+      case 'block-start':
+        assert.equal(open.has(chunk.index), false, `block-start repeated index ${chunk.index}`)
+        open.set(chunk.index, chunk.blockType)
+        break
+      case 'text-delta':
+        assert.equal(open.get(chunk.index), 'text', `text-delta at ${chunk.index} needs an open text block`)
+        break
+      case 'reasoning-delta':
+        assert.equal(open.get(chunk.index), 'reasoning', `reasoning-delta at ${chunk.index} needs an open reasoning block`)
+        break
+      case 'tool-call-delta':
+        assert.equal(open.get(chunk.index), 'tool-call', `tool-call-delta at ${chunk.index} needs an open tool-call block`)
+        break
+      case 'block-end':
+        assert.equal(open.get(chunk.index), chunk.block.type, `block-end at ${chunk.index} must close the open block`)
+        open.delete(chunk.index)
+        break
+      case 'usage':
+        assert.equal(usageSeen, false, 'usage may be emitted once')
+        usageSeen = true
+        break
+      case 'finish':
+        if (chunk.reason.kind !== 'error' && chunk.reason.kind !== 'aborted') {
+          assert.equal(open.size, 0, 'a successful finish must not leave an open block')
+        }
+        finished = true
+        break
+      default:
+        assert.fail(`unknown chunk type ${chunk.type}`)
+    }
+  }
+  assert.equal(finished, true, 'the stream must end with a terminal finish')
+}
+
+test('a text run opens its own block before any delta', () => {
+  const t = new ResponsesEventTranslator()
+  const chunks = [
+    ...t.push({ type: 'response.output_text.delta', output_index: 0, delta: 'Hel' }),
+    ...t.push({ type: 'response.output_text.delta', output_index: 0, delta: 'lo' }),
+    ...t.push({ type: 'response.output_text.done', output_index: 0, text: 'Hello' }),
+    ...t.push({ type: 'response.completed' }),
+  ]
+  assert.deepEqual(chunks[0], { type: 'block-start', index: 0, blockType: 'text' })
+  assert.equal(chunks.filter((chunk) => chunk.type === 'block-start').length, 1, 'one run opens one block')
+  assertStreamGrammar(chunks)
+})
+
+test('a successful finish closes a text run whose done event never arrived', () => {
+  const t = new ResponsesEventTranslator()
+  const chunks = [
+    ...t.push({ type: 'response.output_text.delta', output_index: 0, delta: 'partial' }),
+    ...t.push({ type: 'response.completed' }),
+  ]
+  const close = chunks.find((chunk) => chunk.type === 'block-end')
+  assert.deepEqual(close, { type: 'block-end', index: 0, block: { type: 'text', text: 'partial' } })
+  assertStreamGrammar(chunks)
+})
+
+test('a text run that only arrives as a done event still opens its block', () => {
+  const t = new ResponsesEventTranslator()
+  const chunks = [
+    ...t.push({ type: 'response.output_text.done', output_index: 0, text: 'Hello' }),
+    ...t.push({ type: 'response.completed' }),
+  ]
+  assert.deepEqual(chunks[0], { type: 'block-start', index: 0, blockType: 'text' })
+  assert.equal(chunks[1].type, 'block-end')
+  assertStreamGrammar(chunks)
+})
+
+test('mixed text and tool-call items never share a block index', () => {
+  const t = new ResponsesEventTranslator()
+  const chunks = [
+    ...t.push({ type: 'response.output_item.added', output_index: 0, item: { id: 'fc_1', type: 'function_call', call_id: 'call_1', name: 'bash' } }),
+    ...t.push({ type: 'response.function_call_arguments.delta', item_id: 'fc_1', call_id: 'call_1', delta: '{"cmd"' }),
+    ...t.push({ type: 'response.function_call_arguments.done', item_id: 'fc_1', call_id: 'call_1', name: 'bash', arguments: '{"cmd":"ls"}' }),
+    ...t.push({ type: 'response.output_text.delta', item_id: 'msg_1', output_index: 1, delta: 'done' }),
+    ...t.push({ type: 'response.output_text.done', item_id: 'msg_1', output_index: 1, text: 'done' }),
+    ...t.push({ type: 'response.completed' }),
+  ]
+  const starts = chunks.filter((chunk) => chunk.type === 'block-start')
+  assert.equal(new Set(starts.map((chunk) => chunk.index)).size, starts.length, 'every block gets its own index')
+  assertStreamGrammar(chunks)
+})
+
+test('a request never emits a chunk after its terminal finish', () => {
+  const t = new ResponsesEventTranslator()
+  t.push({ type: 'response.completed' })
+  assert.deepEqual(t.push({ type: 'response.output_text.delta', output_index: 0, delta: 'late' }), [], 'a late delta is dropped')
+  assert.deepEqual(t.push({ type: 'response.completed' }), [], 'a repeated terminal event adds nothing')
+  assert.deepEqual(t.end(), [], 'the stream is already terminal')
+})
+
+test('a reopened item takes a fresh index instead of repeating block-start', () => {
+  const t = new ResponsesEventTranslator()
+  const chunks = [
+    ...t.push({ type: 'response.function_call_arguments.done', item_id: 'fc_1', call_id: 'call_1', name: 'bash', arguments: '{}' }),
+    ...t.push({ type: 'response.function_call_arguments.done', item_id: 'fc_1', call_id: 'call_1', name: 'bash', arguments: '{}' }),
+    ...t.push({ type: 'response.completed' }),
+  ]
+  const starts = chunks.filter((chunk) => chunk.type === 'block-start')
+  assert.equal(starts.length, 2)
+  assert.notEqual(starts[0].index, starts[1].index)
+  assertStreamGrammar(chunks)
 })

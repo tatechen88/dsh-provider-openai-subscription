@@ -8,7 +8,7 @@
  */
 
 import { normalizeBalanceResponse } from './normalizer.js'
-import { USER_AGENT } from '../constants.js'
+import { attributionHeaders } from '../provider/attribution.js'
 
 /** Upstream usage endpoint. */
 export const OPENAI_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
@@ -48,6 +48,7 @@ export async function fetchBalance({ getAccess, fetchImpl = fetch, timeoutMs = 3
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   timer.unref?.()
+  const attribution = await attributionHeaders()
   let response
   try {
     response = await fetchImpl(OPENAI_USAGE_URL, {
@@ -55,7 +56,7 @@ export async function fetchBalance({ getAccess, fetchImpl = fetch, timeoutMs = 3
       headers: {
         authorization: `Bearer ${access.accessToken}`,
         'chatgpt-account-id': access.accountId,
-        'user-agent': USER_AGENT,
+        ...attribution,
         accept: 'application/json',
       },
       signal: controller.signal,

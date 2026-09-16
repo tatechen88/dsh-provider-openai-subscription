@@ -8,7 +8,8 @@
  * @module dsh-provider-openai-subscription/provider/adapter
  */
 
-import { PROVIDER_ID, USER_AGENT } from '../constants.js'
+import { PROVIDER_ID } from '../constants.js'
+import { attributionHeaders } from './attribution.js'
 import { buildResponsesRequest } from './request-builder.js'
 import { ResponsesEventTranslator } from './event-translator.js'
 import { SseParser } from '../stream/sse-parser.js'
@@ -92,13 +93,36 @@ export class OpenAISubscriptionAdapter {
   }
 
   /** Fetch (and cache) the full catalog, including reasoning/context metadata. */
-  async #catalog() {
+  async #catalog(signal) {
     const now = this.now()
     if (this.catalog === undefined || now - this.catalogAt >= MODEL_CATALOG_TTL_MS) {
-      this.catalog = await fetchModelCatalog({ getAccess: this.getAccess, fetchImpl: this.fetchImpl })
+      // A cancelled read must not replace the cached catalog, so the fetch
+      // result is only adopted after it resolves.
+      const catalog = await fetchModelCatalog({ getAccess: this.getAccess, fetchImpl: this.fetchImpl, signal })
+      this.catalog = catalog
       this.catalogAt = now
     }
     return this.catalog
+  }
+
+  /**
+   * Probe this route for the models it advertises, for DSH's model-discovery
+   * seam. The endpoint needs an authenticated read, so a caller that is not
+   * signed in gets the credential error rather than an empty list.
+   *
+   * `maxTokens` is deliberately never reported: the Codex endpoint rejects an
+   * output cap, so advertising one would promise a control this route drops.
+   *
+   * @param {AbortSignal} [signal] - caller cancellation.
+   * @returns {Promise<Array<{id: string, name: string, contextWindow?: number}>>}
+   */
+  async discoverModels(signal) {
+    const catalog = await this.#catalog(signal)
+    return catalog.map((model) => ({
+      id: model.id,
+      name: model.name ?? model.id,
+      ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+    }))
   }
 
   /**
@@ -113,10 +137,11 @@ export class OpenAISubscriptionAdapter {
   /**
    * @param {string} provider
    * @param {string} model
+   * @param {AbortSignal} [signal]
    * @returns {Promise<{provider: string, id: string, name: string, inputModalities?: string[], context?: {contextWindow: number}, reasoning?: {efforts: Array<{id: string, name: string, description?: string}>, defaultEffort?: string}}>}
    */
-  async resolveModel(provider, model) {
-    const catalog = await this.#catalog()
+  async resolveModel(provider, model, signal) {
+    const catalog = await this.#catalog(signal)
     const entry = catalog.find((candidate) => candidate.id === model)
     if (entry === undefined) return { provider, id: model, name: model }
     return {
@@ -160,6 +185,7 @@ export class OpenAISubscriptionAdapter {
       stream: true,
     })
     const bodyJson = JSON.stringify(body)
+    const attribution = await attributionHeaders()
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.timeoutMs)
     timer.unref?.()
@@ -171,7 +197,7 @@ export class OpenAISubscriptionAdapter {
         headers: {
           authorization: `Bearer ${access.accessToken}`,
           'chatgpt-account-id': access.accountId,
-          'user-agent': USER_AGENT,
+          ...attribution,
           'content-type': 'application/json',
           accept: 'text/event-stream',
         },

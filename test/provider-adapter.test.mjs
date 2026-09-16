@@ -34,8 +34,10 @@ test('stream translates SSE into chunks', async () => {
   for await (const chunk of adapter.stream({ provider: 'openai-subscription', model: 'gpt-5', messages: [] })) {
     chunks.push(chunk)
   }
-  assert.equal(chunks[0].type, 'text-delta')
-  assert.equal(chunks[0].text, 'Hi')
+  assert.equal(chunks[0].type, 'block-start')
+  assert.equal(chunks[0].blockType, 'text')
+  assert.equal(chunks[1].type, 'text-delta')
+  assert.equal(chunks[1].text, 'Hi')
   assert.equal(chunks.at(-1).type, 'finish')
   assert.equal(chunks.at(-1).reason.kind, 'stop')
 })
@@ -154,4 +156,48 @@ test('resolveModel falls back for an unknown model id', async () => {
   })
   const info = await adapter.resolveModel('openai-subscription', 'unknown')
   assert.deepEqual(info, { provider: 'openai-subscription', id: 'unknown', name: 'unknown' })
+})
+
+test('discoverModels answers the DSH model probe with context and no invented output cap', async () => {
+  const adapter = new OpenAISubscriptionAdapter({
+    getAccess: async () => ({ accessToken: 'at', accountId: 'a' }),
+    fetchImpl: async () => new Response(JSON.stringify({ models: [
+      { slug: 'gpt-6-astra', display_name: 'GPT-6-Astra', context_window: 272000 },
+      { slug: 'gpt-6-mini' },
+    ] }), { status: 200 }),
+  })
+  const models = await adapter.discoverModels()
+  assert.deepEqual(models, [
+    { id: 'gpt-6-astra', name: 'GPT-6-Astra', contextWindow: 272000 },
+    { id: 'gpt-6-mini', name: 'gpt-6-mini' },
+  ])
+  assert.equal(models.some((model) => 'maxTokens' in model), false, 'the Codex route drops an output cap, so none may be advertised')
+})
+
+test('a cancelled discovery read is not cached as the answer', async () => {
+  let attempt = 0
+  const adapter = new OpenAISubscriptionAdapter({
+    getAccess: async () => ({ accessToken: 'at', accountId: 'a' }),
+    fetchImpl: async (_url, init) => {
+      attempt += 1
+      if (attempt === 1) {
+        // The caller may cancel before the request starts or while it is in
+        // flight; both orderings must end the read.
+        if (init.signal.aborted) throw new Error('aborted')
+        return await new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        })
+      }
+      return new Response(JSON.stringify({ models: [{ slug: 'gpt-1' }] }), { status: 200 })
+    },
+  })
+
+  const controller = new AbortController()
+  const pending = adapter.discoverModels(controller.signal)
+  controller.abort()
+  await assert.rejects(pending, /aborted/)
+
+  // A failed read must not become the cached catalog: the next caller retries.
+  assert.deepEqual((await adapter.discoverModels()).map((m) => m.id), ['gpt-1'])
+  assert.equal(attempt, 2)
 })

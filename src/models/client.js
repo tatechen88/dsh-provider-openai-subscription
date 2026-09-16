@@ -4,7 +4,7 @@
  * @module dsh-provider-openai-subscription/models/client
  */
 
-import { USER_AGENT } from '../constants.js'
+import { attributionHeaders } from '../provider/attribution.js'
 
 /** Upstream model catalog endpoint (base; requires the client_version query). */
 export const OPENAI_MODELS_URL = 'https://chatgpt.com/backend-api/codex/models'
@@ -153,9 +153,10 @@ function effortName(effort) {
  * @param {() => Promise<{accessToken: string, accountId: string}>} options.getAccess
  * @param {(url: string, init: RequestInit) => Promise<Response>} [options.fetchImpl]
  * @param {number} [options.timeoutMs]
+ * @param {AbortSignal} [options.signal] - caller cancellation, honored alongside the timeout.
  * @returns {Promise<unknown>}
  */
-async function fetchCatalogData({ getAccess, fetchImpl = fetch, timeoutMs = 30_000 }) {
+async function fetchCatalogData({ getAccess, fetchImpl = fetch, timeoutMs = 30_000, signal }) {
   let access
   try {
     access = await getAccess()
@@ -168,6 +169,10 @@ async function fetchCatalogData({ getAccess, fetchImpl = fetch, timeoutMs = 30_0
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   timer.unref?.()
+  // The caller's cancellation and this request's own timeout both have to end
+  // the request, so neither replaces the other.
+  const requestSignal = signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal])
+  const attribution = await attributionHeaders()
   let response
   try {
     response = await fetchImpl(modelsCatalogUrl(), {
@@ -175,10 +180,10 @@ async function fetchCatalogData({ getAccess, fetchImpl = fetch, timeoutMs = 30_0
       headers: {
         authorization: `Bearer ${access.accessToken}`,
         'chatgpt-account-id': access.accountId,
-        'user-agent': USER_AGENT,
+        ...attribution,
         accept: 'application/json',
       },
-      signal: controller.signal,
+      signal: requestSignal,
       redirect: 'error',
     })
   } catch (error) {
