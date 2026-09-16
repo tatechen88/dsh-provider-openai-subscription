@@ -4,7 +4,7 @@
  * Loads the hand-written client bundle the way the DSH client module loader
  * would (window.__ModuleLoader__.load handoff), executes its factory with a
  * stubbed module table, and asserts the plugin descriptor, the pure
- * state-derivation surface, and the four slot registrations apply() wires.
+ * state-derivation surface, and the five slot registrations apply() wires.
  * Only the draggable sidebar indicator is rendered, through a minimal hook
  * runtime that models React's index-keyed state slots and its
  * cleanup-before-next-effect ordering; every other component stays unrendered.
@@ -17,6 +17,7 @@ import { test } from 'node:test'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createHookRuntime } from './helpers.mjs'
+import { SETTINGS_NAMESPACE } from '../src/constants.js'
 
 const clientFile = join(dirname(fileURLToPath(import.meta.url)), '..', 'client', 'client.js')
 const PANEL_STORE_KEY = 'dsh-provider-openai-subscription.balance-panel'
@@ -174,7 +175,7 @@ test('pure surface: a persisted panel box round-trips or is rejected', () => {
   assert.equal(parseStoredPanel('{"x":12,"y":34,"width":180,"height":null}'), null, 'a null height is not a position')
 })
 
-test('apply registers the four UI surfaces with stable identities', () => {
+test('apply registers the five UI surfaces with stable identities', () => {
   const injected = []
   const registered = []
   const fakeCtx = {
@@ -194,8 +195,8 @@ test('apply registers the four UI surfaces with stable identities', () => {
 
   assert.deepEqual(
     injected.map((entry) => entry.name),
-    ['settings.section', 'settings.onboarding', 'sidebar.footer.action', 'conversation.composer.dock'],
-    'apply must wire the settings section, the onboarding step, the sidebar action and the session dock',
+    ['settings.section', 'settings.onboarding', 'sidebar.footer.action', 'conversation.composer.dock', 'settings.models.provider-card'],
+    'apply must wire the settings section, the onboarding step, the sidebar action, the session dock and the Models provider card',
   )
 
   for (const entry of injected) entry.factory()
@@ -222,6 +223,15 @@ test('apply registers the four UI surfaces with stable identities', () => {
   assert.equal(dock.length, 1)
   assert.equal(dock[0].options.id, 'dsh-provider-openai-subscription-usage')
   assert.equal(dock[0].options.order, 6)
+
+  const card = bySlot('settings.models.provider-card')
+  assert.equal(card.length, 1)
+  assert.equal(
+    card[0].options.key,
+    SETTINGS_NAMESPACE,
+    'the Models card must be keyed by the very namespace the Host registers; a drift here renders nothing, silently',
+  )
+  assert.equal(card[0].options.id, undefined, 'a keyed seat identifies its entry by key, not by id')
 
   for (const entry of registered) assert.equal(typeof entry.component, 'function')
 

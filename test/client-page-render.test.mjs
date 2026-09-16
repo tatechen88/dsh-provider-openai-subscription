@@ -291,6 +291,33 @@ test('the settings page renders the connection surface and the meter panel', asy
   }
 })
 
+test('the Models provider card keeps the connection controls and drops the settings form', async () => {
+  const restore = stubFetch({
+    [`${PREFIX}/status`]: () => ({ ok: true, data: SIGNED_OUT }),
+    [`${PREFIX}/meter/settings`]: () => settingsPayload(),
+  })
+  try {
+    const card = components()['settings.models.provider-card']
+    assert.equal(typeof card, 'function', 'the bundle registers a Models provider card')
+
+    const node = await render(card, props('openai-subscription'))
+    assert.notEqual(node, null, 'the card renders')
+    assert.equal(textOf(node).length > 0, true, 'the card renders copy')
+
+    // The connection surface is what a provider card owes the Models page.
+    const signInRows = findTree(node, (entry) => typeof entry.type === 'function' && entry.props?.key === 'sign-in-state')
+    assert.ok(signInRows.length >= 1, 'the card states whether the account is connected')
+
+    // The meter's settings form belongs to the plugin's own page: a provider
+    // card that grew a second copy would offer two places to edit one file.
+    const panels = findTree(node, (entry) => typeof entry.type === 'function' && entry.props?.key === 'meter')
+    assert.equal(panels.length, 0, 'the compact card must not mount the meter settings panel')
+  } finally {
+    restore()
+    unmountAll()
+  }
+})
+
 test('a detected legacy credential renders the backup form', async () => {
   const restore = stubFetch({
     [`${PREFIX}/status`]: () => ({

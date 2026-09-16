@@ -58,6 +58,16 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   const ZHIPU_PROVIDER_ID = 'zai-coding-cn'
   const SECTION_ID = 'openai-subscription'
   const ONBOARDING_STEP_ID = 'openai-subscription-connect'
+  /**
+   * Settings namespace this plugin owns. DSH keys the Models-page provider card
+   * by it, so the card reaches exactly the rows this plugin configures.
+   */
+  const SETTINGS_NAMESPACE = 'llm-openai-subscription'
+  /**
+   * Marks the onboarding step's own surface, so the focus trap can find the
+   * dialog it owns without depending on the modal primitive's internals.
+   */
+  const ONBOARDING_SURFACE_ATTRIBUTE = 'data-openai-subscription-onboarding'
   const SIDEBAR_ID = 'dsh-provider-openai-subscription-balance'
   const SESSION_DOCK_ID = 'dsh-provider-openai-subscription-usage'
   const STATUS_POLL_MS = 60 * 1000
@@ -468,25 +478,34 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     return new Date(ts).toLocaleString()
   }
 
+  /**
+   * Component styles.
+   *
+   * Colors come from the theme's semantic aliases rather than a literal palette:
+   * this bundle has no build step, so it cannot use the CSS Modules the client
+   * packages use, but an inline `var(--dsw-alias-*)` still consumes the theme
+   * instead of encoding one theme's values. Each keeps its previous literal as a
+   * fallback, so a shell that does not define the alias looks exactly as before.
+   */
   const s = {
-    card: { fontFamily: 'ui-sans-serif, system-ui, sans-serif', fontSize: 13, lineHeight: '20px', color: '#e5e7eb', padding: 4 },
-    page: { fontFamily: 'ui-sans-serif, system-ui, sans-serif', fontSize: 13, lineHeight: '20px', color: '#e5e7eb', padding: '4px 2px', maxWidth: 720 },
+    card: { fontFamily: 'ui-sans-serif, system-ui, sans-serif', fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-primary, #e5e7eb)', padding: 4 },
+    page: { fontFamily: 'ui-sans-serif, system-ui, sans-serif', fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-primary, #e5e7eb)', padding: '4px 2px', maxWidth: 720 },
     row: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '4px 0' },
     stack: { display: 'flex', flexDirection: 'column', gap: 2, marginTop: 6 },
-    button: { background: '#1f2937', color: '#f9fafb', border: '1px solid #374151', borderRadius: 8, padding: '6px 12px', cursor: 'pointer', fontSize: 12 },
+    button: { background: 'var(--dsw-alias-interactive-bg-hover-solid, #1f2937)', color: 'var(--dsw-alias-label-primary, #f9fafb)', border: '1px solid var(--dsw-alias-border-l2, #374151)', borderRadius: 8, padding: '6px 12px', cursor: 'pointer', fontSize: 12 },
     buttonDisabled: { opacity: 0.6, cursor: 'default' },
-    link: { color: '#93c5fd', wordBreak: 'break-all' },
-    error: { color: '#fca5a5', margin: '6px 0' },
-    success: { color: '#86efac', margin: '6px 0' },
-    note: { color: '#9ca3af', margin: '6px 0' },
-    input: { width: '100%', boxSizing: 'border-box', background: '#111827', color: '#f9fafb', border: '1px solid #374151', borderRadius: 8, padding: 6, margin: '6px 0' },
-    block: { marginTop: 8, borderTop: '1px solid #374151', paddingTop: 8 },
-    intro: { color: '#d1d5db', margin: '4px 0 8px' },
+    link: { color: 'var(--dsw-alias-link, #93c5fd)', wordBreak: 'break-all' },
+    error: { color: 'var(--dsw-alias-state-error-primary, #fca5a5)', margin: '6px 0' },
+    success: { color: 'var(--dsw-alias-state-success-primary, #86efac)', margin: '6px 0' },
+    note: { color: 'var(--dsw-alias-label-tertiary, #9ca3af)', margin: '6px 0' },
+    input: { width: '100%', boxSizing: 'border-box', background: 'var(--dsw-alias-bg-layer-2, #111827)', color: 'var(--dsw-alias-label-primary, #f9fafb)', border: '1px solid var(--dsw-alias-border-l2, #374151)', borderRadius: 8, padding: 6, margin: '6px 0' },
+    block: { marginTop: 8, borderTop: '1px solid var(--dsw-alias-border-l2, #374151)', paddingTop: 8 },
+    intro: { color: 'var(--dsw-alias-label-secondary, #d1d5db)', margin: '4px 0 8px' },
     title: { margin: '0 0 8px', fontSize: 16 },
     cardTitle: { margin: '0 0 8px', fontSize: 14 },
     sessionDock: { textAlign: 'center', fontSize: 12, lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary, #9ca3af)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
     checkRow: { display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0' },
-    textarea: { width: '100%', boxSizing: 'border-box', background: '#111827', color: '#f9fafb', border: '1px solid #374151', borderRadius: 8, padding: 6, margin: '6px 0', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 },
+    textarea: { width: '100%', boxSizing: 'border-box', background: 'var(--dsw-alias-bg-layer-2, #111827)', color: 'var(--dsw-alias-label-primary, #f9fafb)', border: '1px solid var(--dsw-alias-border-l2, #374151)', borderRadius: 8, padding: 6, margin: '6px 0', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 },
   }
 
   function selectionFromStore(store) {
@@ -1241,6 +1260,114 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   }
 
   /**
+   * The plugin's card on a Models-page provider row.
+   *
+   * DSH 0.1.6 dispatches `settings.models.provider-card` once per directory row,
+   * keyed by the row's owning settings namespace, so this reaches the rows this
+   * plugin configures — shipped, added, and hand-declared alike. Without it the
+   * account actions live only on this plugin's own settings page, which is no
+   * longer where a provider gets configured.
+   *
+   * The compact rendering deliberately stops at the connection controls: the
+   * meter's settings form belongs to the plugin's own page, and a provider card
+   * must not grow a second copy of it.
+   *
+   * @param {object} props - owner props plus the inject face.
+   * @param {string} [props.getLocale]
+   * @returns {object} the card tree.
+   */
+  function OpenAISubscriptionProviderCard(props) {
+    const { getLocale } = props
+    const t = useT(getLocale)
+    const flow = useOpenAISubscriptionFlow({ provider: PROVIDER_ID })
+    return h('div', { style: { padding: '4px 0' } }, [
+      h(OpenAISubscriptionContent, { flow, currentProvider: PROVIDER_ID, t }),
+    ])
+  }
+
+  /**
+   * Keep the application root out of the tab order and out of assistive
+   * technology while one onboarding step owns the screen.
+   *
+   * The `settings.onboarding` contract makes the registrant own its modal
+   * chrome, `#root` inert ownership included: the shell paints no chrome of its
+   * own, so without this the settings page behind the dialog stays reachable by
+   * Tab and by a screen reader. The previous value is restored rather than
+   * cleared, so a composition that already held the root inert keeps it.
+   *
+   * @param {boolean} active - whether this step currently shows a blocking surface.
+   * @returns {void}
+   */
+  function useRootInert(active) {
+    useEffect(() => {
+      if (!active || typeof document === 'undefined' || typeof document.getElementById !== 'function') return undefined
+      const appRoot = document.getElementById('root')
+      if (appRoot === null || appRoot === undefined) return undefined
+      const previous = appRoot.inert
+      appRoot.inert = true
+      return () => { appRoot.inert = previous }
+    }, [active])
+  }
+
+  /** Elements a Tab press may land on inside the onboarding surface. */
+  const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+  /**
+   * Move focus into one onboarding surface, cycle Tab inside it, and hand focus
+   * back where it came from.
+   *
+   * `Modal` owns Escape and `aria-modal`, but it neither moves focus nor keeps
+   * it: without this a keyboard user tabs straight out of the dialog into the
+   * page that is supposed to be blocked behind it.
+   *
+   * @param {boolean} active - whether the surface is mounted.
+   * @param {string} containerSelector - selector for the surface to trap focus in.
+   * @returns {void}
+   */
+  function useModalFocus(active, containerSelector) {
+    useEffect(() => {
+      if (!active || typeof document === 'undefined' || typeof document.querySelector !== 'function') return undefined
+      const container = document.querySelector(containerSelector)
+      if (container === null || container === undefined) return undefined
+      const previous = document.activeElement
+      const focusable = () => {
+        const found = typeof container.querySelectorAll === 'function'
+          ? [...container.querySelectorAll(FOCUSABLE_SELECTOR)]
+          : []
+        return found.filter((element) => element.hidden !== true
+          && element.getAttribute?.('aria-hidden') !== 'true'
+          && element.style?.display !== 'none')
+      }
+      const first = focusable()[0]
+      if (first !== undefined) first.focus?.()
+      else container.focus?.()
+
+      const onKeyDown = (event) => {
+        if (event.key !== 'Tab') return
+        const items = focusable()
+        if (items.length === 0) return
+        const current = items.indexOf(document.activeElement)
+        const step = event.shiftKey ? -1 : 1
+        const next = current === -1
+          ? (event.shiftKey ? items.length - 1 : 0)
+          : (current + step + items.length) % items.length
+        event.preventDefault?.()
+        items[next].focus?.()
+      }
+      if (typeof document.addEventListener === 'function') {
+        // Captured, so the trap still runs when a descendant stops propagation.
+        document.addEventListener('keydown', onKeyDown, true)
+      }
+      return () => {
+        if (typeof document.removeEventListener === 'function') {
+          document.removeEventListener('keydown', onKeyDown, true)
+        }
+        if (previous !== null && previous !== undefined && previous !== document.body) previous.focus?.()
+      }
+    }, [active, containerSelector])
+  }
+
+  /**
    * First-run onboarding step. Decides from /status: signed-in and inactive
    * states complete immediately (and render null), a signed-out active plugin
    * prompts inside a blocking modal, and an unreachable status keeps the step
@@ -1262,18 +1389,22 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       complete()
     }, [complete])
     const decision = deriveOnboardingDecision(flow.kind)
+    const showing = decision !== 'deciding' && decision !== 'skip'
+
+    useRootInert(showing)
+    useModalFocus(showing, `[${ONBOARDING_SURFACE_ATTRIBUTE}]`)
 
     useEffect(() => {
       if (decision === 'skip') finish()
     }, [decision, finish])
 
-    if (decision === 'deciding' || decision === 'skip') return null
+    if (!showing) return null
 
     const laterButton = primitives && primitives.Button
       ? h(primitives.Button, { variant: 'ghost', size: 'md', onClick: finish }, t('onboardingLater'))
       : h(ActionButton, { label: t('onboardingLater'), onClick: finish })
 
-    const body = h('div', { style: { padding: '0 2px' } }, [
+    const body = h('div', { [ONBOARDING_SURFACE_ATTRIBUTE]: '', tabIndex: -1, style: { padding: '0 2px' } }, [
       h('h2', { style: { ...s.title, fontSize: 15 } }, t('onboardingTitle')),
       decision === 'error'
         ? h('p', { style: s.error, role: 'alert' }, flow.error)
@@ -1285,6 +1416,8 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     if (primitives && primitives.Modal) {
       return h(primitives.Modal, {
         open: true,
+        // A blocking step is not dismissed implicitly: leaving is the explicit
+        // "later" action below. Escape therefore keeps the dialog open.
         onClose: () => {},
         title: t('onboardingTitle'),
         headless: true,
@@ -1292,9 +1425,9 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
     }
     // Fallback chrome when the primitives module is unavailable.
     return h('div', {
-      style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(2,6,23,0.6)' },
+      style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--dsw-alias-bg-mask-3, rgba(2,6,23,0.6))' },
     }, [
-      h('div', { style: { background: '#111827', border: '1px solid #374151', borderRadius: 12, padding: 18, maxWidth: 430, width: '92%', color: '#e5e7eb' } }, body),
+      h('div', { style: { background: 'var(--dsw-alias-bg-layer-2, #111827)', border: '1px solid var(--dsw-alias-border-l2, #374151)', borderRadius: 12, padding: 18, maxWidth: 430, width: '92%', color: 'var(--dsw-alias-label-primary, #e5e7eb)' } }, body),
     ])
   }
 
@@ -2006,11 +2139,11 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         wordBreak: 'break-word',
         textAlign: 'left',
         zIndex: FLOAT_Z_INDEX,
-        background: '#111827',
-        color: '#f9fafb',
-        border: '1px solid #374151',
+        background: 'var(--dsw-alias-bg-layer-2, #111827)',
+        color: 'var(--dsw-alias-label-primary, #f9fafb)',
+        border: '1px solid var(--dsw-alias-border-l2, #374151)',
         borderRadius: 10,
-        boxShadow: '0 6px 18px rgba(0, 0, 0, 0.35)',
+        boxShadow: 'var(--dsw-elevation-panel, 0 6px 18px rgba(0, 0, 0, 0.35))',
         padding: '10px 12px',
         display: 'flex',
         flexDirection: 'column',
@@ -2061,7 +2194,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
             ? { display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 4 }
             : {}),
           zIndex: FLOAT_Z_INDEX,
-          boxShadow: '0 6px 18px rgba(0, 0, 0, 0.35)',
+          boxShadow: 'var(--dsw-elevation-panel, 0 6px 18px rgba(0, 0, 0, 0.35))',
         }
     const cardElement = h('div', {
       key: 'indicator-details',
@@ -2473,7 +2606,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   }
 
   /**
-   * Register the four UI surfaces. Registrations are defensive: every
+   * Register the five UI surfaces. Registrations are defensive: every
    * slots.inject is contained so an unavailable seat can never throw into the
    * entry audit.
    * @param {object} ctx - browser plugin context.
@@ -2515,6 +2648,13 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       order: 6,
       inject: baseInject(ctx),
     }, SessionUsageDock))
+    // Keyed by the settings namespace this plugin owns, which is how the Models
+    // section pairs its rows with the plugin that configures them.
+    attempt('settings.models.provider-card', () => ctx.slots.register({
+      name: 'settings.models.provider-card',
+      key: SETTINGS_NAMESPACE,
+      inject: baseInject(ctx),
+    }, OpenAISubscriptionProviderCard))
   }
 
   const descriptor = { name: PACKAGE_NAME, inject, apply }
@@ -2541,6 +2681,8 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       // component, and a shallow harness cannot drive a nested component's
       // effects, so this one is reachable only through the test surface.
       MeterSettingsPanel,
+      OpenAISubscriptionContent,
+      OpenAISubscriptionProviderCard,
     },
     enumerable: false,
   })
