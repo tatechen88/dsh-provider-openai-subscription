@@ -155,6 +155,27 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 
 上一轮发的是 **1.4.0**；本轮（DSH 0.1.6 兼容改造）发版 **1.5.0**（`chore: release 1.5.0` + 附注标签 `v1.5.0`，含 GitHub Release）。
 
+## DSH 0.1.5 验证（本轮）
+
+问题是「0.1.5 上还能不能正常跑」。装了一个真的 `@deepseek-ai/dsh@0.1.5-rc.2`（`npm install --prefix D:\AI\Cache\dsh-0.1.5-verify '@deepseek-ai/dsh@0.1.5-rc.2'`，518 包，22 秒）实测。结论：**能跑**，插件不需要为 0.1.5 改动；但有两处平台差异要记住。
+
+**已验证**：
+
+- `DSH_NODE_MODULES=D:\AI\Cache\dsh-0.1.5-verify\node_modules node scripts/integration-smoke.mjs --require-dsh` —— 12/12 OK。0.1.5 上 `llm/stream` invariant、`attributionHeaders()`、`registerModelDiscovery()`、`listProviders()`、`Config` schema、迟到 Web 服务挂载全部存在且可用。
+- 真实 `dsh --profile <临时 profile> "say hi"`（0.1.5 启动器 + mock 路由）——退出 0，答出 mock 内容，账本落盘 2 条（任务 1 条 + 辅助标题 1 条），session 日志写成 `session.v3.jsonl.zstd`。
+- Web 客户端：0.1.5 的 `dsh --profile web` 起了服务，页面预加载清单里有 `dsh-provider-openai-subscription/client.js`，批量拉下来（11 MB）能找到 `OpenAISubscriptionProviderCard`、`settings.models.provider-card`、`useRootInert`。0.1.5 里 `dsh-client-ui-renderer` / `dsh-client-ui-model-selection` / `dsh-client-ui-settings-models` 三个 inject 包，以及本插件用到的 5 个 slot 名，全部存在。
+
+**为什么这不奇怪**：0.1.5-rc.2 → 0.1.6-alpha.1 之间 `packages/llm/llm/src/` 只有 `adapter-failure.ts`、`content.ts`、`error.ts`、`index.ts`（只多一个 `LlmError.offloadImages` 字段）、`message.ts`、`types.ts` 有改动；**`invariant.ts` 与 `attribution.ts` 逐字节相同**。所以第 1 条那个 block 语法修复在 0.1.5 上同样必需，不是 0.1.6 专属。
+
+**两处平台差异**：
+
+1. **0.1.5 的 headless 没有 `--json` / `--session-id`**，只把最终消息打到 stdout。`test:headless:strict` 的 NDJSON 契约在 0.1.5 上无从成立——那是 0.1.6 新增的表面。
+2. **0.1.5 把「某个 entry 激活失败」当致命错误**，整个 `dsh` 退出（连 `--help` 都出不来）；同样情形在 0.1.6 只是启动审计里一条 warning，其余插件照跑。第 3 条设计（显式 `active` 却激活不了就 reject，让审计报出来）是按 0.1.6 语义定的，在 0.1.5 上代价被放大成「整条命令不可用」。**这是本轮唯一需要拍板的点**：要不要为旧版本把失败降级成「记录并保持不激活」。
+
+**顺带修掉的缺陷**：`conflicts.js` 里的 `ctx?.get?.('llm') ?? ctx?.llm`。`get` 返回 undefined 时会继续去读 `ctx.llm`，而 Cordis 对未声明 `inject: ['llm']` 的上下文**抛错**——和第 16 条 meter 那个缺陷是同一个写法，当时漏了这一处。现在统一成 `optionalService(ctx, name)`：有 `get` 就用 `get`，只有普通快照才读属性，且属性读取有 try/catch。它是在 0.1.5 的 `--json` 崩溃路径上暴露的（`cannot get property "llm" without inject` 一路冒到 `apply()`，在 0.1.5 就成了致命失败）。`runtime.js` 里同类读取本来就是正确的守卫写法，只有这一处是漏网的。
+
+**给 headless smoke 加的闸**：它借用的 `profiles/node_modules` 必须和 PATH 上的 `dsh` 同版本，否则 SKIP（release 模式 FAIL）并说明原因。因为 DSH 会按**自己的**安装去 heal `profiles/node_modules`，跨版本借用会被改写或直接拒绝——0.1.5 就是这样在插件加载**之前**中止的（`composeProfile` → `healProfilesModuleFallback`），报错信息还很难懂。同版本借用不受影响。
+
 ## 关键文件
 
 - `src/`——Provider 主体（模型目录、流式生成、用量与额度）
