@@ -19,6 +19,13 @@
 ## 最近在做什么
 
 ```
+ed20df4 2026-09-16 test: add a real headless --json smoke with an offline mock route
+ec2ea2a 2026-09-16 fix: read the provider list through the inject-free accessor
+cbb31d0 2026-09-16 docs: record the DSH 0.1.6 compatibility round
+615d73d 2026-09-16 feat: declare DSH compatibility and gate the release on a real harness
+10d545a 2026-09-16 feat: add the Models provider card, onboarding focus, and theme tokens
+8fde791 2026-09-16 fix: report activation failures, make registration atomic, fail loud on config
+69e4be9 2026-09-16 fix: emit the DSH 0.1.6 stream grammar and provider attribution
 <docs> 2026-09-15 docs: record the hardening and optimization round
 c02e1c3 2026-09-15 feat: show the price band, reasoning tokens, and per-model session breakdown
 c35cf06 2026-09-15 perf: cache the meter's ledger scans between polls
@@ -145,6 +152,8 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
     - **它抓到的缺陷**：`createMeterRoutes` 用 `ctx.llm` 读服务列表，而 Cordis 对**未声明 `inject: ['llm']` 的插件上下文直接抛错**（`cannot get property "llm" without inject`）。这个异常落进 `catch` 被读成"没有 Provider"，于是「任何 DSH 已注册的 Provider 都自动纳入计量」这条在**真实进程里从未生效**，只有内置注册表里的厂商被记账。`conflicts.js` 一直用的是 `ctx.get('llm')`，量表的这段没有。
     - **为什么单测没抓到**：`test/usage-routes.test.mjs` 的假 ctx 是普通对象 `{ llm: {...} }`，乐意把属性递出去，于是"用属性访问"这件事从未被质疑。现在那条测试断言的是真实契约：属性访问抛错的上下文里，走 `get` 仍然能发现 Provider。
     - 组合 smoke 也没抓到，因为它的 ctx 是 root context，那里读属性是合法的。
+
+上一轮发的是 **1.4.0**；本轮（DSH 0.1.6 兼容改造）发版 **1.5.0**（`chore: release 1.5.0` + 附注标签 `v1.5.0`，含 GitHub Release）。
 
 ## 关键文件
 
