@@ -410,7 +410,13 @@ export function createMeterRoutes(ctx, { auto = true, now = Date.now } = {}) {
     if (at - cached.at < PROVIDER_LIST_TTL_MS) return cached.ids
     let ids = []
     try {
-      const listed = ctx.llm.listProviders()
+      // `ctx.llm` is refused on a plugin context that does not declare
+      // `inject: ['llm']`. The throw would land in the catch below as "no
+      // providers", which silently disabled auto-provider metering in every
+      // real process while passing the composition smoke, whose root context
+      // may read the property freely. The inject-free accessor is the one this
+      // plugin is entitled to.
+      const listed = ctx.get?.('llm')?.listProviders()
       if (Array.isArray(listed)) {
         ids = listed
           .map((entry) => (entry === null || entry === undefined ? undefined : entry.id))

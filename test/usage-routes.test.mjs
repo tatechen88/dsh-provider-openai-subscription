@@ -33,15 +33,34 @@ test('the registry routes are metered whether or not DSH can be asked', () => {
   assert.equal(nameless.covers(42), false)
 })
 
+test('the provider list is read through the inject-free accessor a plugin context requires', () => {
+  // Cordis refuses `ctx.llm` on a plugin context that does not declare
+  // `inject: ['llm']`, and the meter runs where no such declaration exists. The
+  // throw landed in the catch below as "no providers", which silently turned
+  // auto-provider metering off in every real process while these fakes — plain
+  // objects that happily served the property — kept passing.
+  const ctx = {
+    get(name) {
+      return name === 'llm' ? { listProviders: () => [{ id: 'acme-llm' }] } : undefined
+    },
+    get llm() {
+      throw new Error('cannot get property "llm" without inject')
+    },
+  }
+  const routes = createMeterRoutes(ctx, { now: () => 0 })
+  assert.equal(routes.covers('acme-llm'), true, 'a discovered provider is metered even when the property refuses')
+  assert.deepEqual(routes.known(), [...REGISTRY, 'acme-llm'])
+})
+
 test('a provider another plugin registered is metered from its first call', () => {
   let asked = 0
   const ctx = {
-    llm: {
+    get: () => ({
       listProviders: () => {
         asked += 1
         return [{ id: 'acme-llm' }, { id: 'deepseek-official' }, { id: '' }, null]
       },
-    },
+    }),
   }
   const routes = createMeterRoutes(ctx, { now: () => 0 })
   assert.equal(routes.covers('acme-llm'), true, 'a discovered provider is metered')
@@ -56,7 +75,7 @@ test('a provider another plugin registered is metered from its first call', () =
 test('the discovered list expires, so a provider registered later is still found', () => {
   let now = 0
   let listed = [{ id: 'acme-llm' }]
-  const ctx = { llm: { listProviders: () => listed } }
+  const ctx = { get: () => ({ listProviders: () => listed }) }
   const routes = createMeterRoutes(ctx, { now: () => now })
 
   assert.equal(routes.covers('acme-llm'), true)
@@ -68,14 +87,14 @@ test('the discovered list expires, so a provider registered later is still found
 })
 
 test('the auto switch restores the fixed registry, and a broken catalogue is not fatal', () => {
-  const ctx = { llm: { listProviders: () => [{ id: 'acme-llm' }] } }
+  const ctx = { get: () => ({ listProviders: () => [{ id: 'acme-llm' }] }) }
   const fixed = createMeterRoutes(ctx, { auto: false, now: () => 0 })
   assert.equal(fixed.covers('acme-llm'), false, 'with auto off only the registry is metered')
   assert.equal(fixed.covers('deepseek-official'), true)
   assert.deepEqual(fixed.known(), REGISTRY)
 
   const broken = createMeterRoutes({
-    get llm() { throw new Error('this context has no llm service') },
+    get() { throw new Error('this context has no llm service') },
   }, { now: () => 0 })
   assert.equal(broken.covers('deepseek-official'), true, 'the registry routes survive a context without llm')
   assert.deepEqual(broken.known(), REGISTRY)
