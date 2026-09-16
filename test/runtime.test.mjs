@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { applyRuntime, waitForService } from '../src/runtime.js'
+import { applyRuntime, connectionTrust, waitForService } from '../src/runtime.js'
 import { PROVIDER_ID, ROUTE_PREFIX, SETTINGS_NAMESPACE } from '../src/constants.js'
 
 function fakeContext() {
@@ -44,15 +44,49 @@ function fakeContext() {
       this.directory = entries
       return () => { this.directory = undefined }
     },
+    registerModelDiscovery(settingsNs, discover) {
+      this.discovery = { settingsNs, discover }
+      return () => { this.discovery = undefined }
+    },
   }
   const effects = []
+  /**
+   * Minimal stand-in for `ctx.inject`: registers the callback for the caller to
+   * run once the services exist, and owns whatever the callback registers
+   * through `scope.effect`.
+   */
+  const injections = []
+  const available = {
+    get credentials() { return credentials },
+    get webServer() { return services.webServer },
+    get llm() { return llm },
+  }
+  const services = { webServer }
   const ctx = {
     logger: { info() {}, warn() {}, error() {} },
     get(name) {
       if (name === 'credentials') return credentials
-      if (name === 'webServer') return webServer
+      if (name === 'webServer') return services.webServer
       if (name === 'llm') return llm
       return undefined
+    },
+    inject(deps, callback) {
+      const record = { deps, disposers: [], disposed: false, run: null, dispose: null }
+      record.run = () => {
+        const scope = {}
+        for (const dep of deps) scope[dep] = available[dep]
+        scope.effect = (fn) => {
+          record.disposers.push(fn())
+          return () => {}
+        }
+        callback(scope)
+      }
+      record.dispose = async () => {
+        record.disposed = true
+        for (const dispose of record.disposers.splice(0).reverse()) dispose()
+      }
+      injections.push(record)
+      return record
     },
     effect(fn, label) {
       const disposer = fn()
@@ -60,7 +94,7 @@ function fakeContext() {
       return () => disposer()
     },
   }
-  return { ctx, credentials, webServer, llm, routes, effects }
+  return { ctx, credentials, webServer, llm, routes, effects, injections, services }
 }
 
 test('applyRuntime registers provider, directory, and routes', async () => {
@@ -89,12 +123,126 @@ test('applyRuntime registers provider, directory, and routes', async () => {
   assert.deepEqual(residue, ['usage.json'], 'the meter writes only inside the injected home')
 })
 
+test('applyRuntime registers the model discovery under the plugin namespace', async () => {
+  const { ctx, llm, effects } = fakeContext()
+  const home = await mkdtemp(join(tmpdir(), 'runtime-home-'))
+  await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } }, { home, sleep: async () => {} })
+  assert.equal(llm.discovery.settingsNs, SETTINGS_NAMESPACE)
+  // The catalog needs an authenticated read. A caller that is not signed in
+  // must get that reason rather than an empty list it would read as "no models".
+  await assert.rejects(llm.discovery.discover({ provider: PROVIDER_ID }), (error) => error.code === 'not-signed-in')
+  await effects[0].disposer()
+  assert.equal(llm.discovery, undefined, 'the discovery registration is released with the plugin')
+})
+
+test('applyRuntime arms an injection for a web server that is not there yet', async () => {
+  const { ctx, webServer, routes, injections, services } = fakeContext()
+  const home = await mkdtemp(join(tmpdir(), 'runtime-home-'))
+  // No web server at activation: the runtime must not stall on the optional
+  // service, and must not give up on mounting the routes either.
+  const originalGet = ctx.get
+  ctx.get = (name) => (name === 'webServer' ? undefined : originalGet(name))
+  const result = await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } }, { home, sleep: async () => { throw new Error('the optional web server must not be awaited') } })
+  assert.equal(result.ok, true, 'an absent optional service never blocks activation')
+  assert.equal(routes.length, 0)
+  assert.equal(injections.length, 1)
+  assert.deepEqual(injections[0].deps, ['webServer'])
+
+  // The web server arrives: the injected callback mounts the routes onto it.
+  services.webServer = webServer
+  injections[0].run()
+  assert.ok(routes.length > 0, 'routes mount once a web server exists')
+
+  // ...and go away with it.
+  await injections[0].dispose()
+  assert.equal(routes.length, 0, 'the routes belong to the injected web server lifetime')
+})
+
+test('a web server that is already present mounts synchronously', async () => {
+  const { ctx, routes, injections } = fakeContext()
+  const home = await mkdtemp(join(tmpdir(), 'runtime-home-'))
+  const result = await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } }, { home, sleep: async () => {} })
+  assert.equal(result.ok, true)
+  assert.ok(routes.length > 0, 'the common path does not wait for an injection')
+  assert.equal(injections.length, 0, 'no injection is armed when the server is already here')
+})
+
 test('applyRuntime stays disabled on provider conflict', async () => {
   const { ctx, llm } = fakeContext()
   llm.listProviders = () => [{ id: PROVIDER_ID, name: 'Other' }]
   const result = await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } }, { home: await mkdtemp(join(tmpdir(), 'runtime-home-')) })
   assert.equal(result.ok, false)
   assert.equal(result.reason.includes('conflict'), true)
+})
+
+test('connectionTrust delegates to the deployment fence when one is mounted', () => {
+  const decisions = []
+  const ctx = {
+    get(name) {
+      if (name !== 'connection') return undefined
+      return {
+        requestRejection(request) {
+          decisions.push(request.headers.host)
+          return request.headers.host === 'ok.example' ? undefined : request.headers.host === 'auth.example' ? 401 : 403
+        },
+      }
+    },
+  }
+  const trust = connectionTrust(ctx)
+  assert.equal(typeof trust, 'function')
+  assert.equal(trust({ headers: { host: 'ok.example' } }), undefined)
+  assert.equal(trust({ headers: { host: 'auth.example' } }), 401)
+  assert.equal(trust({ headers: { host: 'evil.example' } }), 403)
+  assert.deepEqual(decisions, ['ok.example', 'auth.example', 'evil.example'], 'the fence decides, not the local comparison')
+})
+
+test('connectionTrust is absent without the service and refuses when the fence throws', () => {
+  assert.equal(connectionTrust({ get: () => undefined }), undefined)
+  assert.equal(connectionTrust({}), undefined)
+  assert.equal(connectionTrust({ get() { throw new Error('no registry') } }), undefined)
+  const broken = connectionTrust({ get: () => ({ requestRejection() { throw new Error('boom') } }) })
+  assert.equal(broken({ headers: {} }), 403, 'a fence that cannot answer must not open the route')
+})
+
+test('a registration that fails part-way is rolled back before the error escapes', async () => {
+  const { ctx, llm, webServer, routes, effects } = fakeContext()
+  // The directory entry is refused after the adapter already registered, which
+  // is exactly the ordering that used to strand an adapter with no owner.
+  llm.registerConfigurableProviders = () => { throw new Error('configurable provider "openai-subscription" is already declared') }
+  const home = await mkdtemp(join(tmpdir(), 'runtime-home-'))
+
+  await assert.rejects(
+    applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } }, { home, sleep: async () => {} }),
+    /already declared/,
+  )
+  assert.equal(llm.adapters, undefined, 'the half-registered adapter must be released')
+  assert.equal(routes.length, 0, 'no route may outlive a failed activation')
+  // The effect body threw, so no disposer was ever returned to the fiber; the
+  // failed activation itself must still have released what it owns.
+  const meterDir = join(home, 'storages', 'openai-subscription-meter')
+  await new Promise((resolve) => { setTimeout(resolve, 50) })
+  const residue = await readdir(meterDir).catch(() => [])
+  assert.deepEqual(residue, ['usage.json'], 'the ledger is flushed rather than left open')
+  assert.equal(effects.length, 0, 'a failed setup never publishes a disposer')
+})
+
+test('a context without the effect API closes the meter it already opened', async () => {
+  const { ctx } = fakeContext()
+  delete ctx.effect
+  const home = await mkdtemp(join(tmpdir(), 'runtime-home-'))
+  const result = await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } }, { home, sleep: async () => {} })
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, 'no-effect-api')
+  // The meter was constructed before the effect API was found missing, and no
+  // disposer will ever be returned for it: an open ledger here would only be
+  // released by a process restart.
+  const meterDir = join(home, 'storages', 'openai-subscription-meter')
+  let residue = []
+  for (let attempt = 0; attempt < 60 && residue.length === 0; attempt += 1) {
+    residue = await readdir(meterDir).catch(() => [])
+    if (residue.length === 0) await new Promise((resolve) => { setTimeout(resolve, 100) })
+  }
+  assert.deepEqual(residue, ['usage.json'], 'the ledger must have been flushed and closed')
 })
 
 test('waitForService returns an already-available service without sleeping', async () => {
@@ -133,23 +281,8 @@ test('waitForService gives up after the timeout', async () => {
     sleeps += 1
     clock += 25
   }
-  const result = await waitForService(ctx, 'webServer', { timeoutMs: 100, tickMs: 25, now: () => clock, sleep })
+  const result = await waitForService(ctx, 'credentials', { timeoutMs: 100, tickMs: 25, now: () => clock, sleep })
   assert.equal(result, undefined)
   assert.equal(sleeps, 4, 'four 25ms ticks exhaust the 100ms budget')
   assert.equal(clock, 100)
-})
-
-test('applyRuntime waits for a late webServer before mounting routes', async () => {
-  const { ctx, webServer, routes } = fakeContext()
-  // Hide webServer behind the first poll so the wait path is exercised.
-  const originalGet = ctx.get
-  let visible = false
-  ctx.get = (name) => {
-    if (name === 'webServer') return visible ? webServer : undefined
-    return originalGet(name)
-  }
-  const sleep = async () => { visible = true }
-  const result = await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } }, { sleep, timeoutMs: 100 })
-  assert.equal(result.ok, true)
-  assert.ok(routes.length > 0, 'routes must mount after webServer appears')
 })

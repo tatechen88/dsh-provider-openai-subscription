@@ -17,11 +17,19 @@ import { PROVIDER_ID, SETTINGS_NAMESPACE } from './constants.js'
  * @property {boolean} ok true when no conflict is found.
  * @property {string[]} missingServices DSH services the runtime needs but are absent.
  * @property {string[]} providerConflicts owner names found for PROVIDER_ID.
+ * @property {string[]} directoryConflicts owner names that already declare a
+ *   configurable provider for PROVIDER_ID.
  * @property {string[]} namespaceConflicts owner names found for SETTINGS_NAMESPACE.
  */
 
 /**
  * Detect conflicts from plain DSH topology snapshots. Pure and testable.
+ *
+ * A configurable-provider declaration is checked separately from a live adapter
+ * because the two registries fail independently: another plugin may have
+ * declared our provider route without activating it, so nothing appears in
+ * `listProviders()` while `registerConfigurableProviders()` would still refuse
+ * the duplicate and take the whole registration down with it.
  *
  * @param {readonly {id: string, name: string}[]} providers - ctx.llm.listProviders()
  * @param {readonly {provider: string, displayName: string, settingsNs: string}[]} configurable - ctx.llm.listConfigurableProviders()
@@ -32,13 +40,20 @@ export function detectConflicts(providers, configurable, missingServices = []) {
   const providerConflicts = providers
     .filter((entry) => entry.id === PROVIDER_ID)
     .map((entry) => entry.name)
+  const directoryConflicts = configurable
+    .filter((entry) => entry.provider === PROVIDER_ID)
+    .map((entry) => entry.displayName)
   const namespaceConflicts = configurable
     .filter((entry) => entry.settingsNs === SETTINGS_NAMESPACE && entry.provider !== PROVIDER_ID)
     .map((entry) => entry.displayName)
   return {
-    ok: missingServices.length === 0 && providerConflicts.length === 0 && namespaceConflicts.length === 0,
+    ok: missingServices.length === 0
+      && providerConflicts.length === 0
+      && directoryConflicts.length === 0
+      && namespaceConflicts.length === 0,
     missingServices: [...missingServices],
     providerConflicts,
+    directoryConflicts,
     namespaceConflicts,
   }
 }

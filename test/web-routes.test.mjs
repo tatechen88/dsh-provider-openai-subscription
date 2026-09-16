@@ -115,6 +115,66 @@ test('mountRoutes registers device routes when a device manager is provided', ()
   assert.equal(web.routes.length, 0)
 })
 
+test('a supplied trust fence decides the request instead of sameOrigin', async () => {
+  const { repository, attempts, balance } = deps()
+  const seen = []
+  const web = fakeWebServer()
+  mountRoutes({ webServer: web }, {
+    repository,
+    attempts,
+    balance,
+    clientId: 'cid',
+    exchange: async () => ({ access: 'a', expires: 1 }),
+    authorize: (request) => {
+      seen.push(request.headers.host)
+      // No Origin at all: the local same-origin check would refuse this, the
+      // deployment fence is the authority instead.
+      return request.headers['x-allow'] === 'yes' ? undefined : 401
+    },
+  })
+
+  const denied = fakeResponse()
+  await findRoute(web, '/status').handler(
+    { method: 'GET', url: '/plugins/openai-subscription/status', headers: { host: 'h', 'x-allow': 'no' }, [Symbol.asyncIterator]: () => [][Symbol.iterator]() },
+    denied,
+  )
+  assert.equal(denied.state.status, 401)
+  assert.match(denied.state.body, /authentication required/)
+  assert.deepEqual(seen, ['h'], 'the fence sees the request before anything else runs')
+
+  const allowed = fakeResponse()
+  await findRoute(web, '/status').handler(
+    { method: 'GET', url: '/plugins/openai-subscription/status', headers: { host: 'h', 'x-allow': 'yes' }, [Symbol.asyncIterator]: () => [][Symbol.iterator]() },
+    allowed,
+  )
+  assert.equal(allowed.state.status, 200)
+})
+
+test('a route that cannot register leaves no route behind', () => {
+  const { repository, attempts, balance } = deps()
+  const routes = []
+  let calls = 0
+  const web = {
+    routes,
+    register(route) {
+      calls += 1
+      // The web server refuses a duplicate exact path; the third registration
+      // fails after two have already succeeded.
+      if (calls === 3) throw new Error(`webserver: duplicate exact route "${route.path}"`)
+      routes.push(route)
+      return () => {
+        const index = routes.indexOf(route)
+        if (index >= 0) routes.splice(index, 1)
+      }
+    },
+  }
+  assert.throws(
+    () => mountRoutes({ webServer: web }, { repository, attempts, balance, clientId: 'cid', exchange: async () => ({ access: 'a', expires: 1 }) }),
+    /duplicate exact route/,
+  )
+  assert.deepEqual(routes, [], 'a failed mount must release the routes it already registered')
+})
+
 test('mountRoutes registers model routes when listModels is provided', async () => {
   const web = fakeWebServer()
   const { repository, attempts, balance } = deps()

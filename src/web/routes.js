@@ -127,10 +127,37 @@ export async function readJsonBody(request, limit = MAX_BODY_BYTES) {
  * @param {import('../usage/service.js').UsageMeterService} deps.meter.service
  * @param {import('../usage/settings-store.js').MeterSettingsStore} [deps.meter.settings]
  * @param {() => Promise<object>} [deps.meter.openaiQuota] - current subscription quota snapshot.
+ * @param {(request: {headers: object}) => 401|403|undefined} [deps.authorize] -
+ *   the deployment's own trust and authentication fence. Absent means the
+ *   local same-origin check is the only guard available.
  * @returns {() => void}
  */
 export function mountRoutes(host, deps) {
   const disposers = []
+
+  // DSH's Connection fence (Host/Origin + browser session) when the runtime
+  // could resolve it; `sameOrigin` is the fallback for deployments without it.
+  const authorize = typeof deps.authorize === 'function'
+    ? deps.authorize
+    : (request) => (sameOrigin(request) ? undefined : 403)
+
+  /**
+   * Release every route registered so far, newest first. Draining the list
+   * makes this safe to call twice and lets a failed mount leave no handler
+   * behind: the route table rejects a duplicate path, so a half-registered set
+   * would block the retry that fixes it.
+   * @returns {void}
+   */
+  const release = () => {
+    for (const dispose of disposers.splice(0).reverse()) {
+      try {
+        dispose()
+      } catch {
+        // A route table that already dropped this entry cannot be repaired
+        // here; the remaining routes still must be released.
+      }
+    }
+  }
 
   const route = (method, path, handler) => {
     const methods = Array.isArray(method) ? method : [method]
@@ -147,8 +174,12 @@ export function mountRoutes(host, deps) {
           response.end()
           return
         }
-        if (!sameOrigin(request)) {
-          sendJson(response, 403, { ok: false, error: 'untrusted origin' })
+        const rejection = authorize(request)
+        if (rejection !== undefined) {
+          sendJson(response, rejection, {
+            ok: false,
+            error: rejection === 401 ? 'authentication required' : 'untrusted origin',
+          })
           return
         }
         try {
@@ -160,6 +191,24 @@ export function mountRoutes(host, deps) {
       },
     }))
   }
+
+  try {
+    mountAll(route, deps)
+  } catch (error) {
+    release()
+    throw error
+  }
+
+  return release
+}
+
+/**
+ * Register every route this plugin serves.
+ * @param {(method: string|string[], path: string, handler: Function) => void} route
+ * @param {object} deps - see {@link mountRoutes}.
+ * @returns {void}
+ */
+function mountAll(route, deps) {
 
   route('GET', '/status', async (_request, response) => {
     const status = await deps.repository.status()
@@ -392,10 +441,6 @@ export function mountRoutes(host, deps) {
         }
       })
     }
-  }
-
-  return () => {
-    for (const dispose of disposers) dispose()
   }
 }
 

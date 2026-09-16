@@ -83,13 +83,17 @@ export async function applyRuntime(ctx, config, options = {}) {
   const logger = ctx?.logger
   const credentials = await waitForService(ctx, 'credentials', options)
   const llm = await waitForService(ctx, 'llm', options)
-  const webServer = await waitForService(ctx, 'webServer', options)
+  // The web server is optional, so it is probed rather than awaited: an absent
+  // server must not stall activation for the whole wait budget when the routes
+  // can simply mount whenever one appears (see the injection below).
+  const webServer = typeof ctx?.get === 'function' ? ctx.get('webServer') : undefined
 
   const report = await readConflictReport(ctx)
   if (!report.ok) {
+    const conflicts = [...report.providerConflicts, ...report.directoryConflicts, ...report.namespaceConflicts]
     const reason = report.missingServices.length > 0
       ? `missing DSH services: ${report.missingServices.join(', ')}`
-      : `provider/namespace conflict: ${[...report.providerConflicts, ...report.namespaceConflicts].join(', ')}`
+      : `provider/namespace conflict: ${conflicts.join(', ')}`
     if (logger?.warn) logger.warn(`${PACKAGE_NAME}: runtime stays disabled (${reason})`)
     return { ok: false, reason }
   }
@@ -97,9 +101,6 @@ export async function applyRuntime(ctx, config, options = {}) {
   if (credentials === undefined) {
     logger?.warn?.(`${PACKAGE_NAME}: runtime stays disabled (credentials service is unavailable)`)
     return { ok: false, reason: 'no-credentials' }
-  }
-  if (webServer === undefined) {
-    logger?.warn?.(`${PACKAGE_NAME}: webServer service is unavailable; HTTP routes are not mounted`)
   }
 
   const repository = new CredentialRepository(credentials)
@@ -143,67 +144,166 @@ export async function applyRuntime(ctx, config, options = {}) {
   const listModels = adapter === undefined ? undefined : () => adapter.listModels(PROVIDER_ID)
   const invalidateModels = adapter === undefined ? undefined : () => adapter.invalidateCatalog()
 
-  if (typeof ctx.effect === 'function') {
-    ctx.effect(() => {
-      const disposers = []
-      if (llm?.registerAdapter !== undefined && llm.registerConfigurableProviders !== undefined) {
-        const adapterHandle = llm.registerAdapter([PROVIDER_ID], adapter)
-        const directoryHandle = llm.registerConfigurableProviders([{
-          provider: PROVIDER_ID,
-          displayName: 'OpenAI (ChatGPT OAuth)',
-          settingsNs: SETTINGS_NAMESPACE,
-          settingsPath: [],
-        }])
-        disposers.push(() => { adapterHandle(); directoryHandle() })
-      }
-      if (webServer?.register !== undefined) {
-        const dispose = mountRoutes({ webServer }, { repository, attempts, devices, balance, listModels, invalidateModels, config, clientId: config.oauth.clientId, exchange, migration, meter })
-        disposers.push(() => {
-          dispose()
-          balance.clear()
-        })
-      }
-      // Metering rides the global model-call waterfall, so it is registered
-      // through the same effect as every other contribution.
-      if (ctx.on !== undefined) {
-        disposers.push(ctx.on('llm/stream', meter.collector, { global: true }))
-      }
-      disposers.push(() => meter.dispose())
-      return async () => {
-        // Sequential and individually guarded: the ledger flush is the last
-        // step and the only one that can lose data, so one failing surface must
-        // not strand it. Returning the promise lets a caller that awaits the
-        // disposer observe a finished flush instead of racing it.
-        for (const dispose of disposers) {
-          try {
-            await dispose()
-          } catch (error) {
-            logger?.warn?.(`${PACKAGE_NAME}: a teardown step failed`, error)
-          }
+  // Everything this activation owns, oldest registration first. Nothing is
+  // handed back to Cordis until the whole set has registered, so a failure
+  // part-way through must undo what already succeeded: an adapter, a directory
+  // entry, or a few HTTP routes left behind would have no owner to release
+  // them.
+  const owned = []
+  /**
+   * Run every owned disposer in reverse registration order.
+   *
+   * Draining the list makes this safe to call twice: the first caller — either
+   * the failed-setup rollback or the effect disposer — owns the teardown.
+   * @returns {Promise<void>} settles once every async disposer has settled.
+   */
+  const release = async () => {
+    const pending = []
+    for (const dispose of owned.splice(0).reverse()) {
+      try {
+        const result = dispose()
+        if (result !== null && typeof result === 'object' && typeof result.then === 'function') {
+          pending.push(Promise.resolve(result))
         }
-        await attempts.dispose().catch(() => {})
-        await devices.dispose().catch(() => {})
+      } catch (error) {
+        logger?.warn?.(`${PACKAGE_NAME}: a teardown step failed`, error)
       }
-    }, `${PACKAGE_NAME}: provider, routes and state`)
-  } else {
-    // No Cordis effect API: mount what we can without disposal tracking. This
-    // fallback is only for unusual embedded contexts; DSH always has ctx.effect.
+    }
+    await Promise.allSettled(pending)
+  }
+  /**
+   * Mount the browser-facing routes onto one web server.
+   * @param {object} server - the resolved `webServer` service.
+   * @returns {() => void} disposer releasing every route and the balance cache.
+   */
+  const mountWebRoutes = (server) => {
+    const authorize = connectionTrust(ctx)
+    const dispose = mountRoutes({ webServer: server }, {
+      repository,
+      attempts,
+      devices,
+      balance,
+      listModels,
+      invalidateModels,
+      config,
+      clientId: config.oauth.clientId,
+      exchange,
+      migration,
+      meter,
+      ...(authorize === undefined ? {} : { authorize }),
+    })
+    return () => {
+      dispose()
+      balance.clear()
+    }
+  }
+
+  const register = () => {
+    // The meter owns the ledger file, so it is registered first and therefore
+    // torn down last — including on a rollback, where leaking an open ledger
+    // would otherwise need a process restart to release.
+    owned.push(() => meter.dispose())
     if (llm?.registerAdapter !== undefined && llm.registerConfigurableProviders !== undefined) {
-      llm.registerAdapter([PROVIDER_ID], adapter)
-      llm.registerConfigurableProviders([{
+      const adapterHandle = llm.registerAdapter([PROVIDER_ID], adapter)
+      owned.push(() => adapterHandle())
+      const directoryHandle = llm.registerConfigurableProviders([{
         provider: PROVIDER_ID,
         displayName: 'OpenAI (ChatGPT OAuth)',
         settingsNs: SETTINGS_NAMESPACE,
         settingsPath: [],
       }])
+      owned.push(() => directoryHandle())
+    }
+    if (typeof llm?.registerModelDiscovery === 'function' && adapter !== undefined) {
+      // DSH's Models page probes a provider through this seam. Answering from
+      // the same authenticated catalog the model picker uses keeps one source
+      // of truth instead of adding a second, drifting model list.
+      owned.push(llm.registerModelDiscovery(SETTINGS_NAMESPACE, (_request, signal) => adapter.discoverModels(signal)))
     }
     if (webServer?.register !== undefined) {
-      mountRoutes({ webServer }, { repository, attempts, devices, balance, listModels, invalidateModels, config, clientId: config.oauth.clientId, exchange, migration, meter })
+      owned.push(mountWebRoutes(webServer))
+    } else if (typeof ctx.inject === 'function') {
+      // No web server yet. Injecting one keeps the routes tied to the server's
+      // own lifetime instead of a single startup decision: they mount when a
+      // server appears — including one that appears after this activation, or
+      // replaces a failed one — and are released when it goes away.
+      const routesFiber = ctx.inject(['webServer'], (scope) => {
+        scope.effect(() => mountWebRoutes(scope.webServer), `${PACKAGE_NAME}: routes`)
+      })
+      owned.push(() => routesFiber.dispose())
+    } else {
+      logger?.warn?.(`${PACKAGE_NAME}: no web server and no injection available; HTTP routes are not mounted`)
+    }
+    // Metering rides the global model-call waterfall, so it is registered
+    // through the same effect as every other contribution.
+    if (ctx.on !== undefined) {
+      owned.push(ctx.on('llm/stream', meter.collector, { global: true }))
     }
   }
 
+  if (typeof ctx.effect !== 'function') {
+    // Registrations are effects: a context without the effect API cannot own
+    // what it registers, so this deployment is unsupported rather than
+    // partially wired. The meter is already open by now, and nothing else will
+    // ever own it, so it has to be closed here.
+    await release()
+    await meter.dispose().catch(() => {})
+    return { ok: false, reason: 'no-effect-api' }
+  }
+  ctx.effect(() => {
+    try {
+      register()
+    } catch (error) {
+      // Nothing owns a partial registration: undo it before the failure
+      // reaches the loader.
+      void release().catch(() => {})
+      throw error
+    }
+    return async () => {
+      // Sequential and individually guarded: the ledger flush is the last step
+      // and the only one that can lose data, so one failing surface must not
+      // strand it. Returning the promise lets a caller that awaits the disposer
+      // observe a finished flush instead of racing it.
+      await release()
+      await attempts.dispose().catch(() => {})
+      await devices.dispose().catch(() => {})
+    }
+  }, `${PACKAGE_NAME}: provider, routes and state`)
+
   if (logger?.info) logger.info(`${PACKAGE_NAME}: runtime active for provider "${PROVIDER_ID}" namespace "${SETTINGS_NAMESPACE}"`)
   return { ok: true }
+}
+
+/**
+ * DSH's own trust and authentication fence, when this deployment provides one.
+ *
+ * The Connection service first applies the Host fence that defeats DNS
+ * rebinding and then authenticates the browser session cookie. That is strictly
+ * stronger than comparing `Origin` with `Host`: the local comparison never
+ * binds a request to a browser session and has no Host fence at all, so a
+ * rebound page reaches these routes with a matching-looking Origin.
+ *
+ * @param {object} ctx - Cordis context.
+ * @returns {((request: {headers: object}) => 401|403|undefined)|undefined}
+ *   the fence, or undefined when no Connection service is mounted.
+ */
+export function connectionTrust(ctx) {
+  let connection
+  try {
+    connection = typeof ctx?.get === 'function' ? ctx.get('connection') : undefined
+  } catch {
+    connection = undefined
+  }
+  if (connection === undefined || typeof connection.requestRejection !== 'function') return undefined
+  return (request) => {
+    try {
+      const rejection = connection.requestRejection({ headers: request.headers })
+      return rejection === 401 || rejection === 403 ? rejection : undefined
+    } catch {
+      // A fence that cannot answer must not open the route.
+      return 403
+    }
+  }
 }
 
 /**
@@ -436,7 +536,12 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
     collector,
     openaiQuota,
     dispose: async () => {
-      await ledger.close().catch(() => {})
+      await ledger.close().catch((error) => {
+        // The ledger is the user's accounting: a flush that fails means the
+        // numbers they are looking at are not durable. Silence here would be
+        // the only sign of it.
+        logger?.warn?.(`${PACKAGE_NAME}: the usage ledger could not be flushed`, error)
+      })
     },
   }
 }

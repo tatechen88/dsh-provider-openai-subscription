@@ -10,6 +10,7 @@ test('detectConflicts returns ok when identifiers are free', () => {
   )
   assert.equal(report.ok, true)
   assert.deepEqual(report.providerConflicts, [])
+  assert.deepEqual(report.directoryConflicts, [])
   assert.deepEqual(report.namespaceConflicts, [])
 })
 
@@ -20,6 +21,7 @@ test('detectConflicts reports an existing provider id', () => {
   )
   assert.equal(report.ok, false)
   assert.deepEqual(report.providerConflicts, ['Old Plugin'])
+  assert.deepEqual(report.directoryConflicts, [])
 })
 
 test('detectConflicts reports an existing settings namespace owned by another provider', () => {
@@ -31,12 +33,26 @@ test('detectConflicts reports an existing settings namespace owned by another pr
   assert.deepEqual(report.namespaceConflicts, ['Other Provider'])
 })
 
-test('detectConflicts does not report our own configurable provider', () => {
+test('detectConflicts reports a configurable provider that already declares our route', () => {
+  // Another plugin declared the route without activating it, so nothing shows
+  // up in listProviders() even though the directory registration would be
+  // refused as a duplicate.
   const report = detectConflicts(
     [],
-    [{ provider: PROVIDER_ID, displayName: 'OpenAI Subscription', settingsNs: SETTINGS_NAMESPACE }],
+    [{ provider: PROVIDER_ID, displayName: 'Dormant Rival', settingsNs: 'llm-rival' }],
   )
-  assert.equal(report.ok, true)
+  assert.equal(report.ok, false)
+  assert.deepEqual(report.directoryConflicts, ['Dormant Rival'])
+  assert.deepEqual(report.providerConflicts, [])
+})
+
+test('detectConflicts reports our own namespace declared for another provider', () => {
+  const report = detectConflicts(
+    [],
+    [{ provider: PROVIDER_ID, displayName: 'Rival', settingsNs: SETTINGS_NAMESPACE }],
+  )
+  assert.equal(report.ok, false)
+  assert.deepEqual(report.directoryConflicts, ['Rival'])
 })
 
 test('detectConflicts reports missing services', () => {
