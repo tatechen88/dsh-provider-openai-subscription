@@ -13,6 +13,19 @@
   "bin": {
     "dsh-openai-subscription-rescue": "src/rescue.mjs"
   },
+  "files": [
+    "src",
+    "client",
+    "cordis.patch.yml"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tatechen88/dsh-provider-openai-subscription.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tatechen88/dsh-provider-openai-subscription/issues"
+  },
+  "homepage": "https://github.com/tatechen88/dsh-provider-openai-subscription#readme",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
