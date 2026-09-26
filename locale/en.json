@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "OpenAI subscription (ChatGPT)",
+    "description": "Use a ChatGPT subscription in DeepSeek Harness: a model adapter, agent tools and an authorization flow, with no browser half."
+  }
+}

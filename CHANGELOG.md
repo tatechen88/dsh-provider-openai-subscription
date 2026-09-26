@@ -10,6 +10,12 @@
 （设置 → 通用 → Language），退回进程/系统语言，最后英文。机器值（JSON 字段、错误 `code`、模型 id）保持英文。
 生效时机是**下一次激活**（工具描述注册后不能原地改词）；当前语言记录在运行时记录的 `language` 字段。
 
+**插件页卡片**走 DSH 的 `locale/<lang>.json` 约定（`meta.title` / `meta.description`，与内置 bundle 一致）：
+新增 `locale/en.json`、`locale/zh.json`，并把 `"./locale/*.json"` 加进 `exports`——
+少了这一条，Node 会以 `ERR_PACKAGE_PATH_NOT_EXPORTED` 拒绝解析，DSH 读成"没有元数据"而回落到英文清单文案
+（这正是卡片一直显示英文的原因）。另加 `icon.svg` 作为插件页图标。注意：0.1.7 的 Desktop 组合里插件页
+目前不投影这份 `meta`（DSH 自带本地化 bundle 同样如此），该修复要等宿主侧接通才可见。
+
 ### 修复（独立审查发现，全部已验证）
 
 - **被吊销的 refresh token 不再无限重试**：token 端点自己的 `invalid_grant`（此前只藏在错误消息文本里）

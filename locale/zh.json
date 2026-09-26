@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "OpenAI 订阅（ChatGPT）",
+    "description": "在 DeepSeek Harness 里使用 ChatGPT 订阅：包含模型适配器、agent 工具与授权流程，不带任何浏览器界面。"
+  }
+}

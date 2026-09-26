@@ -161,6 +161,14 @@ profile 里那段 YAML 的 `config` 支持这些字段：
 
 机器读的值（JSON 字段名、状态码、错误 `code`、模型 id）保持英文，因为它们是给程序匹配的。
 
+**插件页那张卡片**的文案走 DSH 自己的约定：`locale/en.json` 与 `locale/zh.json` 里的
+`meta.title` / `meta.description`（内置 bundle 也是这么做的）。两个坑：
+
+- 这两个文件必须写进 `package.json` 的 `exports`（`"./locale/*.json"`）。没有它，Node 会以
+  `ERR_PACKAGE_PATH_NOT_EXPORTED` 拒绝解析，DSH 读成"没有元数据"，卡片回落到清单里的英文。
+- 在 0.1.7 的 Desktop 组合里，插件页目前**没有**投影这份 `meta`——DSH 自带的本地化 bundle
+  （voice-input 带 `locale/{en,zh}.json`）同样如此，所以卡片可能仍是英文，直到宿主侧接通。
+
 **生效时机**：工具描述在激活时注册、不能原地改词，所以**改语言后要等下一次激活**（重启一次，或在插件页停用再启用）。
 当前生效的语言记录在运行时记录的 `language` 字段里。
 
