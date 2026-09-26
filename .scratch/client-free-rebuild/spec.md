@@ -174,44 +174,32 @@ namespace 只由**条目自己的 Config schema 投影**产生；我们的 `Conf
   现网（Desktop profile）已按 D6 退出：`plugin_manager remove_bundle` + 删除 profile patch 里的激活块 +
   清理 `node_modules` 里残留的 junction；实测 GUI 未崩，客户端席位列表里已无本插件注册。
 
-## P8（未决）：打包版 Desktop 里拿不到隔离服务
+## P8（已解决）：打包版 Desktop 拿不到隔离服务 → 重启即正常
 
-**现象（实测，非推测）**：同一份 2.0.0 代码在真 `dsh web`（npm 布局）里一切正常——
-运行时记录显示 `configSchema: schemastery`、5 个工具全部注册、授权 flow 注册、
-`llm/credentials/webServer/authorization/tools/agents/systemPrompt` 全部 present。
-但在**打包版 Desktop** 里，同一个探针记录显示：
+**结论**：重启 DSH Desktop 后，打包版与 npm 布局**表现一致**——运行时记录显示
+`configSchema: schemastery`、7 个服务全 present、**5 个工具全部注册**、授权 flow 注册。
+（此前 22:33 的重启已复现成功；随后我改文件触发的 HMR 又把工具丢了一次，见第 3 条。）
 
-```json
-"configSchema": "standard",
-"configSchemaProblem": "... not reachable ... (packaged layouts: Cannot find module '...app.asar.unpacked...')",
-"services": { "visible": { "llm": "present", "credentials": "present", "webServer": "present",
-                            "authorization": "missing", "tools": "missing",
-                            "agents": "missing", "systemPrompt": "missing" } },
-"tools": { "registered": [] }
-```
+### 三个必须记住的机制（全部实测）
 
-**已确认的机制**：cordis 4 的 `ctx.get(name)` 沿 fiber 链上溯，遇到**隔离**该名字的祖先就停下
-（`cordis/lib/index.js` 的 `ReflectService.handler.get`：`if (fiber.parent[isolate][prop] !== key) throw error`）。
-DSH 把 `tools`/`authorization`/`agents`/`systemPrompt` 隔离在各自的 scope 里，所以根级第三方入口只看得到
-`llm`/`credentials`/`webServer`。DSH 自己的工具插件靠**声明 `inject`** 拿到它们
-（`dsh-experimental-tool-agent-team`：`inject = ['agents','agentTeams','tools','systemPrompt']`）。
+1. **cordis 4 的 `ctx.get(name)` 会被隔离屏障挡住**：`ReflectService.handler.get` 沿 fiber 链上溯，
+   遇到隔离该名字的祖先即失败。DSH 隔离 `tools`/`authorization`/`agents`/`systemPrompt`，
+   根级第三方入口只看得到 `llm`/`credentials`/`webServer`。
+   **解法**：像 DSH 自己的工具插件那样在模块里声明 `export const inject = ['tools','authorization']`。
+   代价要写清：声明 inject 会把等待提到 `apply()` 之前，缺这两个服务的组合里条目会**挂着而不是报错**；
+   两者都是 base bundle 的行，真实 profile 都有。
+2. **打包版运行时在 `app.asar` 内**：`createRequire` 解析不到，Electron 的 `import()` 能读；
+   正确锚点是 `process.resourcesPath`（`$DSH_HOME/resources` 只是本机恰好相同）。
+   `config.js` 因此改成**模块级 await + URL 优先导入**——模块级 await 是让异步导入仍能向 loader 交出 `Config` 的关键。
+   验证方式：用 Desktop 自己的 Electron 以 `ELECTRON_RUN_AS_NODE` 跑一个探针，两个布局都得到 `kind = schemastery`。
+3. **`inject` 只在"创建条目"时读取**：改文件后重导入模块**不会**重建条目的 inject。所以
+   **升级必须重启进程**；插件开关能重建条目但**模块图是缓存的**（改过的 `operations.js` 仍按旧代码跑）；
+   **HMR 触发的重新应用更差**——它不带 inject，会静默把工具丢掉（记录里实测到 `tools.registered: []`）。
 
-**已做**：`src/index.js` 声明了 `export const inject = ['tools', 'authorization']`；
-`config.js` 改为模块级 await + URL 优先导入（`process.resourcesPath` 锚点 + 直接 asar URL）；
-新增运行时记录用于从进程外观测。**但 Desktop 里 `inject` 仍未生效**——两种可能：
+### 期间发现的第二个真 bug（已修）
 
-1. **需要重启**：loader 在安装/首次创建条目时读走了 `inject`，之后改文件只重导入模块、不重建
-   entry 的 inject（这条最可能，因为记录显示新代码确实在跑，而服务仍 missing）。
-2. `inject` 只对 asar 内的官方插件生效，第三方 link 插件需要另一条路。
-
-**下一步（按顺序）**
-
-1. 重启 DSH Desktop，读 `$DSH_HOME/plugin-state/openai-subscription-runtime.json`：
-   若 `services.visible.tools === "present"` 且 `tools.registered` 有 5 个名字 → 问题只是重启；
-   若依旧 missing → 走第 2 步。
-2. 改走 DSH 自己的模式：像 `dsh-experimental-tool-agent-team` 那样，
-   通过 `agents` 服务在**每个 agent scope** 内注册工具（`agent.ctx.tools.register(...)`），
-   并在 agent 出现/消失时安装与拆除。注意 `agents` 同样是隔离服务，需先解决可见性，
-   或改为在 loader 的 agent 作用域内注入。
-3. 备选：向宿主暴露一个 `ctx.get('loader')` 通道来解析宿主包（loader 自己的
-   `import(name, baseUrl)` 能读到 asar 内的包），把 schemastery / `defineTool` 走宿主解析而不是自己解析。
+`usage_meter_report` 首次对真账本运行时报 `value is not lossless JSON`：
+`estimated` / `basis` / `unpricedModels` 实际位于视图的 **`pricing`** 之下，而投影从顶层读 →
+三个字段是 `undefined` → 宿主整场拒绝该工具结果。修法两层：按真实层级读取 + 工具边界统一过
+`src/lossless.js`（丢 `undefined`、非有限数变 `null`）。原测试的**假视图把这几个字段放在了顶层**，
+所以它和 bug 意见一致——现在假视图照抄真实形状，并用真账本副本做忠实复现（修前 3 个问题，修后 0 个）。

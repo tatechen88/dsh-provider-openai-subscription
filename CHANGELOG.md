@@ -46,6 +46,14 @@ Desktop 外壳据此判定 fatal recovery，**崩溃并自动重启**。触发�
 - `test/no-client.test.mjs`：声明、导出、发布文件、目录、`__ModuleLoader__` 五道检查，阻止浏览器半边回来。
 - `test:web` 反向：断言 `dsh web` 首页**不含**本插件的任何痕迹，同时从服务端证明宿主半边确实挂载。
 - 组合门禁新增：真实 `AuthorizationService` 驱动本插件的 flow；真实 `defineTool` 接受并执行全部工具定义。
+- 工具结果统一过 lossless 边界（`src/lossless.js`）：`usage_meter_report` 首次对着真实账本运行时报
+  `value is not lossless JSON` —— 投影从视图顶层读了实际位于 `pricing` 下的字段，于是三个字段是 `undefined`，
+  而带 `undefined` 的工具结果会被宿主整场拒绝。现在既修了读取层级，也在边界上兜底。
+
+### 安装或升级后必须重启进程
+
+模块图是缓存的：**插件开关能重建条目，但改过的 `operations.js` 仍按旧代码运行**；
+HMR 触发的重新应用更差——它不带声明的 `inject`，会**静默丢掉工具**。所以升级后请重启 DSH Desktop。
 
 ### 升级注意
 

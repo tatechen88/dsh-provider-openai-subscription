@@ -2,18 +2,24 @@
 
 > 交接说明：给接手本仓库的下一个 agent 或新 session。最后更新 2026-09-26。
 >
-> **当前状态：2.0.0，纯宿主插件，重建已完成（P1–P7）。** 这个仓库里**没有也不会有浏览器半边**：
-> 侧边栏指示器、用量卡片、自带设置页都已删除，登录/额度/用量由 agent 工具与 DSH 原生授权 seam 承载。
-> 为什么这么做、以及每一轮改了什么，看下面的分轮记录与 [`.scratch/client-free-rebuild/spec.md`](.scratch/client-free-rebuild/spec.md)。
+> **当前状态：2.0.0，纯宿主插件，重建完成（P1–P7），并已在打包版 Desktop 上实测通过。**
+> 这个仓库里**没有也不会有浏览器半边**：侧边栏指示器、用量卡片、自带设置页都已删除，
+> 登录/额度/用量由 agent 工具与 DSH 原生授权 seam 承载。
+> 两条硬性操作规程：**① 升级或改代码后必须重启进程**（插件开关会复用缓存的模块图，HMR 重应用更会静默丢掉工具）；
+> **② 进程内唯一的观测面是 `$DSH_HOME/plugin-state/openai-subscription-runtime.json`**。
+> 为什么这么做、每一轮改了什么、以及踩过的坑，见下面的分轮记录与
+> [`.scratch/client-free-rebuild/spec.md`](.scratch/client-free-rebuild/spec.md)。
 > 下文较早的段落描述的是 1.5.0 的行为，保留作为历史与排障线索。
 
 ## 2.0.0 发布（P4–P7，本轮）
 
-> **⚠️ 未决项（P8）**：同一份 2.0.0 在 npm 布局的真 `dsh web` 里**全部正常**（schemastery + 5 工具 + 授权 flow，
-> 运行时记录可证），但在**打包版 Desktop** 里 `tools` / `authorization` 取不到（cordis 的隔离屏障），
-> 因此工具与 flow 不注册、schemastery 也解析不到。已声明 `inject`，但 Desktop 未生效 →
-> **先重启 DSH Desktop 再看记录**；仍不行则改走按 agent scope 注册工具的路子。
-> 完整证据、机制与下一步见 [`.scratch/client-free-rebuild/spec.md`](.scratch/client-free-rebuild/spec.md) 的 P8 一节。
+> **P8 已解决（重启即正常）**：打包版 Desktop 重启后与 npm 布局表现一致——
+> 运行时记录显示 `configSchema: schemastery`、7 个服务全 present、5 个工具全部注册、授权 flow 注册；
+> `openai_subscription_status` 与 `openai_subscription_quota` 已跑出真实数据（账号、限流窗口）。
+> 三条机制值得记住：**cordis 4 的隔离屏障**（`tools`/`authorization` 对根级插件不可见 → 必须声明 `inject`）、
+> **打包版运行时在 `app.asar` 内**（用 `process.resourcesPath` 锚点 + `import()`，并且 `Config` 需要模块级 await）、
+> **`inject` 只在创建条目时读取**（所以升级必须重启；插件开关复用缓存模块图；HMR 重应用会丢工具）。
+
 
 **运行时可观测性（新增）**：每次激活会写 `$DSH_HOME/plugin-state/openai-subscription-runtime.json`——
 声明了哪套 schema（含失败原因）、注册了哪些工具、flow 的 method、路由、以及**这次上下文能看见哪些服务**。
