@@ -125,6 +125,8 @@ export async function readJsonBody(request, limit = MAX_BODY_BYTES) {
  * @param {(password: string) => Promise<object>} [deps.migration.backup]
  * @param {object} [deps.meter]
  * @param {import('../usage/service.js').UsageMeterService} deps.meter.service
+ * @param {import('../usage/model-watch.js').ModelWatchService} [deps.meter.modelWatch] -
+ *   the vendor-directory watch, when the meter configuration enables it.
  * @param {import('../usage/settings-store.js').MeterSettingsStore} [deps.meter.settings]
  * @param {() => Promise<object>} [deps.meter.openaiQuota] - current subscription quota snapshot.
  * @param {(request: {headers: object}) => 401|403|undefined} [deps.authorize] -
@@ -339,7 +341,7 @@ function mountAll(route, deps) {
   }
 
   if (deps.meter !== undefined) {
-    const { service, settings, openaiQuota } = deps.meter
+    const { service, settings, openaiQuota, modelWatch } = deps.meter
 
     route('GET', '/meter/usage', async (request, response) => {
       const quota = openaiQuota === undefined ? undefined : await openaiQuota().catch(() => undefined)
@@ -362,6 +364,9 @@ function mountAll(route, deps) {
       const query = new URL(request.url ?? '/', 'http://localhost').searchParams
       const sessionId = query.get('sessionId')
       const provider = query.get('provider')
+      // A stale watch scans in the background; the card reads the last round,
+      // so polling usage never waits on three vendor stations.
+      if (modelWatch !== undefined && modelWatch.due()) void modelWatch.scan().catch(() => {})
       sendJson(response, 200, {
         ok: true,
         data: {
@@ -372,6 +377,7 @@ function mountAll(route, deps) {
             ...(provider === null || provider.length === 0 ? {} : { provider }),
           }),
           ...(quota === undefined ? {} : { openaiQuota: quota }),
+          ...(modelWatch === undefined ? {} : { modelWatch: modelWatch.view() }),
         },
       })
     })
@@ -402,6 +408,23 @@ function mountAll(route, deps) {
       const result = await service.refreshPublicPrices({ force: true })
       sendJson(response, 200, { ok: true, data: result, status: result.status })
     })
+
+    if (modelWatch !== undefined) {
+      route('GET', '/meter/models/watch', async (_request, response) => {
+        // A stale watch scans in the background; this read answers from the
+        // last completed round so the card never waits on three stations.
+        if (modelWatch.due()) void modelWatch.scan().catch(() => {})
+        sendJson(response, 200, { ok: true, data: modelWatch.view() })
+      })
+
+      route('POST', '/meter/models/watch/refresh', async (_request, response) => {
+        sendJson(response, 200, { ok: true, data: await modelWatch.scan({ force: true }) })
+      })
+
+      route('POST', '/meter/models/watch/acknowledge', async (_request, response) => {
+        sendJson(response, 200, { ok: true, data: await modelWatch.acknowledge() })
+      })
+    }
 
     if (settings !== undefined) {
       route(['GET', 'PATCH'], '/meter/settings', async (request, response) => {

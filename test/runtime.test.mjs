@@ -120,7 +120,7 @@ test('applyRuntime registers provider, directory, and routes', async () => {
   assert.equal(routes.length, 0)
   const meterDir = join(home, 'storages', 'openai-subscription-meter')
   const residue = await readdir(meterDir).catch(() => [])
-  assert.deepEqual(residue, ['usage.json'], 'the meter writes only inside the injected home')
+  assert.deepEqual([...residue].sort(), ['models.json', 'usage.json'], 'the meter writes only inside the injected home')
 })
 
 test('applyRuntime registers the model discovery under the plugin namespace', async () => {
@@ -258,7 +258,9 @@ test('a registration that fails part-way is rolled back before the error escapes
   const meterDir = join(home, 'storages', 'openai-subscription-meter')
   await new Promise((resolve) => { setTimeout(resolve, 50) })
   const residue = await readdir(meterDir).catch(() => [])
-  assert.deepEqual(residue, ['usage.json'], 'the ledger is flushed rather than left open')
+  // The model watch's baseline lives beside the ledger and is flushed by the
+  // same dispose, so both files survive; no temporary file may remain.
+  assert.deepEqual([...residue].sort(), ['models.json', 'usage.json'], 'the ledger is flushed rather than left open')
   assert.equal(effects.length, 0, 'a failed setup never publishes a disposer')
 })
 
@@ -278,7 +280,7 @@ test('a context without the effect API closes the meter it already opened', asyn
     residue = await readdir(meterDir).catch(() => [])
     if (residue.length === 0) await new Promise((resolve) => { setTimeout(resolve, 100) })
   }
-  assert.deepEqual(residue, ['usage.json'], 'the ledger must have been flushed and closed')
+  assert.deepEqual([...residue].sort(), ['models.json', 'usage.json'], 'the ledger must have been flushed and closed')
 })
 
 test('waitForService returns an already-available service without sleeping', async () => {

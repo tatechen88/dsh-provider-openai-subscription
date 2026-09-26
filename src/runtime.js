@@ -28,8 +28,9 @@ import { UsageLedger } from './usage/ledger.js'
 import { MeterSettingsStore } from './usage/settings-store.js'
 import { UsageMeterService } from './usage/service.js'
 import { LearnedPriceStore } from './usage/pricing-store.js'
+import { ModelWatchService, ModelWatchStore } from './usage/model-watch.js'
 import { METERED_PROVIDERS } from './usage/vendors.js'
-import { dshHome, learnedPricePath, meterSettingsPath, usageLedgerPath } from './state.js'
+import { dshHome, learnedPricePath, meterSettingsPath, modelWatchPath, usageLedgerPath } from './state.js'
 
 /** How long the runtime waits for a DSH service to become available. */
 export const SERVICE_WAIT_TIMEOUT_MS = 30_000
@@ -134,8 +135,9 @@ export async function applyRuntime(ctx, config, options = {}) {
     backup: (password) => backupLegacyCredential({ credentials, password }),
   }
 
-  const meter = await createMeter({ ctx, config, credentials, balance, logger, home: options.home })
-
+  // The adapter exists before the meter so the model watch can reuse its
+  // authenticated catalog instead of opening a second path to the same
+  // endpoint.
   const adapter = llm?.registerAdapter === undefined ? undefined : new OpenAISubscriptionAdapter({
     getAccess: () => tokenManager.getAccessSnapshot(),
     defaultModel: config.provider?.defaultModel || '',
@@ -143,6 +145,16 @@ export async function applyRuntime(ctx, config, options = {}) {
   })
   const listModels = adapter === undefined ? undefined : () => adapter.listModels(PROVIDER_ID)
   const invalidateModels = adapter === undefined ? undefined : () => adapter.invalidateCatalog()
+
+  const meter = await createMeter({
+    ctx,
+    config,
+    credentials,
+    balance,
+    logger,
+    home: options.home,
+    ...(adapter === undefined ? {} : { listOpenAIModels: () => adapter.listModels(PROVIDER_ID) }),
+  });
 
   // Everything this activation owns, oldest registration first. Nothing is
   // handed back to Cordis until the whole set has registered, so a failure
@@ -488,9 +500,11 @@ export function createMeterRoutes(ctx, { auto = true, now = Date.now } = {}) {
  * @param {object|undefined} options.balance - OpenAI subscription balance service.
  * @param {object|undefined} options.logger
  * @param {string} [options.home] - DSH home; injectable so tests never write the real one.
+ * @param {() => Promise<Array<{id: string, name?: string}>>} [options.listOpenAIModels] -
+ *   the subscription adapter's catalog, for the model watch.
  * @returns {Promise<object>}
  */
-export async function createMeter({ ctx, config, credentials, balance, logger, home = dshHome() }) {
+export async function createMeter({ ctx, config, credentials, balance, logger, home = dshHome(), listOpenAIModels }) {
   const base = config?.meter !== null && typeof config?.meter === 'object' ? config.meter : {}
   const settings = new MeterSettingsStore({ path: meterSettingsPath(home), base })
   try {
@@ -554,6 +568,23 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
   // somebody presses it. A failure already lands in the reading's status.
   void service.refreshDeepSeekBalance().catch(() => {})
   void service.refreshZhipuAccount().catch(() => {})
+  // The model watch scans each vendor's public directory and keeps the names
+  // this deployment has not seen before. It is best-effort like every other
+  // reading: a broken baseline file only means the next scan starts over.
+  let modelWatch
+  if (resolved.modelWatch !== false) {
+    const watchStore = new ModelWatchStore({ path: modelWatchPath(home) })
+    await watchStore.open().catch((error) => {
+      logger?.warn?.(`${PACKAGE_NAME}: model watch baseline was ignored (${error instanceof Error ? error.message : String(error)})`)
+    })
+    modelWatch = new ModelWatchService({
+      store: watchStore,
+      readDeepSeekCredential: () => resolveDeepSeekCredential(ctx, credentials),
+      readZhipuCredential: () => resolveZhipuCredential(ctx, credentials),
+      ...(listOpenAIModels === undefined ? {} : { listOpenAIModels }),
+    })
+    void modelWatch.scan().catch(() => {})
+  }
   collector = createUsageCollector({
     record: (fact) => {
       const stored = service.recordUsage(fact)
@@ -572,7 +603,11 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
     service,
     collector,
     openaiQuota,
+    modelWatch,
     dispose: async () => {
+      // The watch's background scan writes the baseline beside the ledger; it
+      // settles first so a teardown leaves no temporary file behind.
+      await modelWatch?.settle().catch(() => {})
       await ledger.close().catch((error) => {
         // The ledger is the user's accounting: a flush that fails means the
         // numbers they are looking at are not durable. Silence here would be

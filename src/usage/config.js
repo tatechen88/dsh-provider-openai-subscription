@@ -43,6 +43,12 @@ export const DEFAULT_METER_CONFIG = Object.freeze({
    */
   refreshPublicPrices: false,
   /**
+   * Whether the vendors' model directories are scanned for newly shipped
+   * models, so the card names one instead of the user finding it in an
+   * unpriced line weeks later.
+   */
+  modelWatch: true,
+  /**
    * Raw facts older than this many days are folded into one rollup per day and
    * route at startup, so the file stays bounded while every window total
    * survives the fold. Per-session detail keeps this window as its horizon.
@@ -186,6 +192,7 @@ export function normalizeMeterConfig(raw) {
     deepseekBalance: record.deepseekBalance !== false,
     autoProviders: record.autoProviders !== false,
     refreshPublicPrices: record.refreshPublicPrices === true,
+    modelWatch: record.modelWatch !== false,
     retentionDays: Number.isSafeInteger(record.retentionDays) && record.retentionDays >= 0
       ? record.retentionDays
       : DEFAULT_METER_CONFIG.retentionDays,

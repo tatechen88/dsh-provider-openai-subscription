@@ -37,6 +37,11 @@
           # meter makes that is not about the account's own state, and a table that
           # does not parse completely is rejected whole.
           refreshPublicPrices: false
+          # Scan each vendor's model directory (DeepSeek, Zhipu, and the OpenAI
+          # subscription catalog) for models this deployment has not seen
+          # before, and name them in the usage card. The baseline lives beside
+          # the ledger and can be deleted at any time.
+          modelWatch: true
           # Raw facts older than this many days fold into one rollup per day and
           # route at startup, so the ledger file stays bounded while every total
           # survives. Per-session detail keeps this window as its horizon.
