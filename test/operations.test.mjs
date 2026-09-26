@@ -320,18 +320,23 @@ test('the usage report is the numbers a model should read, not the whole view', 
       service: {
         view: (scope) => {
           seen.push(scope)
+          // The real shape, copied from `UsageMeterService.view()`: the estimate's
+          // terms sit under `pricing`. A fake that floats them to the top level
+          // is what let a wrong read pass — the tool then returned `undefined`
+          // fields and the harness refused the whole call.
           return {
             generatedAt: 1,
             account: { kind: 'personal', declared: true },
             display: { currency: 'CNY', timeZone: 'system' },
             privacy: { hideBalance: false, hideCost: false },
-            estimated: true,
-            basis: 'request-start-assumption',
-            unpricedModels: ['brand-new-model'],
-            band: { id: 'offPeak' },
             deepseek: { status: 'ready' },
-            // Not part of a tool result: a page's worth of tables and lists.
-            pricing: { public: { scheduleId: 'x' } },
+            pricing: {
+              public: { scheduleId: 'x' },
+              estimated: true,
+              basis: 'request-start-assumption',
+              unpricedModels: ['brand-new-model'],
+              band: { id: 'offPeak' },
+            },
             metered: [{ provider: 'deepseek-official' }],
             usage: {
               session: { calls: 2, amountMicros: 1000 },

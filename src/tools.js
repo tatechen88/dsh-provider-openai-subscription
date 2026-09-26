@@ -16,6 +16,8 @@
  * @module dsh-provider-openai-subscription/tools
  */
 
+import { lossless } from './lossless.js'
+
 /** Prefix every tool shares, so the family is obvious in a tool list. */
 const PREFIX = 'openai_subscription'
 
@@ -36,7 +38,7 @@ export function toolOptions({ operations }) {
         schema: { type: 'object', additionalProperties: true },
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, undefined, 2) }],
       },
-      execute: () => operations.status(),
+      execute: async () => lossless(await operations.status()),
       presentCall: () => ({ card: 'generic', title: 'OpenAI subscription status', kind: 'read' }),
     },
     {
@@ -70,7 +72,7 @@ export function toolOptions({ operations }) {
         schema: { type: 'object', additionalProperties: true },
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, undefined, 2) }],
       },
-      execute: () => operations.logout(),
+      execute: async () => lossless(await operations.logout()),
       presentCall: () => ({ card: 'generic', title: 'Sign out of ChatGPT', kind: 'other' }),
     },
     {
@@ -86,7 +88,7 @@ export function toolOptions({ operations }) {
         schema: { type: 'object', additionalProperties: true },
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, undefined, 2) }],
       },
-      execute: (args) => operations.quota({ refresh: args?.refresh === true }),
+      execute: async (args) => lossless(await operations.quota({ refresh: args?.refresh === true })),
       presentCall: () => ({ card: 'generic', title: 'Subscription quota', kind: 'read' }),
     },
     {
@@ -102,12 +104,12 @@ export function toolOptions({ operations }) {
         schema: { type: 'object', additionalProperties: true },
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, undefined, 2) }],
       },
-      execute: (args, exec) => operations.usage({
+      execute: async (args, exec) => lossless(await operations.usage({
         ...(typeof args?.scope === 'string' ? { scope: args.scope } : {}),
         // The meter keys a session by the id the agent loop sends with each
         // request, which is the session this tool call belongs to.
         ...(typeof exec?.agent?.session?.id === 'string' ? { sessionId: exec.agent.session.id } : {}),
-      }),
+      })),
       presentCall: () => ({ card: 'generic', title: 'Usage and cost', kind: 'read' }),
     },
   ]

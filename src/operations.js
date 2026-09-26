@@ -225,6 +225,12 @@ export function createOperations({
         return { status: 'unavailable', reason: 'the usage meter is not mounted' }
       }
       const view = meter.service.view(sessionId === undefined ? {} : { sessionId })
+      // The estimate's own terms live under `pricing`, not at the top of the
+      // view. Reading them from the wrong level is not cosmetic: the fields came
+      // out `undefined`, and a tool result carrying `undefined` is refused
+      // outright as "not lossless JSON" — the call fails instead of reporting
+      // the numbers it had.
+      const pricing = view.pricing ?? {}
       const slices = { session: view.usage?.session, today: view.usage?.today, month: view.usage?.month }
       const wanted = scope === 'all' ? Object.keys(slices) : [scope]
       const usage = {}
@@ -240,10 +246,10 @@ export function createOperations({
         privacy: view.privacy,
         ...(sessionId === undefined ? {} : { sessionId }),
         usage,
-        estimated: view.estimated,
-        basis: view.basis,
-        unpricedModels: view.unpricedModels,
-        ...(view.band === undefined ? {} : { band: view.band }),
+        estimated: pricing.estimated,
+        basis: pricing.basis,
+        unpricedModels: pricing.unpricedModels,
+        ...(pricing.band === undefined ? {} : { band: pricing.band }),
         balance: view.deepseek,
       }
     },
