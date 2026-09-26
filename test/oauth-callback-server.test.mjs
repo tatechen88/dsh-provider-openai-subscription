@@ -17,15 +17,25 @@ test('callback server receives a valid code and state', async () => {
   }
 })
 
-test('callback server rejects state mismatch', async () => {
+test('a stray mismatched-state probe is answered, not obeyed', async () => {
+  // A prefetch, a scanner, or another process's leftover tab carries the wrong
+  // state. It is not the sign-in failing, so it must not fail the attempt —
+  // only the callback whose state matches may settle anything.
+  const codes = []
   const errors = []
-  const server = await startCallbackServer({ port: 0, path: '/auth/callback', expectedState: 'expected', onCode: () => {}, onError: (error) => errors.push(error) })
+  const server = await startCallbackServer({ port: 0, path: '/auth/callback', expectedState: 'expected', onCode: (code, state) => codes.push({ code, state }), onError: (error) => errors.push(error) })
   try {
     const port = server.ports[0]
-    const response = await fetch(`http://127.0.0.1:${port}/auth/callback?code=abc&state=wrong`)
-    assert.equal(response.status, 400)
-    assert.equal(errors.length, 1)
-    assert.equal(errors[0].code, 'state-mismatch')
+    const probe = await fetch(`http://127.0.0.1:${port}/auth/callback?code=abc&state=wrong`)
+    assert.equal(probe.status, 400)
+    assert.deepEqual(codes, [], 'a probe must not consume a code')
+    assert.deepEqual(errors, [], 'a probe must not fail the attempt')
+
+    // The real callback still works afterwards.
+    const real = await fetch(`http://127.0.0.1:${port}/auth/callback?code=def&state=expected`)
+    assert.equal(real.status, 200)
+    assert.deepEqual(codes, [{ code: 'def', state: 'expected' }])
+    assert.deepEqual(errors, [])
   } finally {
     await server.close()
   }

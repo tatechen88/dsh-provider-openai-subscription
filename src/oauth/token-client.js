@@ -15,12 +15,20 @@ export class OAuthTokenError extends Error {
   /**
    * @param {string} code
    * @param {string} message
-   * @param {ErrorOptions} [options]
+   * @param {ErrorOptions & {oauthError?: string}} [options]
    */
   constructor(code, message, options) {
     super(message, options)
     this.name = 'OAuthTokenError'
     this.code = code
+    // The endpoint's own `error` field ("invalid_grant", "access_denied", …),
+    // when it sent one. The token manager decides reauthentication from it,
+    // because a transport-level code like `token-exchange-failed` covers both a
+    // revoked refresh token and a transient server error, and only the first
+    // should stop the retry loop.
+    if (typeof options?.oauthError === 'string' && options.oauthError.length > 0) {
+      this.oauthError = options.oauthError
+    }
   }
 }
 
@@ -83,10 +91,13 @@ async function postToken({ body, fetchImpl = fetch, timeoutMs = 30_000 }) {
     })
   } catch (error) {
     throw new OAuthTokenError('network', `OAuth token endpoint request failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
-  } finally {
-    clearTimeout(timer)
   }
-  const text = await response.text()
+  // The deadline covers the body too: a server that answers headers and then
+  // trickles the body would otherwise hold the exchange open forever.
+  const text = await Promise.race([
+    response.text(),
+    new Promise((_, reject) => { controller.signal.addEventListener('abort', () => reject(new OAuthTokenError('network', 'OAuth token endpoint body read timed out')), { once: true }) }),
+  ]).finally(() => clearTimeout(timer))
   let data
   try {
     data = JSON.parse(text)
@@ -94,10 +105,11 @@ async function postToken({ body, fetchImpl = fetch, timeoutMs = 30_000 }) {
     throw new OAuthTokenError('invalid-json', `OAuth token endpoint returned non-JSON (HTTP ${response.status})`)
   }
   if (!response.ok) {
+    const oauthError = typeof data === 'object' && data !== null && typeof data.error === 'string' ? data.error : undefined
     const description = typeof data === 'object' && data !== null
       ? [data.error, data.error_description].filter((value) => typeof value === 'string' && value.length > 0).join(': ')
       : ''
-    throw new OAuthTokenError('token-exchange-failed', `OAuth token endpoint rejected the request (HTTP ${response.status}${description ? `: ${description}` : ''})`)
+    throw new OAuthTokenError('token-exchange-failed', `OAuth token endpoint rejected the request (HTTP ${response.status}${description ? `: ${description}` : ''})`, { oauthError })
   }
   return parseTokenResponse(data)
 }

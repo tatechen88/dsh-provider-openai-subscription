@@ -74,6 +74,9 @@ export class OAuthAttempt {
     if (!repository || typeof repository.write !== 'function') throw new TypeError('OAuthAttempt requires repository.write')
     if (typeof exchange !== 'function') throw new TypeError('OAuthAttempt requires exchange')
     this.id = createAttemptId()
+    // When this attempt began, so a caller holding two pending ones (an unusual
+    // race across loopback and device) can name the one started last.
+    this.createdAt = now()
     this.clientId = clientId
     this.repository = repository
     this.exchange = exchange
@@ -280,10 +283,20 @@ export class OAuthAttemptManager {
 
   /**
    * Create and start a new attempt.
+   *
+   * Settled attempts are pruned here rather than at settlement: nothing
+   * observes that moment reliably (a failure can settle from a timer or a
+   * socket), while the next sign-in is a natural point to forget them.
+   *
    * @param {object} [overrides]
    * @returns {Promise<{attemptId: string, url: string, redirectUri: string}>}
    */
   async create(overrides = {}) {
+    for (const [id, attempt] of this.attempts) {
+      if (attempt.status !== 'created' && attempt.status !== 'waiting' && attempt.status !== 'exchanging') {
+        this.attempts.delete(id)
+      }
+    }
     const attempt = new OAuthAttempt({ ...this.options, ...overrides })
     this.attempts.set(attempt.id, attempt)
     try {

@@ -47,6 +47,9 @@ export class DeviceOAuthAttempt {
     if (!repository || typeof repository.write !== 'function') throw new TypeError('DeviceOAuthAttempt requires repository.write')
     if (typeof exchange !== 'function') throw new TypeError('DeviceOAuthAttempt requires exchange')
     this.id = randomBytes(16).toString('hex')
+    // When this attempt began, so a caller holding two pending ones (an unusual
+    // race across loopback and device) can name the one started last.
+    this.createdAt = Date.now()
     this.clientId = clientId
     this.repository = repository
     this.exchange = exchange
@@ -208,10 +211,20 @@ export class DeviceOAuthAttemptManager {
 
   /**
    * Create and start a device attempt.
+   *
+   * Settled attempts are pruned here rather than at settlement, mirroring the
+   * loopback manager: nothing observes that moment reliably, while the next
+   * sign-in is a natural point to forget them.
+   *
    * @param {object} [overrides]
    * @returns {Promise<{attemptId: string, verificationUri: string, userCode: string, intervalSeconds: number, expiresInSeconds: number}>}
    */
   async create(overrides = {}) {
+    for (const [id, attempt] of this.attempts) {
+      if (attempt.status !== 'created' && attempt.status !== 'waiting' && attempt.status !== 'exchanging') {
+        this.attempts.delete(id)
+      }
+    }
     const attempt = new DeviceOAuthAttempt({ ...this.options, ...overrides })
     this.attempts.set(attempt.id, attempt)
     try {

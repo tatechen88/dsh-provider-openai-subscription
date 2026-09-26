@@ -9,6 +9,7 @@
  */
 
 import { PROVIDER_ID } from '../constants.js'
+import { translatorFor } from '../i18n.js'
 import { attributionHeaders } from './attribution.js'
 import { buildResponsesRequest } from './request-builder.js'
 import { ResponsesEventTranslator } from './event-translator.js'
@@ -51,9 +52,10 @@ export class OpenAIProviderError extends Error {
  * minutes or five days.
  *
  * @param {string} detail - the response body as read.
+ * @param {(key: string, params?: Record<string, string|number>) => string} t - translator.
  * @returns {string|undefined} a sentence for the human, when this is that error.
  */
-function describeUsageLimit(detail) {
+function describeUsageLimit(detail, t) {
   let parsed
   try {
     parsed = JSON.parse(detail)
@@ -65,18 +67,23 @@ function describeUsageLimit(detail) {
   if (error.type !== 'usage_limit_reached' && typeof error.resets_in_seconds !== 'number') return undefined
 
   const windowMinutes = typeof error.limit_window_minutes === 'number' ? error.limit_window_minutes : undefined
-  const window = windowMinutes === undefined ? 'usage' : `${String(Math.round(windowMinutes / 60))}-hour`
-  const plan = typeof error.plan_type === 'string' && error.plan_type.length > 0 ? `, plan: ${error.plan_type}` : ''
+  // "usage" for a body that names no window: the sentence still says something.
+  const window = windowMinutes === undefined ? 'usage' : t('adapter.error.usage-limit.window', { hours: String(Math.round(windowMinutes / 60)) })
+  const plan = typeof error.plan_type === 'string' && error.plan_type.length > 0 ? t('adapter.error.usage-limit.plan', { plan: error.plan_type }) : ''
 
   const seconds = typeof error.resets_in_seconds === 'number' ? error.resets_in_seconds : undefined
   const at = typeof error.resets_at === 'number' ? new Date(error.resets_at * 1000) : undefined
   const when = []
-  if (seconds !== undefined && seconds > 0) when.push(`resets in about ${String(Math.max(1, Math.round(seconds / 60)))} minute(s)`)
-  else if (at !== undefined) when.push('has already reset, so a retry should work')
-  if (at !== undefined && !Number.isNaN(at.getTime())) when.push(`at ${at.toLocaleTimeString()}`)
+  if (seconds !== undefined && seconds > 0) when.push(t('adapter.error.usage-limit.resets-in', { minutes: String(Math.max(1, Math.round(seconds / 60))) }))
+  else if (at !== undefined) when.push(t('adapter.error.usage-limit.already-reset'))
+  else when.push(t('adapter.error.usage-limit.unreported'))
+  if (at !== undefined && !Number.isNaN(at.getTime())) when.push(t('adapter.error.usage-limit.at', { time: at.toLocaleTimeString() }))
 
-  const timing = when.length === 0 ? 'its reset time was not reported' : when.join(' ')
-  return `ChatGPT subscription ${window} usage limit reached${plan}: it ${timing}. Use another model until then; openai_subscription_quota reports every window.`
+  return t('adapter.error.usage-limit', {
+    window,
+    plan,
+    timing: when.join(' '),
+  })
 }
 
 /**
@@ -91,8 +98,11 @@ export class OpenAISubscriptionAdapter {
    * @param {string} [options.defaultModel]
    * @param {string} [options.reasoningEffort]
    * @param {() => number} [options.now]
+   * @param {(key: string, params?: Record<string, string|number>) => string} [options.t] -
+   *   translator for the sentences a person reads; English by default, because a
+   *   test or a headless caller has no language to follow.
    */
-  constructor({ getAccess, fetchImpl = fetch, timeoutMs = 120_000, defaultModel = '', reasoningEffort = '', now = Date.now }) {
+  constructor({ getAccess, fetchImpl = fetch, timeoutMs = 120_000, defaultModel = '', reasoningEffort = '', now = Date.now, t = translatorFor('en') }) {
     if (typeof getAccess !== 'function') throw new TypeError('OpenAISubscriptionAdapter requires getAccess')
     this.getAccess = getAccess
     this.fetchImpl = fetchImpl
@@ -100,6 +110,7 @@ export class OpenAISubscriptionAdapter {
     this.defaultModel = defaultModel
     this.reasoningEffort = reasoningEffort
     this.now = now
+    this.t = t
     /** @type {Array<{id: string, name?: string, description?: string, contextWindow?: number, maxContextWindow?: number, reasoning?: object}>|undefined} */
     this.catalog = undefined
     this.catalogAt = 0
@@ -148,13 +159,14 @@ export class OpenAISubscriptionAdapter {
 
   /** Fetch (and cache) the full catalog, including reasoning/context metadata. */
   async #catalog(signal) {
-    const now = this.now()
-    if (this.catalog === undefined || now - this.catalogAt >= MODEL_CATALOG_TTL_MS) {
-      // A cancelled read must not replace the cached catalog, so the fetch
-      // result is only adopted after it resolves.
+    // A cancelled read must not replace the cached catalog, so the fetch result
+    // is only adopted after it resolves — and the freshness stamp is taken
+    // *then*, because stamping the moment the read started lets a slow fetch
+    // burn its own TTL.
+    if (this.catalog === undefined || this.now() - this.catalogAt >= MODEL_CATALOG_TTL_MS) {
       const catalog = await fetchModelCatalog({ getAccess: this.getAccess, fetchImpl: this.fetchImpl, signal })
       this.catalog = catalog
-      this.catalogAt = now
+      this.catalogAt = this.now()
     }
     return this.catalog
   }
@@ -260,12 +272,13 @@ export class OpenAISubscriptionAdapter {
         redirect: 'error',
       })
     } catch (error) {
-      throw new OpenAIProviderError('network', `OpenAI Responses request failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
-    } finally {
-      clearTimeout(timer)
+      throw new OpenAIProviderError('network', this.t('adapter.error.network', { message: error instanceof Error ? error.message : String(error) }), { cause: error })
     }
+    // The deadline is NOT cleared here: it covers the SSE body too. Clearing it
+    // when the headers arrived left a stalled mid-stream connection hanging
+    // until the consumer gave up, which for an agent loop is never.
     if (response.status === 401 || response.status === 403) {
-      throw new OpenAIProviderError('unauthorized', `OpenAI subscription credential was rejected; sign in again (HTTP ${response.status})`)
+      throw new OpenAIProviderError('unauthorized', this.t('adapter.error.unauthorized', { status: String(response.status) }))
     }
     if (!response.ok) {
       let detail = ''
@@ -276,15 +289,20 @@ export class OpenAISubscriptionAdapter {
       }
       // An exhausted subscription window is not a malformed request, so the
       // request dump that helps diagnose one would only bury the answer here.
-      const limit = response.status === 429 ? describeUsageLimit(detail) : undefined
+      const limit = response.status === 429 ? describeUsageLimit(detail, this.t) : undefined
       if (limit !== undefined) throw new OpenAIProviderError('usage-limit-reached', limit)
-      throw new OpenAIProviderError('upstream-error', `OpenAI Responses returned HTTP ${response.status}${detail.length > 0 ? `: ${detail}` : ''} | request: ${bodyJson.slice(0, 800)}`)
+      throw new OpenAIProviderError('upstream-error', this.t('adapter.error.upstream', {
+        status: String(response.status),
+        detail: detail.length > 0 ? `: ${detail}` : '',
+        request: bodyJson.slice(0, 800),
+      }))
     }
 
     const parser = new SseParser()
     const translator = new ResponsesEventTranslator()
     const reader = response.body?.getReader()
-    if (reader === undefined) throw new OpenAIProviderError('empty-body', 'OpenAI Responses returned no body')
+    if (reader === undefined) throw new OpenAIProviderError('empty-body', this.t('adapter.error.empty-body'))
+    let completed = false
     try {
       while (true) {
         const { done, value } = await reader.read()
@@ -310,7 +328,18 @@ export class OpenAISubscriptionAdapter {
         }
       }
       for (const chunk of translator.end()) yield chunk
+      completed = true
     } finally {
+      // The read is over, one way or another: stop the deadline, and close the
+      // upstream body when the consumer walked away early — releasing the lock
+      // alone keeps the socket open until the server tires of it.
+      clearTimeout(timer)
+      if (!completed) {
+        await reader.cancel().catch(() => {
+          // The consumer already stopped caring; a failing teardown of an
+          // abandoned stream cannot change the result it asked for.
+        })
+      }
       reader.releaseLock?.()
     }
   }

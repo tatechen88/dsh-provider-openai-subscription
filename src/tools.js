@@ -7,6 +7,11 @@
  * a login nobody completes. Each description therefore says what the call does,
  * what the human must do, and what happens if they take their time.
  *
+ * Every word a person reads comes from the translator the runtime hands in,
+ * which resolves the deployment's current language once per activation — the
+ * same preference the harness's own Language row writes. A language change
+ * therefore takes effect the next time this plugin activates.
+ *
  * The definitions are returned as option bags and shaped by the harness's own
  * `defineTool`, resolved at activation: this plugin is installed from a local
  * path, so it must not import a harness package it cannot resolve, and a
@@ -17,6 +22,7 @@
  */
 
 import { lossless } from './lossless.js'
+import { translatorFor } from './i18n.js'
 
 /** Prefix every tool shares, so the family is obvious in a tool list. */
 const PREFIX = 'openai_subscription'
@@ -26,62 +32,70 @@ const PREFIX = 'openai_subscription'
  *
  * @param {object} input
  * @param {object} input.operations - see {@link module:dsh-provider-openai-subscription/operations}.
+ * @param {(key: string, params?: Record<string, string|number>) => string} [input.t] -
+ *   translator for the words a person reads; English by default, so tests and
+ *   headless callers stay deterministic.
  * @returns {object[]} option bags for the harness `defineTool`.
  */
-export function toolOptions({ operations }) {
+export function toolOptions({ operations, t }) {
+  const translate = t ?? translatorFor('en')
   return [
     {
       name: `${PREFIX}_status`,
-      description: 'Report the OpenAI subscription sign-in state: whether a ChatGPT credential is stored, which account it belongs to, when it expires, and whether a sign-in is currently waiting for the user to finish in a browser. Read-only; call it before and after a login instead of guessing.',
+      description: translate('tool.status.description'),
       parameters: {},
       output: {
         schema: { type: 'object', additionalProperties: true },
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, undefined, 2) }],
       },
       execute: async () => lossless(await operations.status()),
-      presentCall: () => ({ card: 'generic', title: 'OpenAI subscription status', kind: 'read' }),
+      presentCall: () => ({ card: 'generic', title: translate('tool.status.title'), kind: 'read' }),
     },
     {
       name: `${PREFIX}_login`,
-      description: 'Start signing in to a ChatGPT subscription so its models can be used. Returns a link the user must open in their own browser; the call waits briefly for them to finish and then reports either the finished sign-in or that it is still pending. A pending sign-in keeps running, so continue with the status tool rather than starting a second one.',
+      description: translate('tool.login.description'),
       parameters: {
         method: {
           type: 'string',
-          description: "How the user signs in. 'oauth' (default) opens a link in their browser; 'device' shows a code they enter on another device, for machines with no browser.",
+          description: translate('tool.login.param.method'),
         },
         wait_seconds: {
           type: 'number',
-          description: 'How long to wait for the sign-in to finish before reporting it pending. Defaults to 60.',
+          description: translate('tool.login.param.wait_seconds'),
         },
       },
       output: {
         schema: { type: 'object', additionalProperties: true },
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, undefined, 2) }],
       },
-      execute: (args) => operations.login({
+      // Every tool result crosses the lossless boundary, this one included: a
+      // login reply carries attempt state and credential facts copied straight
+      // from live objects, and one `undefined` field in them would fail the
+      // whole call.
+      execute: async (args) => lossless(await operations.login({
         ...(typeof args?.method === 'string' ? { method: args.method } : {}),
         ...(typeof args?.wait_seconds === 'number' ? { waitMs: Math.max(1, Math.min(600, args.wait_seconds)) * 1000 } : {}),
-      }),
-      presentCall: () => ({ card: 'generic', title: 'Sign in to ChatGPT', kind: 'other' }),
+      })),
+      presentCall: () => ({ card: 'generic', title: translate('tool.login.title'), kind: 'other' }),
     },
     {
       name: `${PREFIX}_logout`,
-      description: 'Forget the stored ChatGPT credential and stop any sign-in that is still waiting. The subscription itself is untouched — this only removes the local record, and signing in again is a new login.',
+      description: translate('tool.logout.description'),
       parameters: {},
       output: {
         schema: { type: 'object', additionalProperties: true },
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, undefined, 2) }],
       },
       execute: async () => lossless(await operations.logout()),
-      presentCall: () => ({ card: 'generic', title: 'Sign out of ChatGPT', kind: 'other' }),
+      presentCall: () => ({ card: 'generic', title: translate('tool.logout.title'), kind: 'other' }),
     },
     {
       name: `${PREFIX}_quota`,
-      description: 'Report how much of the ChatGPT subscription quota is left: the rate-limit windows the account reports, each with the percentage used, when it resets, and whether it is exhausted. This is the subscription\'s own limit, not a money balance.',
+      description: translate('tool.quota.description'),
       parameters: {
         refresh: {
           type: 'boolean',
-          description: 'Ask the vendor now instead of answering from the cached reading.',
+          description: translate('tool.quota.param.refresh'),
         },
       },
       output: {
@@ -89,15 +103,15 @@ export function toolOptions({ operations }) {
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, undefined, 2) }],
       },
       execute: async (args) => lossless(await operations.quota({ refresh: args?.refresh === true })),
-      presentCall: () => ({ card: 'generic', title: 'Subscription quota', kind: 'read' }),
+      presentCall: () => ({ card: 'generic', title: translate('tool.quota.title'), kind: 'read' }),
     },
     {
       name: 'usage_meter_report',
-      description: 'Report what this deployment has called and what it cost: tokens and estimated amounts for today, this month, and optionally the current session, plus any models that have no price (those calls look free and are not). Amounts are estimates priced at request start, and the report says which currency they are in.',
+      description: translate('tool.usage.description'),
       parameters: {
         scope: {
           type: 'string',
-          description: "Which slice to report: 'today' (default), 'month', 'session', or 'all'.",
+          description: translate('tool.usage.param.scope'),
         },
       },
       output: {
@@ -110,7 +124,7 @@ export function toolOptions({ operations }) {
         // request, which is the session this tool call belongs to.
         ...(typeof exec?.agent?.session?.id === 'string' ? { sessionId: exec.agent.session.id } : {}),
       })),
-      presentCall: () => ({ card: 'generic', title: 'Usage and cost', kind: 'read' }),
+      presentCall: () => ({ card: 'generic', title: translate('tool.usage.title'), kind: 'read' }),
     },
   ]
 }

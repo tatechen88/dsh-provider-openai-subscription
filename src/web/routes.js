@@ -17,6 +17,7 @@
  */
 
 import { ROUTE_PREFIX } from '../constants.js'
+import { translatorFor } from '../i18n.js'
 
 /**
  * Write one JSON response.
@@ -76,10 +77,13 @@ export function safeError(error) {
  *   this request. The Web runtime always supplies one and owns the no-fence
  *   fallback inside it, so omitting this is for callers that judge requests
  *   themselves.
+ * @param {(key: string, params?: Record<string, string|number>) => string} [deps.t] -
+ *   translator for the two words a person reads here; English by default.
  * @returns {() => void} disposer releasing every route.
  */
 export function mountRoutes(host, deps) {
   const disposers = []
+  const t = deps.t ?? translatorFor('en')
 
   const authorize = typeof deps.authorize === 'function' ? deps.authorize : (request) => (sameOrigin(request) ? undefined : 403)
 
@@ -108,7 +112,7 @@ export function mountRoutes(host, deps) {
         if (rejection !== undefined) {
           sendJson(response, rejection, {
             ok: false,
-            error: rejection === 401 ? 'authentication required' : 'untrusted origin',
+            error: rejection === 401 ? t('route.error.auth') : t('route.error.origin'),
           })
           return
         }

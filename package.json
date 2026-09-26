@@ -1,6 +1,6 @@
 {
   "name": "dsh-provider-openai-subscription",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Host-only OpenAI/ChatGPT subscription provider for DeepSeek Harness: a model adapter, an authorization flow and agent tools, with no browser half. Composition and bootstrap never block DSH startup; a failed activation is reported through DSH's own optional-entry audit.",
   "type": "module",
   "main": "src/index.js",

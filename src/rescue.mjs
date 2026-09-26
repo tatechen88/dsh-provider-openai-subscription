@@ -197,11 +197,15 @@ async function commandStatus() {
   const switchPath = killSwitchPath()
   const disabled = await exists(switchPath)
   const stateDir = pluginStateDir()
+  // Snapshots live in their own directory, written by the `snapshot` command as
+  // `openai-subscription-<time>-<rand>.json`. The plugin-state root holds the
+  // runtime record and the meter settings, which are not snapshots — counting
+  // those tells an operator about backups that do not exist.
   let snapshots = []
   try {
-    snapshots = await readdir(stateDir)
+    snapshots = await readdir(join(stateDir, 'openai-subscription-snapshots'))
   } catch {
-    // state dir may not exist yet
+    // the snapshot dir may not exist yet
   }
   const activationFiles = snapshots
     .filter((entry) => entry.startsWith('openai-subscription-') && entry.endsWith('.json'))
@@ -510,7 +514,10 @@ async function commandCanary(profilePackage) {
     next.dsh = { ...(next.dsh || {}), profile: { ...(next.dsh?.profile || {}), bundles: [...(next.dsh?.profile?.bundles || []), PACKAGE_NAME] } }
     await writeFile(shadowPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
     await commandDoctor(shadowPath)
-    print(`canary: shadow profile prepared at ${shadowDir}`)
+    // The shadow is a scratch copy this command deletes on its way out, so the
+    // path is reported as checked-and-removed: pointing at a directory that is
+    // gone by the time the line is read sends someone hunting for nothing.
+    print(`canary: shadow profile checked at ${shadowDir} (scratch copy, removed afterwards)`)
     print('canary: static checks passed; no real profile was modified.')
   } finally {
     await rm(shadowDir, { recursive: true, force: true })
@@ -699,15 +706,23 @@ async function commandRollback(dir, target) {
     process.exitCode = 2
     return
   }
-  await writeFile(target, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8')
-  print(`rollback: restored ${newest} to ${target}.`)
-  // The activation layer is part of the snapshot because losing it is the most
-  // common way a profile stops composing; restoring package.json alone would
-  // leave the operator believing the rollback covered it.
-  const patchPath = typeof snapshot.patchPath === 'string' ? snapshot.patchPath : undefined
-  if (typeof snapshot.patch === 'string' && patchPath !== undefined) {
-    await writeFile(patchPath, snapshot.patch, 'utf8')
-    print(`rollback: restored the activation layer to ${patchPath}.`)
+  // The marker is what the refusal above keys on, so it has to exist while the
+  // restore runs: without it the guard could never fire, and two rollbacks
+  // would happily write the same files at once.
+  await writeFile(marker, `${new Date().toISOString()}\n`, 'utf8')
+  try {
+    await writeFile(target, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8')
+    print(`rollback: restored ${newest} to ${target}.`)
+    // The activation layer is part of the snapshot because losing it is the most
+    // common way a profile stops composing; restoring package.json alone would
+    // leave the operator believing the rollback covered it.
+    const patchPath = typeof snapshot.patchPath === 'string' ? snapshot.patchPath : undefined
+    if (typeof snapshot.patch === 'string' && patchPath !== undefined) {
+      await writeFile(patchPath, snapshot.patch, 'utf8')
+      print(`rollback: restored the activation layer to ${patchPath}.`)
+    }
+  } finally {
+    await rm(marker, { force: true }).catch(() => {})
   }
   // Mark completion adjacent to the snapshot so operators can verify.
   await writeFile(join(dir, `${newest}.restored`), `${new Date().toISOString()}\n`, 'utf8')

@@ -11,6 +11,20 @@
 > [`.scratch/client-free-rebuild/spec.md`](.scratch/client-free-rebuild/spec.md)。
 > 下文较早的段落描述的是 1.5.0 的行为，保留作为历史与排障线索。
 
+## 2.0.1（双语 + 审查修复）
+
+- **语言**：`src/i18n.js` 两套词典（en/zh），`resolveLanguage` 在激活时解析一次
+  （DSH 的 `locale` 设置偏好 → 进程语言 → en），翻译器下发给 tools/operations/routes/adapter；
+  机器值保持英文。生效时机是**下一次激活**；当前语言记录在运行时记录的 `language` 字段。
+- **审查修复**（独立 subagent 全量审查 15 条，采纳 12 条，2 条经核实为非缺陷）：
+  token 端点的 `invalid_grant` 现在随 `oauthError` 传递 → `needsReauth`（此前被吊销的 refresh token 会无限重试）；
+  运行时记录写入改为串行队列 + 唯一临时文件（`stoppedAt` 不再可能被拆卸期未 await 的写入盖掉）；
+  错误 state 的回调探测只回 400、不再杀死等待中的登录；SSE 流全程受超时约束且消费者提前离开时
+  `reader.cancel()`；login 工具也过 lossless；rescue 的 rollback 标记 / canary 文案 / status 快照计数修正；
+  attempt 结算后按次清理、双挂起取新；token 端点 body 读取限时；模型目录 TTL 从拉取完成起算。
+- 两条**不修**的审查项：volatile 忽略 `state`（loader 对非 volatile 变更本就重挂条目，无需插件处理）；
+  CHANGELOG「21 条」与 routes.js「twenty-two」（22 条存在、删 21 留 1，两处口径一致）。
+
 ## 2.0.0 发布（P4–P7，本轮）
 
 > **P8 已解决（重启即正常）**：打包版 Desktop 重启后与 npm 布局表现一致——

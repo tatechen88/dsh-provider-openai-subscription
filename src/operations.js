@@ -15,6 +15,7 @@
  */
 
 import { PROVIDER_ID } from './constants.js'
+import { translatorFor } from './i18n.js'
 
 /** How long a tool waits for a human to finish a login before reporting it pending. */
 export const DEFAULT_LOGIN_WAIT_MS = 60_000
@@ -59,6 +60,7 @@ export function createOperations({
   legacy,
   loginWaitMs = DEFAULT_LOGIN_WAIT_MS,
   sleep = delay,
+  t = translatorFor('en'),
 }) {
   /**
    * The attempt a surface would resume: the newest one that has not settled.
@@ -66,7 +68,10 @@ export function createOperations({
    */
   const pendingAttempt = () => {
     const candidates = [attempts?.pending?.(), devices?.pending?.()].filter((entry) => entry !== undefined)
-    return candidates[0]
+    if (candidates.length < 2) return candidates[0]
+    // Both kinds can be waiting only in an unusual race; the one started last is
+    // the one a caller means when they say "the login".
+    return (candidates[1].createdAt ?? 0) > (candidates[0].createdAt ?? 0) ? candidates[1] : candidates[0]
   }
 
   const loginState = () => {
@@ -115,7 +120,7 @@ export function createOperations({
      */
     async login({ method, waitMs } = {}) {
       if (authorization === undefined || typeof authorization.begin !== 'function') {
-        return { status: 'unavailable', reason: 'no authorization service is mounted in this deployment' }
+        return { status: 'unavailable', reason: t('op.login.no-seam') }
       }
       if (authorization.describe?.(authorizationKey)?.inFlight === true) {
         const attempt = pendingAttempt()
@@ -130,7 +135,7 @@ export function createOperations({
           notify: (notice) => notices.push(notice),
           // A tool call has no way to ask; a method that needs an answer is a
           // method this surface must not have chosen.
-          prompt: () => Promise.reject(new Error('this surface cannot ask a question; use a method that needs no answer')),
+          prompt: () => Promise.reject(new Error(t('op.login.prompt-refused'))),
         },
       })
       const outcome = begun.then(
@@ -147,7 +152,7 @@ export function createOperations({
           status: 'pending',
           notices,
           ...(attempt === undefined ? {} : { attempt: attempt.toJSON() }),
-          hint: 'open the link above, then call this again or check the status',
+          hint: t('op.login.hint'),
         }
       }
       if (raced.error !== undefined) {

@@ -139,7 +139,10 @@ test('rescue canary prepares a static shadow profile', async () => {
   const packagePath = join(dir, 'package.json')
   await writeFile(packagePath, JSON.stringify({ name: 'profile', dependencies: {} }))
   const { stdout } = await runRescue(['canary', '--profile', packagePath], {})
-  assert.match(stdout, /shadow profile prepared/)
+  // The shadow is a scratch copy the command deletes on its way out, and the
+  // line must say so: a path that is already gone sends someone hunting for it.
+  assert.match(stdout, /shadow profile checked/)
+  assert.match(stdout, /removed afterwards/)
   assert.match(stdout, /static checks passed/)
   // Real profile is untouched.
   const after = JSON.parse(await readFile(packagePath, 'utf8'))

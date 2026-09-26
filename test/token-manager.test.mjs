@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { TokenManager, TokenManagerError, isTerminalRefreshCode } from '../src/credentials/token-manager.js'
+import { OAuthTokenError } from '../src/oauth/token-client.js'
 import { CredentialRepository } from '../src/credentials/repository.js'
 import { parseGrant } from '../src/credentials/schema.js'
 import { CREDENTIAL_KEY } from '../src/constants.js'
@@ -100,6 +101,35 @@ test('terminal refresh error marks needsReauth', async () => {
   await assert.rejects(manager.refresh(), (error) => error instanceof TokenManagerError && error.code === 'invalid_grant')
   const stored = await repository.read()
   assert.equal(stored.needsReauth, true)
+})
+
+test('the endpoint\'s own invalid_grant marks needsReauth even on a transport error', async () => {
+  // The wired refresh path throws the token client's error, whose transport code
+  // covers both a revoked refresh token and a transient server error. Only the
+  // endpoint's own `error` field separates them, so the manager reads it: a
+  // revoked token must stop the retry loop instead of feeding it forever.
+  const repository = repo(grant({ expires: now() - 1 }))
+  const manager = new TokenManager({
+    repository,
+    now,
+    refreshFn: async () => {
+      throw new OAuthTokenError('token-exchange-failed', 'OAuth token endpoint rejected the request (HTTP 400: invalid_grant)', { oauthError: 'invalid_grant' })
+    },
+  })
+  await assert.rejects(manager.refresh(), (error) => error.code === 'token-exchange-failed')
+  assert.equal((await repository.read()).needsReauth, true)
+
+  // A transport error with no endpoint verdict stays retryable.
+  const transient = repo(grant({ expires: now() - 1 }))
+  const retrying = new TokenManager({
+    repository: transient,
+    now,
+    refreshFn: async () => {
+      throw new OAuthTokenError('token-exchange-failed', 'OAuth token endpoint rejected the request (HTTP 503)')
+    },
+  })
+  await assert.rejects(retrying.refresh(), (error) => error.code === 'token-exchange-failed')
+  assert.equal((await transient.read()).needsReauth, undefined)
 })
 
 test('transient refresh error does not mark needsReauth', async () => {

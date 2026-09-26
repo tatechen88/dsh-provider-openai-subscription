@@ -16,6 +16,7 @@ import { loadHarnessModule } from './dsh-modules.js'
 import { createOperations } from './operations.js'
 import { toolOptions } from './tools.js'
 import { writeRuntimeRecord } from './runtime-record.js'
+import { resolveLanguage, translatorFor } from './i18n.js'
 import { ownVersion } from './provider/attribution.js'
 import { createAuthorizationFlow } from './oauth/authorization-flow.js'
 import { readConflictReport } from './conflicts.js'
@@ -121,6 +122,16 @@ export async function applyRuntime(ctx, config, options = {}) {
   // can simply mount whenever one appears (see the injection below).
   const webServer = typeof ctx?.get === 'function' ? ctx.get('webServer') : undefined
 
+  // Which language to speak, resolved once: tool descriptions are registered
+  // here and cannot be re-worded in place, so a language change lands on the
+  // next activation. The harness's own preference wins when it is readable,
+  // the process locale otherwise.
+  const language = await resolveLanguage({
+    settings: typeof ctx?.get === 'function' ? ctx.get('settings') : undefined,
+    ...(options.processLocale === undefined ? {} : { processLocale: options.processLocale }),
+  })
+  const t = translatorFor(language)
+
   const report = await readConflictReport(ctx)
   if (!report.ok) {
     const conflicts = [...report.providerConflicts, ...report.directoryConflicts, ...report.namespaceConflicts]
@@ -174,6 +185,7 @@ export async function applyRuntime(ctx, config, options = {}) {
     getAccess: () => tokenManager.getAccessSnapshot(),
     defaultModel: config.provider?.defaultModel || '',
     reasoningEffort: config.provider?.reasoningEffort || '',
+    t,
   })
   const meter = await createMeter({
     ctx,
@@ -202,6 +214,7 @@ export async function applyRuntime(ctx, config, options = {}) {
     config,
     meter,
     legacy,
+    t,
   })
   // The harness's own tool helper, resolved through the shared anchors: this
   // plugin is installed from a local path, so it must not import a package it
@@ -220,6 +233,7 @@ export async function applyRuntime(ctx, config, options = {}) {
     provider: PROVIDER_ID,
     settingsNamespace: SETTINGS_NAMESPACE,
     configSchema: CONFIG_SCHEMA_KIND,
+    language,
     ...(CONFIG_SCHEMA_PROBLEM === undefined ? {} : { configSchemaProblem: CONFIG_SCHEMA_PROBLEM }),
     clientId: clientId.length === 0 ? 'unset' : 'set',
     routes: [`${ROUTE_PREFIX}/status`],
@@ -280,7 +294,7 @@ export async function applyRuntime(ctx, config, options = {}) {
     // The authorizer resolves the deployment fence per request; nothing about a
     // fence is captured here (see {@link connectionTrust}).
     const authorize = connectionTrust(ctx)
-    const dispose = mountRoutes({ webServer: server }, { operations, authorize })
+    const dispose = mountRoutes({ webServer: server }, { operations, authorize, t })
     return () => {
       dispose()
       balance.clear()
@@ -378,7 +392,7 @@ export async function applyRuntime(ctx, config, options = {}) {
         logger?.warn?.(`${PACKAGE_NAME}: the harness tool helper is unreachable; tools are not registered`)
         return () => {}
       }
-      const options = toolOptions({ operations })
+      const options = toolOptions({ operations, t })
       const disposers = options.map((entry) => service.register(defineTool(entry)))
       record.tools = { registered: options.map((entry) => entry.name) }
       refreshRecord()

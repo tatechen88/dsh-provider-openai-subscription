@@ -98,9 +98,13 @@ export async function startCallbackServer({ port, path, expectedState, onCode, o
       return
     }
     if (state !== expectedState) {
+      // A stray probe — a prefetch, a scanner, another process's leftover tab —
+      // carries a wrong or absent state. It is not the sign-in failing, so it
+      // must not fail the attempt: answer it and stay waiting, exactly like the
+      // missing-code branch above. Only the real callback, whose state matches,
+      // is allowed to settle anything.
       response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
       response.end(ERROR_HTML('State mismatch'))
-      onError(new CallbackServerError('state-mismatch', 'OAuth callback state mismatch'))
       return
     }
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })

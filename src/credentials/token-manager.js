@@ -3,10 +3,11 @@
  *
  * Reads grants through the repository, refreshes near-expiry access tokens,
  * and single-flights concurrent refreshes so one refresh token is never
- * consumed twice in the same process.  Terminal refresh errors must be mapped
- * by the caller-provided refresh function to a thrown
- * {@link TokenManagerError} with a stable code; the manager persists
- * `needsReauth` for terminal codes.
+ * consumed twice in the same process.  Terminal refresh errors — the endpoint's
+ * own `invalid_grant` and its siblings, whether the refresh function rethrows
+ * them as a {@link TokenManagerError} with that code or leaves them on the
+ * `oauthError` field of its own error type — are persisted as `needsReauth`, so
+ * a revoked token stops the retry loop instead of feeding it forever.
  *
  * @module dsh-provider-openai-subscription/credentials/token-manager
  */
@@ -131,7 +132,13 @@ export class TokenManager {
     try {
       fresh = await this.refreshFn(current.refresh, signal)
     } catch (error) {
-      if (error instanceof TokenManagerError && isTerminalRefreshCode(error.code)) {
+      // Terminal means "retrying cannot help": the endpoint said invalid_grant
+      // (or a sibling), whether the refresh function surfaced that as one of our
+      // own errors or as the endpoint's own `error` field riding on a transport
+      // error. Anything else — a timeout, a 500 — stays retryable.
+      const terminal = (error instanceof TokenManagerError && isTerminalRefreshCode(error.code))
+        || isTerminalRefreshCode(/** @type {{oauthError?: unknown}} */ (error)?.oauthError)
+      if (terminal) {
         await this.repository.mutate(async (grant) => {
           if (grant === undefined || grant.refresh !== current.refresh) return grant
           return { ...grant, needsReauth: true }
