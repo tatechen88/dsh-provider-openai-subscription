@@ -1,6 +1,6 @@
 # Spec: 纯宿主插件重建（移除浏览器半边）
 
-Status: in_progress（P0–P1 完成）
+Status: done（P0–P7 全部完成，2.0.0 已发布）
 Type: task
 Created: 2026-09-26
 Supersedes: `.scratch/dsh-0.1.7-desktop/spec.md`（那份的接入与兼容轮已经落地；本文件是**重建**的依据）
@@ -144,10 +144,10 @@ namespace 只由**条目自己的 Config schema 投影**产生；我们的 `Conf
 | P1 | 剥离客户端：删 `client/`、`dsh.client`、`exports`、`files`；删 7 个客户端测试；`doctor` 改为断言"无客户端"；web 门禁反向；新增守卫测试 | ✅ |
 | P2 | 原生配置面（含 spike S1） | ✅（行可见；表单只读，配置以 patch 为准） |
 | P3 | 登录路径（含 spike S2） | ✅ |
-| P4 | 计量与额度的工具化/CLI 化 | 待办 |
-| P5 | 路由收口 | 待办 |
-| P6 | 门禁重建 | 待办 |
-| P7 | 发布 2.0.0 | 待办 |
+| P4 | 计量与额度的工具化/CLI 化 | ✅（`openai_subscription_quota`、`usage_meter_report`） |
+| P5 | 路由收口 | ✅（22 → 1，只读 status） |
+| P6 | 门禁重建 | ✅（单测 393、组合 14 项、web/headless PASS） |
+| P7 | 发布 2.0.0 | ✅（版本、CHANGELOG、README/docs 重写、重装回 Desktop） |
 
 ## 8. 验收（最终）
 

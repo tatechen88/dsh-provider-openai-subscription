@@ -1,14 +1,41 @@
 # HANDOFF
 
 > 交接说明：给接手本仓库的下一个 agent 或新 session。最后更新 2026-09-26。
+>
+> **当前状态：2.0.0，纯宿主插件，重建已完成（P1–P7）。** 这个仓库里**没有也不会有浏览器半边**：
+> 侧边栏指示器、用量卡片、自带设置页都已删除，登录/额度/用量由 agent 工具与 DSH 原生授权 seam 承载。
+> 为什么这么做、以及每一轮改了什么，看下面的分轮记录与 [`.scratch/client-free-rebuild/spec.md`](.scratch/client-free-rebuild/spec.md)。
+> 下文较早的段落描述的是 1.5.0 的行为，保留作为历史与排障线索。
 
-> **当前状态：正在按「纯宿主插件」重建（P1 已完成）。** 浏览器半边已删除，见
-> 「客户端剥离（P1）」一节与 [`.scratch/client-free-rebuild/spec.md`](.scratch/client-free-rebuild/spec.md)。
-> 下文描述侧边栏指示器/用量卡片/自带设置页的段落属于 v1.5.0 行为，会在 P2–P5 逐段改写。
+## 2.0.0 发布（P4–P7，本轮）
+
+**P4 额度与计量工具化**：`openaiQuota` 现在尊重强制刷新（工具说"现在去问"就不会拿缓存回答）；
+`operations.quota()` 返回订阅的限流窗口，`operations.usage()` 把 meter 视图**投影**成工具结果——
+只带 `usage` 切片、账号、显示币种、隐私、`unpricedModels`、档位与估算口径，刻意丢掉 `pricing` / `metered`
+这些给页面看的表格。会话切片取自 `exec.agent.session.id`（与 agent loop 发给 llm 请求的 `sessionId` 同源），
+不从模型参数取。
+
+**P5 路由收窄到 1 条**：22 条 → 只剩只读 `GET /plugins/openai-subscription/status`（带部署栅栏）。
+**OAuth 回调从来不需要路由**——回环 attempt 自己监听 `127.0.0.1:1455`，只在一次登录期间存在。
+随路由删除的还有 `readJsonBody` 与 body 上限、meter 的三条设置/用量端点、模型列表、迁移备份端点，
+以及覆盖它们的三个测试文件。`src/migration/backup.js` 收敛成 `src/migration/legacy.js`：
+只保留 `inspectLegacy`，并由 `operations.status()` 的 `legacy` 字段呈现。
+
+**P6 门禁收口**：`npm run test` 393/393；组合门禁 14 项（真 0.1.7）；web / headless 均 PASS。
+本机跑 `test:release` 需要把真安装的 bin 前置到 PATH：
+
+```powershell
+$env:DSH_HOME='D:\AI\Cache\dsh-0.1.7-verify-npm\home'
+$env:PATH='D:\AI\Cache\dsh-0.1.7-verify-npm\node_modules\.bin;' + $env:PATH
+npm run test:release
+```
+
+**P7 发布**：版本 2.0.0、新增 `CHANGELOG.md`、README 按无界面形态重写（删掉侧边栏/指示器/预览图章节）、
+`docs/usage-meter.md` 的接口与 UI 章节改写为"工具出口 + 曾经的 UI"。
 
 ## 这是什么
 
-面向 DeepSeek Harness（DSH）的独立 OpenAI / ChatGPT 订阅 Provider。使用 ChatGPT OAuth 凭据访问 Codex Responses 接口，向 DSH 提供模型目录、流式生成、token 用量（含缓存命中）、订阅额度查询与 Web 设置界面；额度指示器默认停在侧边栏底部，可拖动。
+面向 DeepSeek Harness（DSH）的独立 OpenAI / ChatGPT 订阅 Provider。使用 ChatGPT OAuth 凭据访问 Codex Responses 接口，向 DSH 提供模型目录、流式生成、token 用量（含缓存命中）、订阅额度查询。**2.0.0 起是纯宿主插件：没有浏览器半边，也没有侧边栏/设置页入口**；额度与用量由 agent 工具按需报告，登录由工具或 DSH 原生授权 seam 发起。
 
 设计前提（`package.json` 明写）：**组合与引导阶段绝不阻止 DSH 启动。** 显式 `state: active` 却无法激活时，`apply()` 会 reject，把原因交给 DSH 的 optional entry 启动审计（一条警告，其余插件照常运行）；已完成的注册会先逆序回滚。细节见 README 的「安全加载」。
 
@@ -284,10 +311,10 @@ OpenAI Responses returned HTTP 400: { "error": { "message": "No tool output foun
 
 ## 关键文件
 
-- `src/`——Provider 主体（模型目录、流式生成、用量与额度）
-- `test/`——测试
+- `src/`——宿主半边（Provider 主体、登录流程与授权 seam、工具与 operations、用量与额度、唯一那条路由）
+- `test/`——测试；`test/no-client.test.mjs` 是"不许再有浏览器半边"的守卫
 - `cordis.patch.yml`——DSH profile 接入配置
-- `README.md`——面向使用者的说明；`AGENTS.md`——仓库约定与 verify 门禁
+- `README.md`——面向使用者的说明；`CHANGELOG.md`——版本变更；`AGENTS.md`——仓库约定与 verify 门禁
 
 ## 登录路径（P3，本轮）
 

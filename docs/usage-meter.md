@@ -57,7 +57,7 @@
 
 账本有 **20,000 条的硬上限**，但上限不是清理策略——直接丢最旧事实会静默改写各时间窗的合计。因此 `compact()`（启动时、以及 `retentionDays` 被调小时）把窗口外的原始事实**折叠**成每天 × 每路由 × 每模型的 rollup 条目：token 各桶与各币种金额都是整数求和，窗口只做加法，所以**每个合计在压实前后一分不差**。rollup 是独立条目类型（schema v2；v1 文件仍可读，下次写入即升级），带自己的标记与校验，不进 call-id 幂等表；`unpricedModels` 不看 rollup——历史缺口不是还能补的缺口。rollup 没有会话，**会话级明细的回溯范围即保留窗口**，这是压实唯一的代价。`mutations` 计数器在每次条目变化时递增，是服务层视图缓存的失效信号。
 
-`summary(range, provider?)` 与 `sessionSummary(sessionId, provider?)` 的第二个参数是**归属**而不是事后过滤：指示器描述的是当前模型，别家的 token 不能加进来。不传则保持全局汇总，供不针对某一路由的读取使用。`unpricedModels(providers?)` 按 `(provider, model)` 汇总未定价调用（次数、最近时间、原因），只有传入了「有价格表的路由」时它才代表真正的缺口。
+`summary(range, provider?)` 与 `sessionSummary(sessionId, provider?)` 的第二个参数是**归属**而不是事后过滤：报告描述的是当前模型，别家的 token 不能加进来。不传则保持全局汇总，供不针对某一路由的读取使用。`unpricedModels(providers?)` 按 `(provider, model)` 汇总未定价调用（次数、最近时间、原因），只有传入了「有价格表的路由」时它才代表真正的缺口。
 
 ### `usage/deepseek-balance.js`
 
@@ -100,41 +100,38 @@
 视图按厂商给出已见总数、状态（`never` / `ok` / `error`）与新出现的模型（首次见到时刻晚于 `acknowledgedAt`）。路由读取时若已过期只在**后台**触发一次扫描，因此轮询用量永远不会等三家站点。
 
 ## 视图与接口
+## 视图与接口
 
-浏览器通过同源路由读取：
+没有客户端半边之后，这个模块的出口只有两个：
 
-| 路由 | 作用 |
+| 出口 | 作用 |
 |---|---|
-| `GET /meter/usage?sessionId=&provider=` | 视图模型（账号、余额、GLM 读数、价格来源、未定价模型、新模型观测、会话/今日/本月聚合） |
-| `POST /meter/deepseek/refresh` | 强制刷新一次 DeepSeek 余额 |
-| `POST /meter/zhipu/refresh` | 强制刷新一次 GLM 账号读数 |
-| `POST /meter/prices/refresh` | 强制读一次官方价格页（与开关无关，供排障用） |
-| `GET /meter/models/watch` | 新模型观测视图（可能顺带在后台触发一次到期扫描） |
-| `POST /meter/models/watch/refresh` | 强制扫一次，绕过 TTL |
-| `POST /meter/models/watch/acknowledge` | 把当前已知模型全部折进基线，清掉「新模型」标记 |
-| `GET/PATCH /meter/settings` | 读设置 / 带 revision 写设置 |
+| 工具 `usage_meter_report` | 今日 / 本月 / 本会话（可指定 `scope: all`）的 token 与估算金额、未定价模型、档位、DeepSeek 余额切片 |
+| 工具 `openai_subscription_quota` | 订阅自己的限流窗口（`openaiQuota`），`refresh: true` 时强制问一次 |
 
-`provider` 是**提示而不是过滤**：视图永远返回完整模型，只有该厂商的读数到期时才会去问那个站点，因此切到别的 Provider 不会顺带查一个无关账号；同时它又是**归属**，三个时间窗按它收窄。三条 refresh 路由与三条 watch 路由目前只有测试在驱动，客户端靠轮询、TTL 与开关自己刷新；卡片里的「新模型」一行读的是 `GET /meter/usage` 返回的 `modelWatch` 切片。
+`UsageMeterService.view({ sessionId, provider })` 仍然是唯一的数据装配点，工具只是它的一层投影：
+`operations.usage()` 只取 `usage` 的切片、`account`、`display`、`privacy`、`unpricedModels`、`band` 与
+`estimated`/`basis`，**刻意丢掉** `pricing`、`metered` 这些给页面看的表格——工具结果是给模型读的。
 
-一个路径只注册一次，方法在路由内分发：DSH 的 exact 路由按路径匹配，同一路径注册两次会互相遮蔽。
+`sessionId` 由工具从执行上下文取（`exec.agent.session.id`，与 agent loop 发给 llm 请求的 `sessionId` 同源），
+不从模型参数取：会话切片只有"这次调用属于哪个会话"一个正确答案。
 
-## UI
+`provider` 是**提示而不是过滤**：视图永远返回完整模型，只有该厂商的读数到期时才会去问那个站点，因此切到别的 Provider
+不会顺带查一个无关账号；同时它又是**归属**，三个时间窗按它收窄。
 
-- `sidebar.footer.action`：唯一指示器，按视口宽度切换两种渲染 —— **≥ 640px 直接显示文字摘要**（余额/配额 + 今日消费），**< 640px 收成一个内联 SVG 图标**，点击后在图标上方展开数据卡片并在视口内夹取、换行（Esc、再点、× 都能收起）。两种渲染共用 `indicatorDetails()`，卡片与悬停提示不会互相矛盾。带 generation 守卫丢弃过期响应；图标/文字块可拖拽并持久化位置，双击复位。窗口 resize 时即时切换，无需刷新。
-- **浮动的两个元素都挂在 `document.body` 上**（`react-dom` 的 portal）：席位在侧边栏里，而侧边栏裁剪自己的子树 —— rail 收起/展开期间带动画的祖先同时是包含块，此时 `overflow: hidden` 连 `position: fixed` 的后代一起裁掉，卡片会被切在侧边栏右边缘。模块表没有 `react-dom`（或没有 `document`）时两者退回原地渲染，功能不变但会重新受祖先裁剪。层级取 120：压过应用 chrome（最高 100），仍在模态层（1000）之下。
-- **卡片会自动收回**：打开后 12 秒倒计时，卡片上的指针交互重新计时；点卡片外（`document` 捕获阶段的 `pointerdown`，被下游 `stopPropagation` 吞掉的按压也算）、再点图标、Esc、以及**切换模型**都立即收回。切换模型这一条是必须的：卡片描述的是上一个账号，留着它就等于显示过期数字。
-- `conversation.composer.dock`：会话用量一行，与侧栏共用同一数据源，避免两处数字不一致。
-- `settings.section`：用量与费用面板只保留**显示币种**（CNY / USD）与保存按钮；账号类型、统计时区、是否读取 DeepSeek 官方余额、是否自动纳入所有已注册 Provider、是否读官方价格页、隐藏余额/隐藏费用都退回 `cordis.patch.yml` 的 `meter` 配置层，面板不再暴露。改动只提交与当前值不同的键。
+历史接口（`/meter/usage`、`/meter/settings`、三条 refresh、三条 watch）随浏览器半边一起删除了。
+它们的方法分发与冲突语义仍有单元测试覆盖在服务层（settings store 的 revision 冲突、价格页读取、watch 的 TTL 与基线），
+只是不再有 HTTP 入口。
 
-卡片还承担三件「看得见」的职责：**未定价模型**（`未配置价格: deepseek-v5 ×3`，按卡片描述的 Provider 过滤）、**新出现的模型**（`新模型: deepseek-v5 · glm-5.4`，同样按该卡片的路由过滤；厂商没有观测条目就不出这一行）、以及**价格表刷新失败的原因**。没有这几行，"新模型停在未定价" 和 "页面改版导致自动更新静默失效" 都无从察觉。
+## 曾经的 UI
 
-侧栏与输入框下方的两个席位分别在 `ui-sidebar` 和 `ui-conversation` 中声明，但它们的包名**不**进 `package.json` 的 `dsh.client.inject`：`inject` 声明的是「本 bundle 执行前必须已 materialize 的包行」，属于加载顺序与预取元数据；bundle 通过模块表 `require` 的包才写在 `dsh.client.external` 里。席位既不是前者也不是后者——它是运行时查表，且失败被 `attempt()` 包住，所以两个字段都不该出现它。
-
+侧边栏指示器、悬浮卡片、会话用量行、用量设置面板都已删除（随 `client/` 一起）。保留这一段是为了给后来者一个解释：
+它们不是"忘了做"，而是**故意不存在**——DSH 0.1.7 里客户端 entry 导入失败是致命错误，而这个插件的宿主侧能力不依赖任何界面。
 ## 测试策略
 
-纯函数与契约优先：计价与阶梯时段、采集器的委托/嵌套/并发/中止与活判定门禁、账本的原子写/损坏保留/按路由归属与未定价汇总、余额端点门禁与多币种、服务层的企业合同价、隐私与按 Provider 限定的计价（OpenAI 只计 token、不计费）、指示器的金额格式与 Provider 切换、meter 路由的方法分发与冲突。
+纯函数与契约优先：计价与阶梯时段、采集器的委托/嵌套/并发/中止与活判定门禁、账本的原子写/损坏保留/按路由归属与未定价汇总、余额端点门禁与多币种、服务层的企业合同价、隐私与按 Provider 限定的计价（OpenAI 只计 token、不计费）、工具投影（只带切片与告警，不带页面用的表格）。
 
-三条口径各有专门的覆盖：**模型自动发现**（`createMeterRoutes` 的注册名单、5 秒过期、auto 关掉后回退注册表、context 没有 llm 时不致命，外加集成冒烟里注册一个本插件从未听说过的 adapter 并断言事实落账）；**按路由归属**（三厂商混合账本下各 Provider 的时间窗互不串台，无 provider 提示时保持全局）；**价格页**（真实页面夹具逐项对齐内置快照、时段句与别名、缺行/非人民币/整表颠倒一律拒绝、`yuanToMicros` 的精度边界、store 的原子写与损坏回退、learned 覆盖与快照兜底的优先级、开关关闭时不发请求、失败退避）。
+三条口径各有专门的覆盖：**模型自动发现**（注册名单、5 秒过期、auto 关掉后回退注册表、context 没有 llm 时不致命，外加集成冒烟里注册一个本插件从未听说过的 adapter 并断言事实落账）；**按路由归属**（三厂商混合账本下各 Provider 的时间窗互不串台，无 provider 提示时保持全局）；**价格页**（真实页面夹具逐项对齐内置快照、时段句与别名、缺行/非人民币/整表颠倒一律拒绝、`yuanToMicros` 的精度边界、store 的原子写与损坏回退、learned 覆盖与快照兜底的优先级、开关关闭时不发请求、失败退避）。
 
 真实余额 e2e 需要显式 Key，否则跳过；价格页解析另有一次性的人工验证（对线上页面跑 `fetchPricingPage` + `parsePricingPage`），因为夹具会随时间与线上漂移。
 
