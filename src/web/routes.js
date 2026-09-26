@@ -128,15 +128,17 @@ export async function readJsonBody(request, limit = MAX_BODY_BYTES) {
  * @param {import('../usage/settings-store.js').MeterSettingsStore} [deps.meter.settings]
  * @param {() => Promise<object>} [deps.meter.openaiQuota] - current subscription quota snapshot.
  * @param {(request: {headers: object}) => 401|403|undefined} [deps.authorize] -
- *   the deployment's own trust and authentication fence. Absent means the
- *   local same-origin check is the only guard available.
+ *   the deployment's own trust and authentication fence, already resolved for
+ *   this request. The Web runtime always supplies one and owns the no-fence
+ *   fallback inside it, so omitting this is for callers that judge requests
+ *   themselves.
  * @returns {() => void}
  */
 export function mountRoutes(host, deps) {
   const disposers = []
 
-  // DSH's Connection fence (Host/Origin + browser session) when the runtime
-  // could resolve it; `sameOrigin` is the fallback for deployments without it.
+  // DSH's Connection fence (Host/Origin + browser session) when the caller
+  // supplies one; `sameOrigin` is the fallback for a caller that does not.
   const authorize = typeof deps.authorize === 'function'
     ? deps.authorize
     : (request) => (sameOrigin(request) ? undefined : 403)

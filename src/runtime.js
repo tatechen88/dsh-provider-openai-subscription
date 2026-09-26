@@ -21,7 +21,7 @@ import { DeviceOAuthAttemptManager } from './oauth/device-attempt.js'
 import { fetchBalance } from './balance/client.js'
 import { BalanceService } from './balance/service.js'
 import { OpenAISubscriptionAdapter } from './provider/adapter.js'
-import { mountRoutes } from './web/routes.js'
+import { mountRoutes, sameOrigin } from './web/routes.js'
 import { inspectLegacy, backupLegacyCredential } from './migration/backup.js'
 import { createUsageCollector } from './usage/collector.js'
 import { UsageLedger } from './usage/ledger.js'
@@ -177,6 +177,8 @@ export async function applyRuntime(ctx, config, options = {}) {
    * @returns {() => void} disposer releasing every route and the balance cache.
    */
   const mountWebRoutes = (server) => {
+    // The authorizer resolves the deployment fence per request; nothing about a
+    // fence is captured here (see {@link connectionTrust}).
     const authorize = connectionTrust(ctx)
     const dispose = mountRoutes({ webServer: server }, {
       repository,
@@ -190,7 +192,7 @@ export async function applyRuntime(ctx, config, options = {}) {
       exchange,
       migration,
       meter,
-      ...(authorize === undefined ? {} : { authorize }),
+      authorize,
     })
     return () => {
       dispose()
@@ -275,7 +277,7 @@ export async function applyRuntime(ctx, config, options = {}) {
 }
 
 /**
- * DSH's own trust and authentication fence, when this deployment provides one.
+ * DSH's own trust and authentication fence, resolved for every request.
  *
  * The Connection service first applies the Host fence that defeats DNS
  * rebinding and then authenticates the browser session cookie. That is strictly
@@ -283,19 +285,48 @@ export async function applyRuntime(ctx, config, options = {}) {
  * binds a request to a browser session and has no Host fence at all, so a
  * rebound page reaches these routes with a matching-looking Origin.
  *
+ * The service instance is read per request because the deployment replaces it:
+ * the Web profile reloads its patch layer (`patchReload: live`), the profile
+ * tooling rewrites `trustedHosts` on every entry-address change, and the Loader
+ * then reloads the Connection row — Cordis unregisters the retired
+ * implementation and provides the successor. Connection's own `/api` route is
+ * registered from whichever implementation is current, so a reference captured
+ * at mount time makes this plugin answer from a retired fence: the generation it
+ * froze accepts only loopback, and every authority the deployment actually
+ * serves (the tunnel or tailnet name) is refused as `untrusted origin` while
+ * `/api` accepts the very same request.
+ *
+ * The local same-origin comparison is used only by a deployment that provides no
+ * Connection service at all. A deployment that has one never falls back to it —
+ * if the fence is briefly absent while its successor mounts, the request is
+ * refused rather than judged by the weaker check.
+ *
  * @param {object} ctx - Cordis context.
- * @returns {((request: {headers: object}) => 401|403|undefined)|undefined}
- *   the fence, or undefined when no Connection service is mounted.
+ * @returns {(request: {headers: object}) => 401|403|undefined}
+ *   the fence's verdict for one request, or the local guard's when the
+ *   deployment has no fence.
  */
 export function connectionTrust(ctx) {
-  let connection
-  try {
-    connection = typeof ctx?.get === 'function' ? ctx.get('connection') : undefined
-  } catch {
-    connection = undefined
+  /** The fence the deployment provides right now, or undefined when it provides none. */
+  const currentFence = () => {
+    let connection
+    try {
+      connection = typeof ctx?.get === 'function' ? ctx.get('connection') : undefined
+    } catch {
+      connection = undefined
+    }
+    return connection !== undefined && typeof connection.requestRejection === 'function' ? connection : undefined
   }
-  if (connection === undefined || typeof connection.requestRejection !== 'function') return undefined
+  // A fence present at mount already marks this deployment as fenced, so the
+  // very first request cannot slip through a reload that is still in flight.
+  let fenceSeen = currentFence() !== undefined
   return (request) => {
+    const connection = currentFence()
+    if (connection === undefined) {
+      if (fenceSeen) return 403
+      return sameOrigin(request) ? undefined : 403
+    }
+    fenceSeen = true
     try {
       const rejection = connection.requestRejection({ headers: request.headers })
       return rejection === 401 || rejection === 403 ? rejection : undefined

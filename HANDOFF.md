@@ -176,6 +176,21 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 
 **给 headless smoke 加的闸**：它借用的 `profiles/node_modules` 必须和 PATH 上的 `dsh` 同版本，否则 SKIP（release 模式 FAIL）并说明原因。因为 DSH 会按**自己的**安装去 heal `profiles/node_modules`，跨版本借用会被改写或直接拒绝——0.1.5 就是这样在插件加载**之前**中止的（`composeProfile` → `healProfilesModuleFallback`），报错信息还很难懂。同版本借用不受影响。
 
+## 手机经隧道访问时的 `untrusted origin`（本轮修复）
+
+**症状**：手机经 Cloudflare Quick Tunnel 打开 DSH 时，本插件的面板报 `HTTP 403 {"ok":false,"error":"untrusted origin"}`；本机 `127.0.0.1:3080` 正常。同一组伪造 Host/Origin 头打 DSH 自己的 `/api` 是被放行的（401，只差浏览器会话 Cookie），打插件路由却是 403。
+
+**根因**：插件在**挂载时刻**把 DSH Connection 的栅栏**实例**捕获进了闭包（`src/runtime.js` 的 `mountWebRoutes` → `connectionTrust`），此后整个进程生命周期都拿它判请求；而 DSH 会**换掉这个实例**。
+
+- 判定跳：`connection.requestRejection({headers})` → `@deepseek-ai/dsh-client-connection` 的 `HostConnectionService.requestRejection()` → `isTrustedApiRequest(request, this.trustedHosts)`：Host 既非 loopback 又不在 `this.trustedHosts` 里就 403。
+- 实例为什么会换：Web profile 的补丁层是**热重载**的（`apps/cli/src/profile-boot.ts` 的 `patchReload === 'live'` + `watchUserPatches` 监听 `$DSH_HOME/profiles/web/cordis.patch.yml`）。远程接入工具（remote-dsh 的 `Start-QuickTunnel.ps1 -Ensure`，计划任务约每 5 分钟一次）每次都会重写该文件里的 `trustedHosts` 托管块；`cordis-plugin-include` 重放补丁栈后 `connection` 行被重新加载，Cordis 注销退役实现、注册后继实现。`/api` 路由是在 connection 插件自己的 `apply()` 里注册的，所以每次都跟着当前实现；本插件的闭包永远停在旧实现上。它冻住的那一代 `trustedHosts` 是 bundle 默认值（`packages/bundle/web-app/cordis.patch.yml` 的 `trustedHosts: !!js ctx.webStartup.trustedHosts`，没传 `--trusted-host` 时为空），因此**只放行 loopback**。
+- 实测（同一进程、同一组头）：探针当天 16:39:20 才写进补丁层、插件挂载时还不存在的隧道域名，`/api` = 401（后继实例已跟随）而插件 = 403；`tate-2025-2.tail3e3ea9.ts.net`、`10.0.0.7`、`dxp4800pro-c029.tail3e3ea9.ts.net` 同样 `/api` 401 / 插件 403；`evil.example` 两边都 403；loopback 两边都 401（证明用的确实是真实栅栏，不是 `sameOrigin` 回落、也不是异常被吞）。
+- 对照组：phone-pair 用 `ctx.connection.requestRejection(req)`（**每请求**读服务）判同一条隧道域名，`/p/WRONGCODE` 返回 404（栅栏放行）。
+
+**修法**：`connectionTrust()` 改为**每请求解析** `ctx.get('connection')`（不再捕获实例），`mountWebRoutes` 始终传入这个 authorizer；`routes.js` 的 `sameOrigin` 回落只保留给「这个部署根本没有 Connection 服务」的情况。fail-closed 一丝不放宽：栅栏抛异常 → 403；**曾经有过栅栏、此刻取不到**（重载途中）→ 403，绝不静默降级到本地的弱检查。回归测试在 `test/runtime.test.mjs`（后继实例接手、重载空窗不降级、无栅栏部署仍用本地守卫）与 `test/web-routes.test.mjs`（受信非 loopback/未受信/跨源 Origin/缺 Host 四种判定）。
+
+**真机约束**：本 profile 的 HMR 是 config-only（用 `root: []` 建 watch-only 实例），不会重载已加载的插件模块，所以**这份修复只有重启 `dsh web` 才会进进程**。
+
 ## 关键文件
 
 - `src/`——Provider 主体（模型目录、流式生成、用量与额度）

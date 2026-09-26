@@ -196,10 +196,46 @@ test('connectionTrust delegates to the deployment fence when one is mounted', ()
   assert.deepEqual(decisions, ['ok.example', 'auth.example', 'evil.example'], 'the fence decides, not the local comparison')
 })
 
-test('connectionTrust is absent without the service and refuses when the fence throws', () => {
-  assert.equal(connectionTrust({ get: () => undefined }), undefined)
-  assert.equal(connectionTrust({}), undefined)
-  assert.equal(connectionTrust({ get() { throw new Error('no registry') } }), undefined)
+test('connectionTrust follows the fence the deployment provides now, not the one it mounted with', () => {
+  // The Web profile reloads its patch layer live, so DSH replaces the
+  // Connection service whenever `trustedHosts` changes and retires the instance
+  // this plugin mounted beside. The retired fence knows only loopback, which is
+  // why the phone was refused as `untrusted origin` while `/api` — registered
+  // from the successor — accepted the same request.
+  let fence = { requestRejection: () => 403 }
+  const ctx = { get: (name) => (name === 'connection' ? fence : undefined) }
+  const trust = connectionTrust(ctx)
+  assert.equal(trust({ headers: { host: 'phone.example' } }), 403)
+  fence = { requestRejection: () => 401 }
+  assert.equal(trust({ headers: { host: 'phone.example' } }), 401, 'the successor decides the next request')
+  fence = { requestRejection: () => undefined }
+  assert.equal(trust({ headers: { host: 'phone.example' } }), undefined, 'a trusted authority reaches the route')
+  fence = { requestRejection: () => 403 }
+  assert.equal(trust({ headers: { host: 'phone.example' } }), 403, 'and a cross-site one is still refused')
+})
+
+test('a fenced deployment never downgrades to the local guard while its fence is absent', () => {
+  let fence = { requestRejection: () => 401 }
+  const ctx = { get: (name) => (name === 'connection' ? fence : undefined) }
+  const trust = connectionTrust(ctx)
+  assert.equal(trust({ headers: { host: 'phone.example' } }), 401)
+  // Mid-reload: the successor is not provided yet. The local same-origin
+  // comparison would have accepted this request, so refusing it is the whole
+  // difference between a live reload and an open route.
+  fence = undefined
+  assert.equal(trust({ headers: { host: 'phone.example', origin: 'https://phone.example' } }), 403)
+})
+
+test('connectionTrust keeps the local guard for a deployment without a fence and refuses when the fence throws', () => {
+  // No Connection service at all: the local same-origin comparison is the only
+  // guard this deployment has, exactly as before.
+  for (const bare of [{ get: () => undefined }, {}, { get() { throw new Error('no registry') } }]) {
+    const trust = connectionTrust(bare)
+    assert.equal(typeof trust, 'function')
+    assert.equal(trust({ headers: { host: 'h.example', origin: 'https://h.example' } }), undefined)
+    assert.equal(trust({ headers: { host: 'h.example', origin: 'https://evil.example' } }), 403)
+    assert.equal(trust({ headers: { origin: 'https://h.example' } }), 403, 'a request without a Host is not same-origin')
+  }
   const broken = connectionTrust({ get: () => ({ requestRejection() { throw new Error('boom') } }) })
   assert.equal(broken({ headers: {} }), 403, 'a fence that cannot answer must not open the route')
 })

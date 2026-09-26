@@ -115,6 +115,89 @@ test('mountRoutes registers device routes when a device manager is provided', ()
   assert.equal(web.routes.length, 0)
 })
 
+/**
+ * The decision DSH's Connection service makes, as `api-request-trust.ts`
+ * documents it: a Host that is neither loopback nor a declared authority is
+ * refused, an attached Origin must be exactly that authority, and a browser
+ * session decides 401. The plugin owns only the delegation, so the stub stands
+ * in for the deployment's fence and records what it was asked.
+ * @param {object} options
+ * @param {string[]} [options.trustedHosts] - authorities this deployment serves.
+ * @param {boolean} [options.authenticated] - whether the session cookie is valid.
+ * @returns {(request: {headers: object}) => 401|403|undefined}
+ */
+function dshFence({ trustedHosts = [], authenticated = false } = {}) {
+  return (request) => {
+    const host = request.headers.host
+    if (host === undefined) return 403
+    let hostUrl
+    try {
+      hostUrl = new URL(`http://${host}`)
+    } catch {
+      return 403
+    }
+    const loopback = hostUrl.hostname === 'localhost' || hostUrl.hostname === '[::1]'
+      || (hostUrl.hostname.startsWith('127.') && hostUrl.hostname.split('.').length === 4)
+    if (!loopback && !trustedHosts.includes(hostUrl.host)) return 403
+    if (request.headers['sec-fetch-site'] === 'cross-site') return 403
+    const origin = request.headers.origin
+    if (origin !== undefined) {
+      try {
+        if (new URL(origin).host !== hostUrl.host) return 403
+      } catch {
+        return 403
+      }
+    }
+    return authenticated ? undefined : 401
+  }
+}
+
+test('a deployment fence decides a trusted non-loopback Host, an untrusted one, a cross-origin one, and a missing Host', async () => {
+  const { repository, attempts, balance } = deps()
+  const call = async (headers, { authenticated = false } = {}) => {
+    const web = fakeWebServer()
+    mountRoutes({ webServer: web }, {
+      repository,
+      attempts,
+      balance,
+      clientId: 'cid',
+      exchange: async () => ({ access: 'a', expires: 1 }),
+      authorize: dshFence({ trustedHosts: ['phone.example'], authenticated }),
+    })
+    const response = fakeResponse()
+    await findRoute(web, '/status').handler(
+      { method: 'GET', url: '/plugins/openai-subscription/status', headers, [Symbol.asyncIterator]: () => [][Symbol.iterator]() },
+      response,
+    )
+    return response
+  }
+
+  // The authority the tunnel serves: in the fence, but no session yet.
+  const trusted = await call({ host: 'phone.example', origin: 'https://phone.example' })
+  assert.equal(trusted.state.status, 401)
+  assert.match(trusted.state.body, /authentication required/)
+
+  // Same authority with a valid browser session reaches the route.
+  const signedIn = await call({ host: 'phone.example', origin: 'https://phone.example' }, { authenticated: true })
+  assert.equal(signedIn.state.status, 200)
+
+  // Loopback stays reachable without the deployment declaring it.
+  const loopback = await call({ host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' })
+  assert.equal(loopback.state.status, 401)
+
+  const untrusted = await call({ host: 'evil.example', origin: 'https://evil.example' })
+  assert.equal(untrusted.state.status, 403)
+  assert.match(untrusted.state.body, /untrusted origin/)
+
+  const crossOrigin = await call({ host: 'phone.example', origin: 'https://evil.example' })
+  assert.equal(crossOrigin.state.status, 403)
+  assert.match(crossOrigin.state.body, /untrusted origin/)
+
+  const noHost = await call({ origin: 'https://phone.example' })
+  assert.equal(noHost.state.status, 403)
+  assert.match(noHost.state.body, /untrusted origin/)
+})
+
 test('a supplied trust fence decides the request instead of sameOrigin', async () => {
   const { repository, attempts, balance } = deps()
   const seen = []
