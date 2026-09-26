@@ -41,6 +41,8 @@ function delay(ms) {
  * @param {object} [input.authorization] - the `authorization` service, when mounted.
  * @param {string} input.authorizationKey - credential key the flow is registered under.
  * @param {object} [input.config] - normalized plugin config.
+ * @param {object} [input.meter] - the usage meter's parts (`service`, `openaiQuota`, …).
+ * @param {() => Promise<object>} [input.legacy] - reports what the previous plugin family left behind.
  * @param {number} [input.loginWaitMs] - bounded wait for one login call.
  * @param {(ms: number) => Promise<'timeout'>} [input.sleep] - test seam.
  * @returns {object} the operations.
@@ -53,6 +55,8 @@ export function createOperations({
   authorization,
   authorizationKey,
   config,
+  meter,
+  legacy,
   loginWaitMs = DEFAULT_LOGIN_WAIT_MS,
   sleep = delay,
 }) {
@@ -91,6 +95,7 @@ export function createOperations({
           reasoningEffort: provider.reasoningEffort ?? '',
         },
         login: loginState(),
+        ...(typeof legacy !== 'function' ? {} : { legacy: await legacy().catch(() => undefined) }),
       }
     },
 
@@ -180,6 +185,67 @@ export function createOperations({
       await repository.delete()
       balance?.clear?.()
       return { status: 'signed-out' }
+    },
+
+    /**
+     * The subscription's own quota: the rate-limit windows ChatGPT reports for
+     * this account, which is what "how much is left" means for a subscription
+     * rather than for a metered API key.
+     *
+     * @param {object} [options]
+     * @param {boolean} [options.refresh] - ask the vendor instead of using the cache.
+     * @returns {Promise<object>}
+     */
+    async quota({ refresh = false } = {}) {
+      if (typeof meter?.openaiQuota !== 'function') {
+        return { status: 'unavailable', reason: 'the usage meter is not mounted' }
+      }
+      const snapshot = await meter.openaiQuota({ force: refresh === true })
+      return {
+        provider: PROVIDER_ID,
+        ...snapshot,
+      }
+    },
+
+    /**
+     * What this deployment has actually called and what it cost.
+     *
+     * The full meter view is a page's worth of pricing tables and provider
+     * lists; a tool result is read by a model, so this reports the numbers and
+     * the caveats that change how they should be read — an estimate basis, and
+     * models with no rate at all, which would otherwise look free.
+     *
+     * @param {object} [options]
+     * @param {string} [options.sessionId] - restrict the session slice to one session.
+     * @param {string} [options.scope] - `today`, `month`, `session` or `all`.
+     * @returns {Promise<object>}
+     */
+    async usage({ sessionId, scope = 'today' } = {}) {
+      if (typeof meter?.service?.view !== 'function') {
+        return { status: 'unavailable', reason: 'the usage meter is not mounted' }
+      }
+      const view = meter.service.view(sessionId === undefined ? {} : { sessionId })
+      const slices = { session: view.usage?.session, today: view.usage?.today, month: view.usage?.month }
+      const wanted = scope === 'all' ? Object.keys(slices) : [scope]
+      const usage = {}
+      for (const key of wanted) {
+        if (key === 'session' && sessionId === undefined) continue
+        if (slices[key] !== undefined) usage[key] = slices[key]
+      }
+      return {
+        status: 'ok',
+        generatedAt: view.generatedAt,
+        account: view.account,
+        display: view.display,
+        privacy: view.privacy,
+        ...(sessionId === undefined ? {} : { sessionId }),
+        usage,
+        estimated: view.estimated,
+        basis: view.basis,
+        unpricedModels: view.unpricedModels,
+        ...(view.band === undefined ? {} : { band: view.band }),
+        balance: view.deepseek,
+      }
     },
   }
 }

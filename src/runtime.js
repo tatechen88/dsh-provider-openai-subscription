@@ -27,7 +27,7 @@ import { fetchBalance } from './balance/client.js'
 import { BalanceService } from './balance/service.js'
 import { OpenAISubscriptionAdapter } from './provider/adapter.js'
 import { mountRoutes, sameOrigin } from './web/routes.js'
-import { inspectLegacy, backupLegacyCredential } from './migration/backup.js'
+import { inspectLegacy } from './migration/legacy.js'
 import { createUsageCollector } from './usage/collector.js'
 import { UsageLedger } from './usage/ledger.js'
 import { MeterSettingsStore } from './usage/settings-store.js'
@@ -155,12 +155,12 @@ export async function applyRuntime(ctx, config, options = {}) {
   const balance = new BalanceService({
     fetch: () => fetchBalance({ getAccess: () => tokenManager.getAccessSnapshot() }),
   })
-  const migration = {
-    status: async () => {
-      const legacy = await inspectLegacy({ llm, credentials })
-      return { ...legacy, recommendedProvider: PROVIDER_ID, balanceProvider: PROVIDER_ID }
-    },
-    backup: (password) => backupLegacyCredential({ credentials, password }),
+  // Whether the previous plugin family left anything behind. It used to be the
+  // settings page's migration card; now it is one more fact in the status report,
+  // which is the only place a client-less deployment can state it.
+  const legacy = async () => {
+    const found = await inspectLegacy({ llm, credentials })
+    return { ...found, recommendedProvider: PROVIDER_ID, balanceProvider: PROVIDER_ID }
   }
 
   // The adapter exists before the meter so the model watch can reuse its
@@ -171,9 +171,6 @@ export async function applyRuntime(ctx, config, options = {}) {
     defaultModel: config.provider?.defaultModel || '',
     reasoningEffort: config.provider?.reasoningEffort || '',
   })
-  const listModels = adapter === undefined ? undefined : () => adapter.listModels(PROVIDER_ID)
-  const invalidateModels = adapter === undefined ? undefined : () => adapter.invalidateCatalog()
-
   const meter = await createMeter({
     ctx,
     config,
@@ -199,6 +196,8 @@ export async function applyRuntime(ctx, config, options = {}) {
     authorization: typeof ctx?.get === 'function' ? ctx.get('authorization') : undefined,
     authorizationKey: CREDENTIAL_KEY,
     config,
+    meter,
+    legacy,
   })
   // The harness's own tool helper, resolved through the shared anchors: this
   // plugin is installed from a local path, so it must not import a package it
@@ -234,28 +233,20 @@ export async function applyRuntime(ctx, config, options = {}) {
     await Promise.allSettled(pending)
   }
   /**
-   * Mount the browser-facing routes onto one web server.
+   * Mount the plugin's own route onto one web server.
+   *
+   * One route, not a page's API: with no browser half the only caller is an
+   * operator, and the OAuth redirect never needed a route at all — the loopback
+   * attempt opens its own listener for the length of one sign-in.
+   *
    * @param {object} server - the resolved `webServer` service.
-   * @returns {() => void} disposer releasing every route and the balance cache.
+   * @returns {() => void} disposer releasing the route and the balance cache.
    */
   const mountWebRoutes = (server) => {
     // The authorizer resolves the deployment fence per request; nothing about a
     // fence is captured here (see {@link connectionTrust}).
     const authorize = connectionTrust(ctx)
-    const dispose = mountRoutes({ webServer: server }, {
-      repository,
-      attempts,
-      devices,
-      balance,
-      listModels,
-      invalidateModels,
-      config,
-      clientId: config.oauth.clientId,
-      exchange,
-      migration,
-      meter,
-      authorize,
-    })
+    const dispose = mountRoutes({ webServer: server }, { operations, authorize })
     return () => {
       dispose()
       balance.clear()
@@ -746,7 +737,9 @@ export async function createMeter({ ctx, config, credentials, balance, logger, h
     },
     providers: (id) => routes.covers(id),
   })
-  const openaiQuota = balance === undefined ? undefined : () => balance.get()
+  // The quota reader honours a forced refresh: a tool that says "ask the vendor
+  // now" must not be answered from the cache it was told to bypass.
+  const openaiQuota = balance === undefined ? undefined : (options = {}) => balance.get(options?.force === true)
 
   return {
     ledger,

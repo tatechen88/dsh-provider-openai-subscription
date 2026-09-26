@@ -543,7 +543,13 @@ try {
       })
       const definitions = options.map((entry) => defineTool(entry))
       const names = definitions.map((entry) => entry.name)
-      for (const expected of ['openai_subscription_status', 'openai_subscription_login', 'openai_subscription_logout']) {
+      for (const expected of [
+        'openai_subscription_status',
+        'openai_subscription_login',
+        'openai_subscription_logout',
+        'openai_subscription_quota',
+        'usage_meter_report',
+      ]) {
         if (!names.includes(expected)) throw new Error(`defineTool did not produce "${expected}" (got ${names.join(', ')})`)
       }
       const login = definitions.find((entry) => entry.name === 'openai_subscription_login')
@@ -666,7 +672,12 @@ try {
       if (!server.routes.has(`${ROUTE_PREFIX}/status`)) {
         throw new Error(`the mounted route set is missing the status route: ${[...server.routes.keys()].join(', ')}`)
       }
-      console.log(`OK: routes mount onto a web server that appears after activation (${server.routes.size} routes, after ${String(elapsed)}ms)`)
+      // Exactly one: the browser half's API is gone, and the OAuth redirect never
+      // used a route — the loopback attempt opens its own listener per sign-in.
+      if (server.routes.size !== 1) {
+        throw new Error(`expected exactly the status route, found ${[...server.routes.keys()].join(', ')}`)
+      }
+      console.log(`OK: the status route mounts onto a web server that appears after activation (${server.routes.size} route, after ${String(elapsed)}ms)`)
     } finally {
       if (previousLateHome === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = previousLateHome

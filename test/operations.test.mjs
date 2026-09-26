@@ -196,21 +196,31 @@ test('cancelLogin stops the attempt without touching the credential', async () =
   assert.equal(repository.writes, 0)
 })
 
-test('the tools describe the three operations a chat can perform', () => {
+test('the tools describe the operations a chat can perform', () => {
   const calls = []
   const operations = {
     status: async () => ({ configured: true }),
     login: async (options) => {
-      calls.push(options)
+      calls.push(['login', options])
       return { status: 'pending' }
     },
     logout: async () => ({ status: 'signed-out' }),
+    quota: async (options) => {
+      calls.push(['quota', options])
+      return { status: 'ready' }
+    },
+    usage: async (options) => {
+      calls.push(['usage', options])
+      return { status: 'ok' }
+    },
   }
   const options = toolOptions({ operations })
   assert.deepEqual(options.map((entry) => entry.name), [
     'openai_subscription_status',
     'openai_subscription_login',
     'openai_subscription_logout',
+    'openai_subscription_quota',
+    'usage_meter_report',
   ])
   // A model reads these: an empty or vague description is a broken tool.
   for (const entry of options) {
@@ -221,6 +231,45 @@ test('the tools describe the three operations a chat can perform', () => {
   }
   const login = options.find((entry) => entry.name.endsWith('_login'))
   assert.deepEqual(Object.keys(login.parameters), ['method', 'wait_seconds'])
+  const quota = options.find((entry) => entry.name.endsWith('_quota'))
+  assert.deepEqual(Object.keys(quota.parameters), ['refresh'])
+})
+
+test('the quota and usage tools translate their arguments', async () => {
+  const calls = []
+  const options = toolOptions({
+    operations: {
+      status: async () => ({}),
+      login: async () => ({}),
+      logout: async () => ({}),
+      quota: async (input) => {
+        calls.push(['quota', input])
+        return {}
+      },
+      usage: async (input) => {
+        calls.push(['usage', input])
+        return {}
+      },
+    },
+  })
+  const quota = options.find((entry) => entry.name.endsWith('_quota'))
+  await quota.execute({ refresh: true })
+  await quota.execute({})
+
+  const usage = options.find((entry) => entry.name === 'usage_meter_report')
+  // The session slice is only meaningful for the session this call belongs to,
+  // so the tool takes it from the execution rather than from the model.
+  await usage.execute({ scope: 'session' }, { agent: { session: { id: 'session-1' } } })
+  await usage.execute({}, {})
+  await usage.execute({ scope: 'month' }, undefined)
+
+  assert.deepEqual(calls, [
+    ['quota', { refresh: true }],
+    ['quota', { refresh: false }],
+    ['usage', { scope: 'session', sessionId: 'session-1' }],
+    ['usage', {}],
+    ['usage', { scope: 'month' }],
+  ])
 })
 
 test('the login tool clamps its wait and passes the method through', async () => {
@@ -233,4 +282,84 @@ test('the login tool clamps its wait and passes the method through', async () =>
   await login.execute({ wait_seconds: 100_000 })
   await login.execute({})
   assert.deepEqual(calls, [{ method: 'device', waitMs: 5_000 }, { waitMs: 600_000 }, {}])
+})
+
+test('quota reports the subscription windows, and says so when the meter is absent', async () => {
+  const { attempts, devices } = fakeManagers()
+  const forced = []
+  const operations = createOperations({
+    repository: fakeRepository(),
+    attempts,
+    devices,
+    authorizationKey: 'k',
+    meter: {
+      openaiQuota: async (options) => {
+        forced.push(options)
+        return { status: 'ready', plan: 'plus', windows: [{ id: 'primary', remainingPercent: 62.5, exhausted: false }] }
+      },
+    },
+  })
+  const snapshot = await operations.quota({ refresh: true })
+  assert.equal(snapshot.provider, 'openai-subscription')
+  assert.equal(snapshot.windows[0].remainingPercent, 62.5)
+  assert.deepEqual(forced, [{ force: true }])
+
+  const bare = createOperations({ repository: fakeRepository(), attempts, devices, authorizationKey: 'k' })
+  assert.equal((await bare.quota()).status, 'unavailable')
+})
+
+test('the usage report is the numbers a model should read, not the whole view', async () => {
+  const { attempts, devices } = fakeManagers()
+  const seen = []
+  const operations = createOperations({
+    repository: fakeRepository(),
+    attempts,
+    devices,
+    authorizationKey: 'k',
+    meter: {
+      service: {
+        view: (scope) => {
+          seen.push(scope)
+          return {
+            generatedAt: 1,
+            account: { kind: 'personal', declared: true },
+            display: { currency: 'CNY', timeZone: 'system' },
+            privacy: { hideBalance: false, hideCost: false },
+            estimated: true,
+            basis: 'request-start-assumption',
+            unpricedModels: ['brand-new-model'],
+            band: { id: 'offPeak' },
+            deepseek: { status: 'ready' },
+            // Not part of a tool result: a page's worth of tables and lists.
+            pricing: { public: { scheduleId: 'x' } },
+            metered: [{ provider: 'deepseek-official' }],
+            usage: {
+              session: { calls: 2, amountMicros: 1000 },
+              today: { calls: 9, amountMicros: 962828 },
+              month: { calls: 40, amountMicros: 5000000 },
+            },
+          }
+        },
+      },
+    },
+  })
+
+  const today = await operations.usage({ sessionId: 'session-1', scope: 'today' })
+  assert.deepEqual(seen, [{ sessionId: 'session-1' }])
+  assert.equal(today.usage.today.amountMicros, 962828)
+  assert.equal('session' in today.usage, false, 'a scope report carries only the slice asked for')
+  assert.deepEqual(today.unpricedModels, ['brand-new-model'])
+  assert.equal('pricing' in today, false)
+  assert.equal('metered' in today, false)
+
+  const all = await operations.usage({ sessionId: 'session-1', scope: 'all' })
+  assert.deepEqual(Object.keys(all.usage).sort(), ['month', 'session', 'today'])
+
+  // Without a session there is no session slice to report, and asking for one
+  // must not invent it.
+  const noSession = await operations.usage({ scope: 'all' })
+  assert.deepEqual(Object.keys(noSession.usage).sort(), ['month', 'today'])
+
+  const bare = createOperations({ repository: fakeRepository(), attempts, devices, authorizationKey: 'k' })
+  assert.equal((await bare.usage()).status, 'unavailable')
 })

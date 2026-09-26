@@ -73,5 +73,42 @@ export function toolOptions({ operations }) {
       execute: () => operations.logout(),
       presentCall: () => ({ card: 'generic', title: 'Sign out of ChatGPT', kind: 'other' }),
     },
+    {
+      name: `${PREFIX}_quota`,
+      description: 'Report how much of the ChatGPT subscription quota is left: the rate-limit windows the account reports, each with the percentage used, when it resets, and whether it is exhausted. This is the subscription\'s own limit, not a money balance.',
+      parameters: {
+        refresh: {
+          type: 'boolean',
+          description: 'Ask the vendor now instead of answering from the cached reading.',
+        },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, undefined, 2) }],
+      },
+      execute: (args) => operations.quota({ refresh: args?.refresh === true }),
+      presentCall: () => ({ card: 'generic', title: 'Subscription quota', kind: 'read' }),
+    },
+    {
+      name: 'usage_meter_report',
+      description: 'Report what this deployment has called and what it cost: tokens and estimated amounts for today, this month, and optionally the current session, plus any models that have no price (those calls look free and are not). Amounts are estimates priced at request start, and the report says which currency they are in.',
+      parameters: {
+        scope: {
+          type: 'string',
+          description: "Which slice to report: 'today' (default), 'month', 'session', or 'all'.",
+        },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, undefined, 2) }],
+      },
+      execute: (args, exec) => operations.usage({
+        ...(typeof args?.scope === 'string' ? { scope: args.scope } : {}),
+        // The meter keys a session by the id the agent loop sends with each
+        // request, which is the session this tool call belongs to.
+        ...(typeof exec?.agent?.session?.id === 'string' ? { sessionId: exec.agent.session.id } : {}),
+      }),
+      presentCall: () => ({ card: 'generic', title: 'Usage and cost', kind: 'read' }),
+    },
   ]
 }

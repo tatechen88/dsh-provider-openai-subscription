@@ -130,9 +130,10 @@ test('applyRuntime registers provider, directory, and routes', async () => {
   assert.equal(llm.directory[0].provider, PROVIDER_ID)
   assert.equal(llm.directory[0].settingsNs, SETTINGS_NAMESPACE)
   const paths = routes.map((entry) => entry.path)
-  assert.ok(paths.includes(`${ROUTE_PREFIX}/meter/usage`), 'the meter exposes its view model')
-  assert.ok(paths.includes(`${ROUTE_PREFIX}/meter/settings`), 'the meter settings are editable')
-  assert.equal(paths.length, new Set(paths).size, 'no route is registered twice')
+  // Exactly one route survives the client half: the operator-facing status
+  // endpoint. Everything else the plugin can do is reached through a tool or the
+  // authorization seam, not over HTTP.
+  assert.deepEqual(paths, [`${ROUTE_PREFIX}/status`])
   assert.equal(effects.length, 1)
   // Disposer should tear down registrations, and finish the ledger flush before
   // it resolves: polling for "some file appeared" would accept the temp file a
