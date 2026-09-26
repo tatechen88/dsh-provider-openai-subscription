@@ -262,7 +262,21 @@ node scripts/headless-smoke.mjs --require-dsh
 
 **回滚**（三步任一即可）：插件页卸载 / `plugin_manager remove_bundle`；只关不卸就把 patch 里的 `state` 改回 `bootstrap`；应急 `node src\rescue.mjs disable`（kill switch，重启后生效）。账本与设置在 `storages\`、`plugin-state\`，卸载不会删。
 
-**提交**：`36ecc55` 连接栅栏按请求解析 → `7db5994` model-watch 后端 → `85d59d3` 客户端新模型一行 → `1b849cd` settings 读取兼容 → `a9a1462` smoke 收尾 → `fb8cdec` web 门禁 → `f61ce85` LICENSE 与打包白名单 → `84e5ed8` 文档 → `407772c` settle 竞态 → `67d99b9` doctor 读打包版 asar。
+**提交**：`36ecc55` 连接栅栏按请求解析 → `7db5994` model-watch 后端 → `85d59d3` 客户端新模型一行 → `1b849cd` settings 读取兼容 → `a9a1462` smoke 收尾 → `fb8cdec` web 门禁 → `f61ce85` LICENSE 与打包白名单 → `84e5ed8` 文档 → `407772c` settle 竞态 → `67d99b9` doctor 读打包版 asar → `609b935` 未应答的 tool call 配对。
+
+## 中断的回合让会话永久 400（本轮修复）
+
+**症状**：某个会话切到 OpenAI 订阅模型后**每一轮都失败**：
+
+```
+OpenAI Responses returned HTTP 400: { "error": { "message": "No tool output found for function call call_00_...", "type": "invalid_request_error", "param": "input" } }
+```
+
+**根因**：那一轮运行被中断（关掉 app / 停止回合），assistant 的 `function_call` 留在会话 transcript 里，却没有配对的 `function_call_output`。Responses 接口按位置配对，**每个 call 都必须有 output**，缺一个就整条请求被拒——于是这个会话此后每一轮都 400，只有新建会话才正常。与模型和供应商无关：只要 transcript 里有不配对的 call，发给 Responses 接口就必败。
+
+**修法**：`buildResponsesRequest` 组装完 input 后过一遍 `closeDanglingToolCalls()`——transcript 里**任何位置都没有 output** 的 call，紧跟它自己补一条 `function_call_output`（文本见 `INTERRUPTED_TOOL_OUTPUT`）；output 在后面的 call 不动；连 id 都没有的 call 直接丢弃。补在 call 之后而不是追加到末尾，是为了不让"中断的工具结果"落到用户下一轮消息之后。回归测试两层：`provider-request-builder.test.mjs`（item 流）与 `provider-adapter.test.mjs`（真正发出去的请求体）。
+
+**注意**：这份修复要**重启 DSH Desktop** 才会进进程——宿主模块在激活时就 import 了，而本 profile 的 HMR 是 config-only，不重载已加载的模块。transcript 不需要改数据：配对是每次组装请求时补的。
 
 ## 关键文件
 
