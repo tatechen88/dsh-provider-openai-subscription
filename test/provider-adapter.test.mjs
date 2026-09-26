@@ -42,6 +42,38 @@ test('stream translates SSE into chunks', async () => {
   assert.equal(chunks.at(-1).reason.kind, 'stop')
 })
 
+test('stream sends a valid body for a transcript left with an unanswered tool call', async () => {
+  // The interrupted turn a failing round replays: the assistant called a tool
+  // and the run ended before any result was recorded. The endpoint rejects an
+  // unanswered call outright, so the wire body has to pair it.
+  let sent
+  const adapter = new OpenAISubscriptionAdapter({
+    getAccess: async () => ({ accessToken: 'at' }),
+    fetchImpl: async (_url, init) => {
+      sent = JSON.parse(init.body)
+      return sseResponse(
+        { type: 'response.output_text.done', output_index: 0, text: 'ok' },
+        { type: 'response.completed' },
+      )
+    },
+  })
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: 'scan the drive' }] },
+    { role: 'assistant', content: [
+      { type: 'text', text: 'Running it' },
+      { type: 'tool-call', id: 'call_00_abc|item_1', name: 'pwsh', arguments: '{"command":"ls"}' },
+    ] },
+  ]
+  for await (const _chunk of adapter.stream({ provider: 'openai-subscription', model: 'gpt-6-luna', messages })) {
+    // Drain: the assertion is about the request the call sent.
+  }
+  const calls = sent.input.filter((item) => item.type === 'function_call')
+  const outputs = sent.input.filter((item) => item.type === 'function_call_output')
+  assert.equal(calls.length, 1)
+  assert.equal(outputs.length, 1, 'every function_call reaches the endpoint with an output')
+  assert.equal(outputs[0].call_id, calls[0].call_id)
+})
+
 test('stream surfaces the terminal usage reading before the finish', async () => {
   const adapter = new OpenAISubscriptionAdapter({
     getAccess: async () => ({ accessToken: 'at', accountId: 'acct_1' }),

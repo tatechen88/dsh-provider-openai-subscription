@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildResponsesRequest, buildResponsesTools, contentText } from '../src/provider/request-builder.js'
+import { buildResponsesRequest, buildResponsesTools, contentText, INTERRUPTED_TOOL_OUTPUT } from '../src/provider/request-builder.js'
 
 test('buildResponsesRequest builds text and tools body', () => {
   const request = buildResponsesRequest({
@@ -61,6 +61,65 @@ test('buildResponsesRequest includes reasoning effort', () => {
 
 test('contentText works', () => {
   assert.equal(contentText([{ type: 'text', text: 'a' }]), 'a')
+})
+
+test('buildResponsesRequest answers a tool call the transcript never recorded a result for', () => {
+  // A run that is interrupted — the app closed, the turn stopped — leaves the
+  // assistant's call in the transcript with no output. The Responses API refuses
+  // such a body outright ("No tool output found for function call ..."), which
+  // killed every later round of that session.
+  const request = buildResponsesRequest({
+    model: 'm',
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'scan the drive' }] },
+      { role: 'assistant', content: [
+        { type: 'text', text: 'Running it' },
+        { type: 'tool-call', id: 'call_1|item_1', name: 'pwsh', arguments: '{"command":"ls"}' },
+      ] },
+    ],
+  })
+  assert.deepEqual(request.input, [
+    { role: 'user', content: [{ type: 'input_text', text: 'scan the drive' }] },
+    { role: 'assistant', content: [{ type: 'output_text', text: 'Running it' }] },
+    { type: 'function_call', call_id: 'call_1', id: 'item_1', name: 'pwsh', arguments: '{"command":"ls"}' },
+    { type: 'function_call_output', call_id: 'call_1', output: INTERRUPTED_TOOL_OUTPUT },
+  ])
+})
+
+test('a call answered later in the transcript is not closed twice', () => {
+  const request = buildResponsesRequest({
+    model: 'm',
+    messages: [
+      { role: 'assistant', content: [
+        { type: 'tool-call', id: 'call_1|item_1', name: 'pwsh', arguments: '{}' },
+        { type: 'tool-call', id: 'call_2|item_2', name: 'pwsh', arguments: '{}' },
+      ] },
+      { role: 'user', content: [
+        { type: 'tool-result', toolCallId: 'call_1|item_1', content: [{ type: 'text', text: 'ok' }] },
+      ] },
+    ],
+  })
+  const outputs = request.input.filter((item) => item.type === 'function_call_output')
+  assert.equal(outputs.length, 2, 'each call gets exactly one output')
+  const byCall = new Map(outputs.map((item) => [item.call_id, item.output]))
+  assert.equal(byCall.get('call_1'), 'ok', 'the recorded result is sent as it was')
+  assert.equal(byCall.get('call_2'), INTERRUPTED_TOOL_OUTPUT)
+  // The synthetic output follows its own call rather than trailing the
+  // transcript: a result for an interrupted call must not land after the user's
+  // next message.
+  const calls = new Map(request.input.filter((item) => item.type === 'function_call').map((item) => [item.call_id, item]))
+  for (const output of outputs) {
+    assert.ok(request.input.indexOf(output) > request.input.indexOf(calls.get(output.call_id)))
+  }
+  assert.deepEqual(request.input.map((item) => item.call_id ?? item.type), ['call_1', 'call_2', 'call_2', 'call_1'])
+})
+
+test('a call with no addressable id is dropped rather than sent unpaired', () => {
+  const request = buildResponsesRequest({
+    model: 'm',
+    messages: [{ role: 'assistant', content: [{ type: 'tool-call', id: '', name: 'pwsh', arguments: '{}' }] }],
+  })
+  assert.deepEqual(request.input, [])
 })
 
 test('buildResponsesRequest withholds the sandbox-escalation lever from model-visible schemas', () => {

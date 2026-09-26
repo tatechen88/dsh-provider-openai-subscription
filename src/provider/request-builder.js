@@ -28,6 +28,18 @@ const HIDDEN_TOOL_PARAMETERS = ['sandbox_permissions', 'justification']
 const ESCALATION_UNAVAILABLE_NOTE = ' Sandbox escalation is not available for this provider: never set `sandbox_permissions` or `justification`. If the file sandbox denies a command, tell the user to widen the permission preset instead.'
 
 /**
+ * What a tool call is told when the transcript never recorded its result.
+ *
+ * A run that does not finish — the app is closed, the turn is stopped, the
+ * process dies — leaves the assistant's `function_call` in the session with no
+ * matching `function_call_output`. The Responses API rejects such a body
+ * outright (`No tool output found for function call ...`), so every later round
+ * of that session fails until the pair is closed. Closing it with the one true
+ * statement about the call keeps the transcript honest and the session usable.
+ */
+export const INTERRUPTED_TOOL_OUTPUT = 'Tool call did not complete: the run was interrupted before a result was recorded.'
+
+/**
  * Build a Responses API request body.
  *
  * Tool calls and tool results are emitted as TOP-LEVEL input items
@@ -47,7 +59,7 @@ const ESCALATION_UNAVAILABLE_NOTE = ' Sandbox escalation is not available for th
  */
 export function buildResponsesRequest({ model, system, messages = [], tools = [], maxTokens, reasoningEffort, stream = true }) {
   void maxTokens // the codex endpoint rejects max_output_tokens; DSH's cap is dropped
-  const input = messages.flatMap((message) => mapMessageItems(message))
+  const input = closeDanglingToolCalls(messages.flatMap((message) => mapMessageItems(message)))
   const body = {
     model,
     ...(system === undefined || system.length === 0 ? {} : { instructions: system }),
@@ -63,6 +75,41 @@ export function buildResponsesRequest({ model, system, messages = [], tools = []
     body.reasoning = { effort: reasoningEffort }
   }
   return body
+}
+
+/**
+ * Close every `function_call` the transcript never answered with an output.
+ *
+ * The Responses API pairs calls with their results positionally and refuses a
+ * body that carries an unanswered one. Only a call with no output *anywhere* in
+ * the transcript is closed, so an ordinary call/result pair is untouched, and a
+ * call that cannot be addressed at all (no id) is dropped rather than sent
+ * unpaired.
+ * @param {Array<Record<string, unknown>>} items
+ * @returns {Array<Record<string, unknown>>}
+ */
+function closeDanglingToolCalls(items) {
+  const answered = new Set()
+  for (const item of items) {
+    if (item.type === 'function_call_output' && typeof item.call_id === 'string' && item.call_id.length > 0) {
+      answered.add(item.call_id)
+    }
+  }
+  const closed = []
+  const synthesised = new Set()
+  for (const item of items) {
+    if (item.type !== 'function_call') {
+      closed.push(item)
+      continue
+    }
+    if (typeof item.call_id !== 'string' || item.call_id.length === 0) continue
+    closed.push(item)
+    if (!answered.has(item.call_id) && !synthesised.has(item.call_id)) {
+      closed.push({ type: 'function_call_output', call_id: item.call_id, output: INTERRUPTED_TOOL_OUTPUT })
+      synthesised.add(item.call_id)
+    }
+  }
+  return closed
 }
 
 /**
