@@ -254,3 +254,57 @@ test('setDefaults adopts the two live fields and nothing else', () => {
   adapter.setDefaults(undefined)
   assert.equal(adapter.defaultModel, 'gpt-6-luna')
 })
+test('an exhausted subscription window is reported as a when, not a body dump', async () => {
+  // The exact shape the vendor returned when a 5-hour window ran out.
+  const body = JSON.stringify({
+    error: {
+      type: 'usage_limit_reached',
+      message: 'The usage limit has been reached',
+      plan_type: 'plus',
+      resets_at: 1790434784,
+      eligible_promo: null,
+      limit_window_minutes: 300,
+      resets_in_seconds: 243,
+    },
+  })
+  const adapter = new OpenAISubscriptionAdapter({
+    getAccess: async () => ({ accessToken: 'at', accountId: 'acct_1' }),
+    fetchImpl: async () => new Response(body, { status: 429 }),
+  })
+
+  await assert.rejects(
+    async () => {
+      for await (const chunk of adapter.stream({ model: 'gpt-6-sol', messages: [] })) void chunk
+    },
+    (error) => {
+      assert.equal(error.code, 'usage-limit-reached')
+      // What the reader needs: which window, and when it comes back.
+      assert.match(error.message, /5-hour usage limit reached/)
+      assert.match(error.message, /plan: plus/)
+      assert.match(error.message, /resets in about 4 minute/)
+      assert.match(error.message, /openai_subscription_quota/)
+      // ...and not the request dump, which says nothing about a rate limit.
+      assert.equal(error.message.includes('| request:'), false)
+      assert.equal(error.message.includes('"input"'), false)
+      return true
+    },
+  )
+})
+
+test('a 429 that is not a usage limit keeps the diagnostic dump', async () => {
+  const adapter = new OpenAISubscriptionAdapter({
+    getAccess: async () => ({ accessToken: 'at', accountId: 'acct_1' }),
+    fetchImpl: async () => new Response('{"error":{"message":"slow down"}}', { status: 429 }),
+  })
+  await assert.rejects(
+    async () => {
+      for await (const chunk of adapter.stream({ model: 'gpt-6-sol', messages: [] })) void chunk
+    },
+    (error) => {
+      assert.equal(error.code, 'upstream-error')
+      assert.match(error.message, /HTTP 429/)
+      assert.match(error.message, /\| request:/)
+      return true
+    },
+  )
+})

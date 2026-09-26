@@ -42,6 +42,44 @@ export class OpenAIProviderError extends Error {
 }
 
 /**
+ * Describe a subscription usage limit, or nothing when this is a different failure.
+ *
+ * The vendor answers an exhausted window with a compact JSON body that says
+ * which window, how long until it resets, and when that is. Reporting it as
+ * "HTTP 429: {…}" plus the whole request buries all three under the least useful
+ * part of the message — the user needs to know whether to switch model for five
+ * minutes or five days.
+ *
+ * @param {string} detail - the response body as read.
+ * @returns {string|undefined} a sentence for the human, when this is that error.
+ */
+function describeUsageLimit(detail) {
+  let parsed
+  try {
+    parsed = JSON.parse(detail)
+  } catch {
+    return undefined
+  }
+  const error = parsed?.error
+  if (error === null || typeof error !== 'object') return undefined
+  if (error.type !== 'usage_limit_reached' && typeof error.resets_in_seconds !== 'number') return undefined
+
+  const windowMinutes = typeof error.limit_window_minutes === 'number' ? error.limit_window_minutes : undefined
+  const window = windowMinutes === undefined ? 'usage' : `${String(Math.round(windowMinutes / 60))}-hour`
+  const plan = typeof error.plan_type === 'string' && error.plan_type.length > 0 ? `, plan: ${error.plan_type}` : ''
+
+  const seconds = typeof error.resets_in_seconds === 'number' ? error.resets_in_seconds : undefined
+  const at = typeof error.resets_at === 'number' ? new Date(error.resets_at * 1000) : undefined
+  const when = []
+  if (seconds !== undefined && seconds > 0) when.push(`resets in about ${String(Math.max(1, Math.round(seconds / 60)))} minute(s)`)
+  else if (at !== undefined) when.push('has already reset, so a retry should work')
+  if (at !== undefined && !Number.isNaN(at.getTime())) when.push(`at ${at.toLocaleTimeString()}`)
+
+  const timing = when.length === 0 ? 'its reset time was not reported' : when.join(' ')
+  return `ChatGPT subscription ${window} usage limit reached${plan}: it ${timing}. Use another model until then; openai_subscription_quota reports every window.`
+}
+
+/**
  * Adapter for DSH `ctx.llm.registerAdapter()`.
  */
 export class OpenAISubscriptionAdapter {
@@ -236,6 +274,10 @@ export class OpenAISubscriptionAdapter {
       } catch {
         // a stream teardown race; the status alone still identifies the failure
       }
+      // An exhausted subscription window is not a malformed request, so the
+      // request dump that helps diagnose one would only bury the answer here.
+      const limit = response.status === 429 ? describeUsageLimit(detail) : undefined
+      if (limit !== undefined) throw new OpenAIProviderError('usage-limit-reached', limit)
       throw new OpenAIProviderError('upstream-error', `OpenAI Responses returned HTTP ${response.status}${detail.length > 0 ? `: ${detail}` : ''} | request: ${bodyJson.slice(0, 800)}`)
     }
 
