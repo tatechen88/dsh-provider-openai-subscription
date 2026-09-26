@@ -6,6 +6,29 @@ import { join } from 'node:path'
 import { applyRuntime, connectionTrust, readSettingsSection, resolveDeepSeekCredential, resolveZhipuCredential, waitForService } from '../src/runtime.js'
 import { PROVIDER_ID, ROUTE_PREFIX, SETTINGS_NAMESPACE } from '../src/constants.js'
 
+/**
+ * Read the meter directory once the plugin's own writes have landed.
+ *
+ * Disposing the meter flushes the ledger and settles the model watch, but the
+ * order in which the two files appear is not fixed — and a failed registration
+ * releases asynchronously, so a fixed sleep would either flake or hide a
+ * leftover temporary file. Waiting for the expected pair keeps the assertion
+ * exact: anything extra in the listing still fails.
+ * @param {string} home - the injected DSH home.
+ * @returns {Promise<string[]>} the sorted directory listing.
+ */
+async function meterFiles(home) {
+  const expected = ['models.json', 'usage.json']
+  const meterDir = join(home, 'storages', 'openai-subscription-meter')
+  let seen = []
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    seen = [...(await readdir(meterDir).catch(() => []))].sort()
+    if (expected.every((name) => seen.includes(name))) return seen
+    await new Promise((resolve) => { setTimeout(resolve, 25) })
+  }
+  return seen
+}
+
 function fakeContext() {
   const records = new Map()
   const credentials = {
@@ -118,11 +141,8 @@ test('applyRuntime registers provider, directory, and routes', async () => {
   assert.equal(llm.adapters, undefined)
   assert.equal(llm.directory, undefined)
   assert.equal(routes.length, 0)
-  const meterDir = join(home, 'storages', 'openai-subscription-meter')
-  const residue = await readdir(meterDir).catch(() => [])
-  assert.deepEqual([...residue].sort(), ['models.json', 'usage.json'], 'the meter writes only inside the injected home')
+  assert.deepEqual(await meterFiles(home), ['models.json', 'usage.json'], 'the meter writes only inside the injected home')
 })
-
 test('applyRuntime registers the model discovery under the plugin namespace', async () => {
   const { ctx, llm, effects } = fakeContext()
   const home = await mkdtemp(join(tmpdir(), 'runtime-home-'))
@@ -254,13 +274,10 @@ test('a registration that fails part-way is rolled back before the error escapes
   assert.equal(llm.adapters, undefined, 'the half-registered adapter must be released')
   assert.equal(routes.length, 0, 'no route may outlive a failed activation')
   // The effect body threw, so no disposer was ever returned to the fiber; the
-  // failed activation itself must still have released what it owns.
-  const meterDir = join(home, 'storages', 'openai-subscription-meter')
-  await new Promise((resolve) => { setTimeout(resolve, 50) })
-  const residue = await readdir(meterDir).catch(() => [])
-  // The model watch's baseline lives beside the ledger and is flushed by the
-  // same dispose, so both files survive; no temporary file may remain.
-  assert.deepEqual([...residue].sort(), ['models.json', 'usage.json'], 'the ledger is flushed rather than left open')
+  // failed activation itself must still have released what it owns. That
+  // release is fire-and-forget, so this waits for its two files instead of
+  // assuming how long it takes.
+  assert.deepEqual(await meterFiles(home), ['models.json', 'usage.json'], 'the ledger is flushed rather than left open')
   assert.equal(effects.length, 0, 'a failed setup never publishes a disposer')
 })
 
@@ -274,13 +291,7 @@ test('a context without the effect API closes the meter it already opened', asyn
   // The meter was constructed before the effect API was found missing, and no
   // disposer will ever be returned for it: an open ledger here would only be
   // released by a process restart.
-  const meterDir = join(home, 'storages', 'openai-subscription-meter')
-  let residue = []
-  for (let attempt = 0; attempt < 60 && residue.length === 0; attempt += 1) {
-    residue = await readdir(meterDir).catch(() => [])
-    if (residue.length === 0) await new Promise((resolve) => { setTimeout(resolve, 100) })
-  }
-  assert.deepEqual([...residue].sort(), ['models.json', 'usage.json'], 'the ledger must have been flushed and closed')
+  assert.deepEqual(await meterFiles(home), ['models.json', 'usage.json'], 'the ledger must have been flushed and closed')
 })
 
 test('waitForService returns an already-available service without sleeping', async () => {

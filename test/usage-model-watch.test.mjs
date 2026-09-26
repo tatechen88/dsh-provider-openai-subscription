@@ -151,3 +151,30 @@ test('due() follows the last completed scan, and the baseline survives a restart
   const payload = JSON.parse(await readFile(path, 'utf8'))
   assert.equal(payload.schemaVersion, 1)
 })
+
+test('settle waits for a scan still in flight, not only for a queued write', async () => {
+  // The disposer that owns this watch must not return while the scan is still
+  // reading a directory: the write such a scan starts afterwards would outlive
+  // the teardown that promised to leave no residue.
+  const path = modelWatchPath(await directory())
+  const opened = new ModelWatchStore({ path })
+  await opened.open()
+  let release
+  const gate = new Promise((settle) => { release = settle })
+  const watch = new ModelWatchService({
+    store: opened,
+    listOpenAIModels: async () => {
+      await gate
+      return [{ id: 'gpt-5.5' }]
+    },
+  })
+  const scanning = watch.scan({ force: true })
+  release()
+  await watch.settle()
+  // Every vendor the scan covers is already on disk when settle resolves.
+  const saved = JSON.parse(await readFile(path, 'utf8'))
+  assert.deepEqual(Object.keys(saved.vendors).sort(), ['deepseek', 'openai-subscription', 'zhipu'])
+  assert.deepEqual(Object.keys(saved.vendors['openai-subscription'].known), ['gpt-5.5'])
+  await scanning
+})
+

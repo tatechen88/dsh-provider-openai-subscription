@@ -386,14 +386,19 @@ export class ModelWatchService {
   }
 
   /**
-   * Wait for every pending write to finish.
+   * Wait for the watch to be quiet: the in-flight scan first, then every write.
    *
-   * A teardown that must leave no residue awaits this: a scan still holding a
-   * temporary file would otherwise outlive the disposer that owns it.
+   * A teardown that must leave no residue awaits this. Waiting for the write
+   * chain alone is not enough: a scan still reading a directory has not queued
+   * its write yet, so that write — and the temporary file it creates — would
+   * start after the disposer that owns it had already returned. The scan is
+   * bounded by its own request timeout, and it settles the same way whether it
+   * succeeded or failed.
    * @returns {Promise<void>}
    */
-  settle() {
-    return this.store.writes.catch(() => {})
+  async settle() {
+    await this.scan_?.catch(() => {})
+    await this.store.writes.catch(() => {})
   }
 
   /**
