@@ -15,6 +15,7 @@
  */
 
 import { PACKAGE_NAME } from './constants.js'
+import { requireHarnessModule } from './dsh-modules.js'
 
 /** Valid plugin states. `active` is the only state that loads runtime.js. */
 export const PLUGIN_STATES = Object.freeze(['bootstrap', 'disabled', 'active'])
@@ -165,20 +166,19 @@ function configIssues(input) {
 }
 
 /**
- * The plugin config schema DSH validates before `apply()` runs.
+ * The fallback plugin config schema, used when the deployment ships no
+ * schemastery.
  *
  * This is a hand-written [Standard Schema](https://standardschema.dev) rather
- * than a dependency: the plugin keeps its zero-dependency bootstrap, Cordis only
- * needs `~standard.validate`, and validation must stay synchronous. An invalid
- * known field becomes a schema issue, which DSH reports as a failed optional
- * entry while every other plugin keeps starting — the loud outcome this
- * configuration previously could not produce.
+ * than a dependency: Cordis only needs `~standard.validate`, validation stays
+ * synchronous, and an invalid known field becomes a schema issue that DSH
+ * reports as a failed optional entry while every other plugin keeps starting.
  *
  * The schema only judges: it returns the row's own value untouched, so
  * `normalizeConfig` stays the one place that decides what a row means, and the
  * config DSH records is the config the profile wrote.
  */
-export const Config = Object.freeze({
+export const STANDARD_CONFIG = Object.freeze({
   '~standard': Object.freeze({
     version: 1,
     vendor: PACKAGE_NAME,
@@ -197,3 +197,81 @@ export const Config = Object.freeze({
     },
   }),
 })
+
+/**
+ * Load the deployment's own schemastery, when it ships one.
+ * @returns {object|undefined} the `Schema` entry point, or undefined.
+ */
+function loadSchemastery() {
+  try {
+    const loaded = requireHarnessModule('@deepseek-ai/schemastery')
+    // The package ships both builds; the CJS one exports the class directly,
+    // while an ESM namespace carries it as `default`.
+    const Schema = /** @type {{default?: object}} */ (loaded)?.default ?? loaded
+    return typeof /** @type {object} */ (Schema)?.object === 'function' ? Schema : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Choose the config schema this deployment can actually use.
+ *
+ * Two things are true at once, and only one schema satisfies both:
+ *
+ * - the plugin must load on a harness that provides nothing (the fallback), and
+ * - it must be **visible** in the native Models page, which lists a provider
+ *   only when a live settings namespace exists for its `settingsNs`. DSH builds
+ *   that namespace from the entry's Config schema, and only a schemastery schema
+ *   projects into a form — a Standard Schema is reported as unsupported.
+ *
+ * So schemastery wins where it is reachable, and the built-in schema is the
+ * fallback rather than a dependency: the package is never declared, never
+ * installed, and its absence is not an error.
+ *
+ * The declared fields mirror exactly what the fallback judges, and nothing
+ * stricter: unknown top-level keys pass through (forward compatibility),
+ * `meter` stays free-form (its own normalizer owns those fields), and every
+ * field is optional so a sparse row keeps composing.
+ *
+ * @param {() => object|undefined} [load] - schemastery loader; a test seam.
+ * @returns {{kind: 'schemastery'|'standard', schema: object}}
+ */
+export function selectConfigSchema(load = loadSchemastery) {
+  let Schema
+  try {
+    Schema = load()
+  } catch {
+    Schema = undefined
+  }
+  if (Schema === undefined || Schema === null || typeof Schema.object !== 'function') {
+    return { kind: 'standard', schema: STANDARD_CONFIG }
+  }
+  return {
+    kind: 'schemastery',
+    schema: Schema.object({
+      state: Schema.union([Schema.const('bootstrap'), Schema.const('disabled'), Schema.const('active')]).default('bootstrap'),
+      oauth: Schema.object({ clientId: Schema.string().default('') }).default({ clientId: '' }),
+      // Volatile: DSH hands these two to the running plugin instead of remounting
+      // it, and the adapter adopts them (`setDefaults`). Everything else here
+      // changes meaning only at activation, so marking it volatile would offer an
+      // edit that silently waits for a restart. This is also what earns the entry
+      // a settings namespace at all: DSH projects a form only from a schema that
+      // has at least one live field.
+      provider: Schema.object({
+        defaultModel: Schema.string().default('').volatile(),
+        reasoningEffort: Schema.string().default('').volatile(),
+      }).default({ defaultModel: '', reasoningEffort: '' }),
+      meter: Schema.any(),
+    }),
+  }
+}
+
+const selected = selectConfigSchema()
+
+/** Which schema the deployment got: `schemastery` when projectable, else `standard`. */
+export const CONFIG_SCHEMA_KIND = selected.kind
+
+/** The plugin config schema DSH validates before `apply()` runs. */
+export const Config = selected.schema
+

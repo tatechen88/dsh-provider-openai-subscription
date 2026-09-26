@@ -85,7 +85,7 @@
 
 ### `usage/settings-store.js`
 
-设置放在插件自己的状态目录，带 revision；revision 不匹配返回冲突。这里刻意不使用 DSH settings registry：该 registry 需要 schemastery schema，而本插件声明零依赖，引入依赖会破坏"加载失败也不能阻止 DSH 启动"的既有保证。
+设置放在插件自己的状态目录，带 revision；revision 不匹配返回冲突。计量设置刻意**不走** profile 的 settings 表单：那是组合层，而这里的文件层是"用户当前选择"的层，两者同时可写就会出现两个写者。注意这跟插件整体的 Config schema 不是一回事——`src/config.js` 会在宿主自带 schemastery 时用它写 schema（这样条目才拿得到 settings namespace、才能在原生模型页里出现），取不到则回退内置 Standard Schema，**任何情况都不把 schemastery 声明成依赖**，所以"加载失败也不能阻止 DSH 启动"的保证不变。
 
 ### `usage/reading-slot.js`
 

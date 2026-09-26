@@ -233,3 +233,24 @@ test('a cancelled discovery read is not cached as the answer', async () => {
   assert.deepEqual((await adapter.discoverModels()).map((m) => m.id), ['gpt-1'])
   assert.equal(attempt, 2)
 })
+
+test('setDefaults adopts the two live fields and nothing else', () => {
+  // These are the fields the Config schema marks volatile: DSH writes an edit
+  // into the running plugin instead of remounting it, and the adapter is what
+  // makes that edit mean anything.
+  const adapter = new OpenAISubscriptionAdapter({
+    getAccess: async () => ({ accessToken: 'at', accountId: 'acct_1' }),
+    defaultModel: 'old-model',
+    reasoningEffort: 'low',
+  })
+  adapter.setDefaults({ defaultModel: 'gpt-6-luna', reasoningEffort: 'max' })
+  assert.equal(adapter.defaultModel, 'gpt-6-luna')
+  assert.equal(adapter.reasoningEffort, 'max')
+  // A live update carries whatever the row now says; a malformed value must not
+  // erase a working default.
+  adapter.setDefaults({ defaultModel: 42, reasoningEffort: undefined })
+  assert.equal(adapter.defaultModel, 'gpt-6-luna')
+  assert.equal(adapter.reasoningEffort, 'max')
+  adapter.setDefaults(undefined)
+  assert.equal(adapter.defaultModel, 'gpt-6-luna')
+})

@@ -1,6 +1,27 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { Config, normalizeConfig, shouldLoadRuntime, PLUGIN_STATES, DEFAULT_CONFIG } from '../src/config.js'
+import {
+  Config,
+  CONFIG_SCHEMA_KIND,
+  STANDARD_CONFIG,
+  selectConfigSchema,
+  normalizeConfig,
+  shouldLoadRuntime,
+  PLUGIN_STATES,
+  DEFAULT_CONFIG,
+} from '../src/config.js'
+
+/**
+ * The built-in schema, selected explicitly.
+ *
+ * Which schema the deployment ends up with depends on whether it ships
+ * schemastery, so a test that means "the fallback" must say so rather than read
+ * the ambient selection: otherwise the same suite passes or fails depending on
+ * the DSH_HOME it inherits.
+ */
+const builtIn = selectConfigSchema(() => undefined)
+assert.equal(builtIn.kind, 'standard')
+assert.equal(builtIn.schema, STANDARD_CONFIG)
 
 test('normalizeConfig defaults a non-object input', () => {
   const config = normalizeConfig(undefined)
@@ -52,16 +73,71 @@ test('shouldLoadRuntime only allows active with non-empty client id', () => {
   assert.equal(shouldLoadRuntime({ state: 'active', oauth: { clientId: 'abc' } }), true)
 })
 
-/** Run the exported schema the way Cordis does. */
+/** Run the built-in schema the way Cordis does. */
 function validate(value) {
-  return Config['~standard'].validate(value)
+  return STANDARD_CONFIG['~standard'].validate(value)
 }
 
-test('the schema is a synchronous Standard Schema', () => {
-  assert.equal(Config['~standard'].version, 1)
-  assert.equal(Config['~standard'].vendor, 'dsh-provider-openai-subscription')
+test('the built-in schema is a synchronous Standard Schema', () => {
+  assert.equal(STANDARD_CONFIG['~standard'].version, 1)
+  assert.equal(STANDARD_CONFIG['~standard'].vendor, 'dsh-provider-openai-subscription')
   const result = validate({ state: 'active' })
   assert.equal('then' in result, false, 'Cordis rejects async config validation')
+})
+
+test('the selected schema is one of the two the deployment can use', () => {
+  // Which one is picked is a property of the install, not of the build; both
+  // must be usable, and the selection must name what it chose.
+  assert.ok(CONFIG_SCHEMA_KIND === 'schemastery' || CONFIG_SCHEMA_KIND === 'standard')
+  if (CONFIG_SCHEMA_KIND === 'schemastery') {
+    // The settings service projects a Config through `toJSON()` and reads
+    // `meta`, so a projectable schema must carry both.
+    assert.equal(typeof Config.toJSON, 'function')
+    assert.notEqual(Config.meta, undefined)
+  } else {
+    assert.equal(Config, STANDARD_CONFIG)
+  }
+})
+
+test('a schemastery deployment gets a schema declaring exactly the judged fields', () => {
+  // A stand-in for the harness class: it records what we ask it to build, which
+  // is the part this repository owns. Whether schemastery itself behaves is the
+  // harness's contract, and the integration smoke exercises the real one.
+  const chainable = (shape) => ({
+    ...shape,
+    volatileMarked: false,
+    default() { return this },
+    volatile() { this.volatileMarked = true; return this },
+  })
+  const fake = {
+    object: (definition) => chainable({ kind: 'object-schema', definition }),
+    string: () => chainable({ kind: 'string' }),
+    const: (value) => chainable({ kind: 'const', value }),
+    union: (list) => chainable({ kind: 'union', list }),
+    any: () => chainable({ kind: 'any' }),
+  }
+  const selected = selectConfigSchema(() => fake)
+  assert.equal(selected.kind, 'schemastery')
+  assert.equal(selected.schema.kind, 'object-schema')
+  assert.deepEqual(Object.keys(selected.schema.definition), ['state', 'oauth', 'provider', 'meter'])
+  // `meter` stays free-form: its own normalizer owns those fields, and a schema
+  // that judged them would reject forward-compatible rows.
+  assert.equal(selected.schema.definition.meter.kind, 'any')
+  // The state union is the whole vocabulary the loader may compose.
+  assert.deepEqual(selected.schema.definition.state.list.map((entry) => entry.value), ['bootstrap', 'disabled', 'active'])
+  // Exactly the two fields a running plugin can adopt are volatile: volatility is
+  // what earns the entry a settings namespace, and it must not be claimed for a
+  // field whose edit would silently wait for a restart.
+  const provider = selected.schema.definition.provider.definition
+  assert.equal(provider.defaultModel.volatileMarked, true)
+  assert.equal(provider.reasoningEffort.volatileMarked, true)
+  assert.equal(selected.schema.definition.state.volatileMarked, false)
+  assert.equal(selected.schema.definition.meter.volatileMarked, false)
+  assert.equal(selected.schema.definition.oauth.definition.clientId.volatileMarked, false)
+  // A loader that fails or returns something unusable falls back rather than
+  // leaving the entry without a schema.
+  assert.equal(selectConfigSchema(() => { throw new Error('missing') }).kind, 'standard')
+  assert.equal(selectConfigSchema(() => ({ object: 'not-a-function' })).kind, 'standard')
 })
 
 test('the schema accepts the shape the deployed profile composes', () => {

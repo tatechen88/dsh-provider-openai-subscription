@@ -430,7 +430,11 @@ try {
     if (!/invalid config/.test(String(refused.message))) {
       throw new Error(`the schema failure was not reported as a config problem: ${String(refused.message)}`)
     }
-    if (!/state must be one of/.test(String(refused.message))) {
+    // The two schemas word their complaint differently — the built-in one says
+    // "state must be one of ...", a schemastery deployment says
+    // `$.state expected ... but got 5` — so what is asserted is the part both
+    // owe the operator: the failing field is named and the value is shown.
+    if (!/state/.test(String(refused.message)) || !/5/.test(String(refused.message))) {
       throw new Error(`the schema failure does not name the offending field: ${String(refused.message)}`)
     }
     console.log('OK: Cordis refuses a malformed config and names the field before apply() runs')

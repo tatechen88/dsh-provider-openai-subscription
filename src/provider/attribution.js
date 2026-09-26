@@ -8,17 +8,18 @@
  *
  * That package belongs to the running deployment rather than to this plugin,
  * and a `link:`-installed checkout resolves bare specifiers from its real path
- * outside the profile's `node_modules`, so the helper is resolved lazily:
- * the official one wins whenever it is importable, and a versioned local
- * identity keeps the required header present when it is not.
+ * outside the profile's `node_modules`, so the helper is resolved lazily through
+ * the shared anchors in
+ * {@link module:dsh-provider-openai-subscription/dsh-modules}: the official one
+ * wins whenever it is importable, and a versioned local identity keeps the
+ * required header present when it is not.
  *
  * @module dsh-provider-openai-subscription/provider/attribution
  */
 
 import { createRequire } from 'node:module'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+
+import { loadHarnessModule } from '../dsh-modules.js'
 
 /** Repository home of the fallback identity. */
 const FALLBACK_URL = 'https://github.com/tatechen88/dsh-provider-openai-subscription'
@@ -50,38 +51,12 @@ function isHeaderRecord(value) {
 }
 
 /**
- * Resolution anchors for the harness package, nearest first.
- *
- * A package installed into a profile reaches `@deepseek-ai/dsh-llm` by walking
- * up from its own path, so the first anchor covers that case. A `link:`-installed
- * checkout does not: its real path lives outside the profile, so the walk never
- * reaches the profile's `node_modules`. The harness home is therefore tried as
- * well, which is where a profile keeps the packages it resolves.
- *
- * @returns {Generator<string>} `createRequire` anchors to try in order.
+ * Import the harness attribution helper through the first anchor that reaches
+ * it. Anchor selection lives in {@link module:dsh-provider-openai-subscription/dsh-modules}
+ * so the plugin resolves every harness package the same way.
  */
-function* resolutionAnchors() {
-  yield import.meta.url
-  const configured = process.env.DSH_HOME
-  const home = configured !== undefined && configured.length > 0 ? configured : join(homedir(), '.dsh')
-  for (const relative of ['profiles/node_modules', 'profiles/web/node_modules', 'node_modules']) {
-    yield pathToFileURL(join(home, relative, 'noop.js')).href
-  }
-}
-
-/** Import the harness attribution helper through the first anchor that reaches it. */
 function loadOfficialHelper() {
-  for (const anchor of resolutionAnchors()) {
-    let resolved
-    try {
-      resolved = createRequire(anchor).resolve('@deepseek-ai/dsh-llm')
-    } catch {
-      // Not reachable from this anchor; try the next.
-      continue
-    }
-    return import(pathToFileURL(resolved).href)
-  }
-  return Promise.reject(new Error('@deepseek-ai/dsh-llm is not reachable from this install'))
+  return loadHarnessModule('@deepseek-ai/dsh-llm')
 }
 
 /**

@@ -11,6 +11,7 @@
  */
 
 import { PACKAGE_NAME, PROVIDER_ID, SETTINGS_NAMESPACE } from './constants.js'
+import { CONFIG_SCHEMA_KIND, normalizeConfig } from './config.js'
 import { readConflictReport } from './conflicts.js'
 import { CredentialRepository } from './credentials/repository.js'
 import { TokenManager } from './credentials/token-manager.js'
@@ -253,6 +254,16 @@ export async function applyRuntime(ctx, config, options = {}) {
     if (ctx.on !== undefined) {
       owned.push(ctx.on('llm/stream', meter.collector, { global: true }))
     }
+    // A volatile config edit does not remount this plugin: the loader writes the
+    // new value into the object `apply()` received and emits this event. Reading
+    // it back through `ctx.fiber.config` is what makes the settings form honest —
+    // the two fields it can edit are the two the adapter adopts here.
+    if (ctx.on !== undefined) {
+      owned.push(ctx.on('loader/volatile-update', () => {
+        const live = normalizeConfig(ctx.fiber?.config ?? config)
+        adapter?.setDefaults({ defaultModel: live.provider.defaultModel, reasoningEffort: live.provider.reasoningEffort })
+      }))
+    }
   }
 
   if (typeof ctx.effect !== 'function') {
@@ -284,7 +295,10 @@ export async function applyRuntime(ctx, config, options = {}) {
     }
   }, `${PACKAGE_NAME}: provider, routes and state`)
 
-  if (logger?.info) logger.info(`${PACKAGE_NAME}: runtime active for provider "${PROVIDER_ID}" namespace "${SETTINGS_NAMESPACE}"`)
+  // The schema kind decides whether the native Models page can show this
+  // provider at all (only a projectable schema creates a settings namespace),
+  // so which one the deployment got belongs in the one activation line.
+  if (logger?.info) logger.info(`${PACKAGE_NAME}: runtime active for provider "${PROVIDER_ID}" namespace "${SETTINGS_NAMESPACE}" (${CONFIG_SCHEMA_KIND} config schema)`)
   return { ok: true }
 }
 

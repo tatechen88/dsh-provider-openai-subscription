@@ -98,11 +98,23 @@ namespace 只由**条目自己的 Config schema 投影**产生；我们的 `Conf
 **后果**：没有客户端之后，**schemastery Config 是"能被原生 UI 看见"的唯一途径**（这也是所有内置插件的做法）。
 否则插件在登录前是**完全不可见**的（`adapter.listModels()` 需要凭据 → 没登录就没模型 → 模型选择器里也没有）。
 
-**P2 决策（待定）**：
-- **A 维持零依赖**：接受原生 UI 里不可见；配置只走 `cordis.patch.yml`；插件靠模型选择器（登录后）出现。
-- **B/C 引入宿主自带的 schemastery**（peerDependency，`@deepseek-ai/schemastery`；注意兼容性门只检查
-  `@deepseek-ai/dsh*`，不检查它）：`Config` 用 schemastery 写 → namespace 出现 → 行与可编辑表单出现。
-  C 是"能取到 schemastery 就用它、取不到回退内置 Standard Schema"的混合方案，代价是"零依赖"口径要改写。
+**P2 决策（已定：C，2026-09-26）**：`Config` 优先用**宿主自带**的 `@deepseek-ai/schemastery`
+（不声明为依赖；通过共享锚点解析，含打包 Desktop 的 `resources/app.asar/dsh/node_modules`），
+取不到时回退内置 Standard Schema。
+
+**P2 结果（实测）**：
+- 光有 schemastery 还不够：DSH 只把**至少有一个 volatile 字段**的 Config 投影成 settings namespace
+  （`volatileForm` 无 volatile 就返回 undefined）→ 所以 `provider.defaultModel` / `provider.reasoningEffort`
+  标 `.volatile()`，并在 `loader/volatile-update` 里由 `adapter.setDefaults()` 真实采用（loader 是
+  **原地改写**插件拿到的那份 config 对象，所以这是唯一的诚实做法）。
+- 结果：原生「设置 → 模型」页**出现了我们的行**——`OpenAI (ChatGPT OAuth) / openai-subscription / 编辑`，
+  且**未登录时也可见**（这正是 P3 需要的前提）。浏览器实测，无 console 报错。
+- 但**表单不可编辑**：编辑器用 `layout = layoutOf(namespace.ns)` 只认 `llm-deepseek` / `llm-pi-ai`
+  两个 family，第三方一律 `unknown` → 只显示「其余字段在 cordis.patch.yml 中，请直接编辑对应段。」
+  且保存按钮禁用。**这是 DSH 的设计，不是 schema 的问题**。
+- 因此 C 的真实收益 = **可发现性**（行出现、可点开、指向配置文件），而不是表单编辑；
+  配置仍以 `cordis.patch.yml` 为准（与 A 的结论一致，但不再是"看不见"）。
+
 
 
 ## 7. 阶段
@@ -111,7 +123,7 @@ namespace 只由**条目自己的 Config schema 投影**产生；我们的 `Conf
 |---|---|---|
 | P0 | 冻结基线（tag `v1.5.0-pre-rebuild`）、决策入档 | ✅ |
 | P1 | 剥离客户端：删 `client/`、`dsh.client`、`exports`、`files`；删 7 个客户端测试；`doctor` 改为断言"无客户端"；web 门禁反向；新增守卫测试 | ✅ |
-| P2 | 原生配置面（含 spike S1） | 待办 |
+| P2 | 原生配置面（含 spike S1） | ✅（行可见；表单只读，配置以 patch 为准） |
 | P3 | 登录路径（含 spike S2） | 待办 |
 | P4 | 计量与额度的工具化/CLI 化 | 待办 |
 | P5 | 路由收口 | 待办 |

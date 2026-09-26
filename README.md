@@ -2,10 +2,10 @@
 
 用你的 **ChatGPT / Codex 订阅**账号，在 DeepSeek Harness 里直接使用 OpenAI 模型。
 
-> **⚠️ 本仓库正在按「纯宿主插件」重建（P1 已完成）。**
+> **⚠️ 本仓库正在按「纯宿主插件」重建（P1–P2 已完成）。**
 > 浏览器半边（`client/`、`dsh.client` 声明）已删除：它带来的不是功能而是风险——DSH 0.1.7 里一个导入失败的客户端 entry 是**致命的 web 启动错误**（`web boot: 1 entry did not activate`），Desktop 外壳会因此崩溃重启。
-> 因此侧边栏指示器、用量卡片、首次引导与自带设置页**不再存在**；额度、计量与登录入口正在改由 **DSH 原生模型页 + agent 工具 + rescue CLI** 承载（P2–P4）。
-> 下面「它能做什么 / 侧边栏指示器 / 用量与费用 / 安装」等章节描述的仍是 **v1.5.0 的行为**，会在 P2–P5 逐段改写。计划见 [`.scratch/client-free-rebuild/spec.md`](.scratch/client-free-rebuild/spec.md)。
+> 因此侧边栏指示器、用量卡片、首次引导与自带设置页**不再存在**。现在：`openai-subscription` 会出现在 DSH **原生「设置 → 模型」页**（可点开，并会告诉你配置在 `cordis.patch.yml` 的哪一段；该页对第三方 provider 只读，是 DSH 的设计）；额度、计量与登录入口正在改由 **agent 工具 + rescue CLI** 承载（P3–P4）。
+> 下面「它能做什么 / 侧边栏指示器 / 用量与费用 / 安装」等章节描述的仍是 **v1.5.0 的行为**，会在 P3–P5 逐段改写。计划见 [`.scratch/client-free-rebuild/spec.md`](.scratch/client-free-rebuild/spec.md)。
 
 > ⚠️ 它连的是 ChatGPT 订阅在用的**非公开接口**，不是 OpenAI 的 Platform API。用之前请自行确认账号、OAuth Client ID 和这个接口的使用风险。
 

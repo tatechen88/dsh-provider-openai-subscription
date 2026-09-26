@@ -77,6 +77,22 @@ export class OpenAISubscriptionAdapter {
   }
 
   /**
+   * Adopt settings a running deployment changed without remounting this plugin.
+   *
+   * These two fields are the ones the Config schema marks volatile, so DSH
+   * pushes edits to them into the live config object and tells the plugin to
+   * re-read. An adapter that kept its constructor copy would silently ignore
+   * what the settings page shows.
+   *
+   * @param {{defaultModel?: string, reasoningEffort?: string}} next
+   * @returns {void}
+   */
+  setDefaults(next) {
+    if (typeof next?.defaultModel === 'string') this.defaultModel = next.defaultModel
+    if (typeof next?.reasoningEffort === 'string') this.reasoningEffort = next.reasoningEffort
+  }
+
+  /**
    * @param {string} provider
    * @returns {{id: string, name: string}}
    */

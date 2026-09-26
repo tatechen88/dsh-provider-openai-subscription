@@ -289,7 +289,43 @@ OpenAI Responses returned HTTP 400: { "error": { "message": "No tool output foun
 - `cordis.patch.yml`——DSH profile 接入配置
 - `README.md`——面向使用者的说明；`AGENTS.md`——仓库约定与 verify 门禁
 
-## 客户端剥离（P1，本轮）
+## 接管原生面（P2，本轮）
+
+**目标**：没有客户端之后，插件仍要在 DSH 原生 UI 里**看得见**。实测把机制钉死了：
+
+1. **行按 settings namespace 过滤**（`dsh-client-ui-settings-models`：`state.rows.filter(row => state.namespaces.has(row.entry.settingsNs))`）。
+2. **namespace 只由条目自己的 Config schema 投影**（0.1.7 的 settings 服务没有 `register`），而且
+   `schema(entry)` 要求 `entry.fiber.runtime.Config` **有 `toJSON`** —— 手写 Standard Schema 不满足，
+   宿主 Config inspector 直接报 `unsupported`。
+3. **还要至少一个 volatile 字段**：`volatileForm()` 只投影 `meta.volatile` 之下的字段，没有就返回
+   `undefined`，条目连 descriptor 都不产生。
+
+**做法**
+
+- `src/config.js`：新增 `selectConfigSchema(load)` 与 `STANDARD_CONFIG`。**优先**用宿主自带的
+  `@deepseek-ai/schemastery`（`requireHarnessModule`，同步、带锚点），取不到就回退内置 Standard Schema；
+  `CONFIG_SCHEMA_KIND` 记录走了哪条，并写进激活日志。**没有**把 schemastery 声明成依赖：
+  它只是"宿主有就用"的加分项，缺失不是错误。
+- `src/dsh-modules.js`（新）：统一的宿主包解析锚点，多了一条**打包 Desktop** 锚点
+  `$DSH_HOME/resources/app.asar/dsh/node_modules`（Electron 能读 asar，纯 Node 自然落空）。
+  `provider/attribution.js` 改为共用它，行为不变（组合门禁里仍断言真机取到官方 helper）。
+- **volatile 是诚实的**：`provider.defaultModel` / `provider.reasoningEffort` 标 `.volatile()`，
+  并在 `loader/volatile-update` 里由 `adapter.setDefaults()` 采用。loader 是**原地改写**插件拿到的那份
+  config 对象（`updateVolatile(ref, source)`），所以处理器读 `ctx.fiber.config` 归一化后即可。
+  其余字段（`state`、`oauth.clientId`、`meter`）**不标** volatile：它们只在激活时生效，
+  标了就等于给用户一个"改了要等重启"的假开关。
+
+**实测结果（真 0.1.7 + 真浏览器）**：原生「设置 → 模型」页现在显示
+`DeepSeek 编辑 / OpenAI (ChatGPT OAuth) 编辑 / 添加模型提供商`，**未登录也可见**（P3 的前提）。
+点开编辑器只显示「其余字段在 cordis.patch.yml 中，请直接编辑对应段。」且保存禁用——
+因为 `layout = layoutOf(namespace.ns)` 只认 `llm-deepseek` / `llm-pi-ai`，第三方一律 `unknown`。
+**这是 DSH 的设计，不是 schema 的问题**；结论是：原生面给的是**可发现性**，配置仍以
+`cordis.patch.yml` 为准。
+
+**证据**：`npm run test` 387/387（**DSH_HOME 默认与指向真安装两种环境都跑，结果一致**——
+`schemastery`/`standard` 两条分支都被覆盖）；组合门禁 12/12 在真 0.1.7 上 exit 0。
+
+## 客户端剥离（P1，上一轮）
 
 **根因**：DSH 0.1.7 把"客户端 entry 导入失败"当**致命** web 启动错误（`web boot: 1 entry did not
 activate`），Desktop 外壳据此崩溃重启——2026-09-26 因运行中改动客户端文件实测触发过一次。
