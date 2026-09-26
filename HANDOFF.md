@@ -289,7 +289,36 @@ OpenAI Responses returned HTTP 400: { "error": { "message": "No tool output foun
 - `cordis.patch.yml`——DSH profile 接入配置
 - `README.md`——面向使用者的说明；`AGENTS.md`——仓库约定与 verify 门禁
 
-## 接管原生面（P2，本轮）
+## 登录路径（P3，本轮）
+
+**没有客户端之后，"登录"必须有别的入口。** 做了三件事，都在真机上验过：
+
+1. **`src/oauth/authorization-flow.js`** —— 注册到 `ctx.authorization` 的 flow，三种 method
+   （`oauth` 回环 / `manual` 粘贴 / `device` 设备码）。它只做编排：起一个现有 attempt、
+   用 `session.notify` 告诉人做什么、必要时 `session.prompt` 问一次，然后等 attempt 完成。
+   **授权写入由 attempt 自己经 `ctx.credentials` 完成**——seam 的 `observed.committed` 监听的正是
+   `credentials/record-updated`，所以**不要**再调 `session.commit`（会写两次）。失败/被拒时 flow
+   会取消自己起的 attempt（否则回环监听器会挂到超时，正好挡住人马上要做的重试）。
+2. **`src/operations.js`** —— 工具与 flow 共用的唯一实现：`status` / `login` / `logout` / `cancelLogin`。
+   `login` 的等待是有界的且**不取消**尝试（"我不等了" ≠ "我改主意"）；取消是独立动作。
+3. **`src/tools.js`** —— `openai_subscription_status|login|logout` 三个工具。定义交给**宿主自己的**
+   `defineTool`（经 `src/dsh-modules.js` 的锚点懒加载；取不到就只警告、不注册工具）。
+   工具描述是面向模型的文案：说清要人做什么、等多久、超时怎么办。
+
+**接线上的坑（真机门禁逼出来的）**：服务**在场就直接注册**，缺席才 `ctx.inject`。
+服务已存在时 `ctx.inject` 会**同步**回调一个尚未激活的 scope，在其上建 effect 抛
+`INACTIVE_EFFECT`，整个插件激活失败。旧代码里 `schemaCtx.plugin(...)` 的 try/catch 一直吞掉这个错误；
+现在 smoke 用 `activateSafely`（与其它块一致）并断言 `loaded === true`，所以它再也不会被吞。
+
+**D2 修订**：CLI **不做登录**——凭据只能经 `ctx.credentials` seam 写，而本插件承诺不绕过 DSH
+直接碰 `.credentials.yaml`；CLI 若自挂 mini 组合去写，就是在有 DSH 运行时当第二个写者。
+入口 = 工具 + authorization flow。
+
+**门禁新增**：组合 smoke 从 12 项增到 **14 项**——真 `AuthorizationService` 驱动我们的 flow
+（method 列表、prompt 送达、state 不匹配被拒、`inFlight` 回落）；真 `defineTool` 接受并执行全部 3 个工具定义。
+`npm run test` 406/406。
+
+## 接管原生面（P2，上一轮）
 
 **目标**：没有客户端之后，插件仍要在 DSH 原生 UI 里**看得见**。实测把机制钉死了：
 

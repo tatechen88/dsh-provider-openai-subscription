@@ -165,16 +165,19 @@ test('applyRuntime arms an injection for a web server that is not there yet', as
   const result = await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } }, { home, sleep: async () => { throw new Error('the optional web server must not be awaited') } })
   assert.equal(result.ok, true, 'an absent optional service never blocks activation')
   assert.equal(routes.length, 0)
-  assert.equal(injections.length, 1)
-  assert.deepEqual(injections[0].deps, ['webServer'])
+  // The runtime arms one injection per optional service it can use; this test is
+  // about the web server's, so it names that one instead of counting them all.
+  const webInjections = injections.filter((entry) => entry.deps.includes('webServer'))
+  assert.equal(webInjections.length, 1)
+  const webInjection = webInjections[0]
 
   // The web server arrives: the injected callback mounts the routes onto it.
   services.webServer = webServer
-  injections[0].run()
+  webInjection.run()
   assert.ok(routes.length > 0, 'routes mount once a web server exists')
 
   // ...and go away with it.
-  await injections[0].dispose()
+  await webInjection.dispose()
   assert.equal(routes.length, 0, 'the routes belong to the injected web server lifetime')
 })
 
@@ -184,7 +187,11 @@ test('a web server that is already present mounts synchronously', async () => {
   const result = await applyRuntime(ctx, { state: 'active', oauth: { clientId: 'cid' } }, { home, sleep: async () => {} })
   assert.equal(result.ok, true)
   assert.ok(routes.length > 0, 'the common path does not wait for an injection')
-  assert.equal(injections.length, 0, 'no injection is armed when the server is already here')
+  assert.equal(
+    injections.filter((entry) => entry.deps.includes('webServer')).length,
+    0,
+    'no web-server injection is armed when the server is already here',
+  )
 })
 
 test('applyRuntime stays disabled on provider conflict', async () => {

@@ -243,6 +243,23 @@ export class DeviceOAuthAttemptManager {
   }
 
   /**
+   * The newest attempt still waiting for a human, if any.
+   *
+   * A surface that resumes a sign-in needs to name the one already running
+   * rather than start a second: the seam allows one attempt per credential, so a
+   * second call would be refused outright.
+   * @returns {DeviceOAuthAttempt|undefined}
+   */
+  pending() {
+    const all = [...this.attempts.values()]
+    for (let index = all.length - 1; index >= 0; index -= 1) {
+      const attempt = all[index]
+      if (attempt.status === 'created' || attempt.status === 'waiting' || attempt.status === 'exchanging') return attempt
+    }
+    return undefined
+  }
+
+  /**
    * Cancel all attempts.
    * @returns {Promise<void>}
    */

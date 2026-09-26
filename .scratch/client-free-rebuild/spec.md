@@ -41,16 +41,14 @@ Desktop 外壳把它当 fatal recovery：崩溃并自动重启（2026-09-26 实�
 | # | 决策 | 采取 |
 |---|---|---|
 | D1 | 内置用量计量 | 保留并工具化（纯宿主侧、零依赖、已测；**界面消失**） |
-| D2 | 登录入口 | 工具 + CLI 双入口 |
+| D2 | 登录入口 | 工具 + CLI 双入口 → **修订为：工具 + authorization flow**（理由见下） |
 | D3 | HTTP 路由 | 只留 OAuth 回调所需最小路径，其余删除 |
 | D4 | provider id / 凭据键 / 配置字段 | 全部沿用（`openai-subscription`、`llm-openai-subscription/default`） |
 | D5 | 版本与仓库 | 同仓重构，破坏性变更 → 2.0.0 |
 | D6 | 现网处置 | 先卸载 Desktop 里那份，再重构 |
 | — | 不修改客户端 | **绝对约束**：不是"少改"，而是"不存在" |
 
-## 5. 目标架构
-
-```
+## 5. 目标架构```
 src/           宿主半边（provider / credentials / oauth / balance / models / usage）
 src/tools/     ★ 新增：status / login / logout / quota / meter
 src/web/       收窄到 OAuth 回调
@@ -66,9 +64,30 @@ cordis.patch.yml  bundle 补丁层（唯一保留的对外声明）
 |---|---|
 | 设置页 Provider 卡片 | `llm.registerConfigurableProviders` → 原生模型页一行 |
 | 设置页「刷新模型」 | `llm.registerModelDiscovery` |
-| 三种登录 | `ctx.authorization.registerFlow`（oauth / manual / device）+ 工具/CLI 触发 |
+| 三种登录 | `ctx.authorization.registerFlow`（oauth / manual / device）+ 工具触发 |
 | 侧边栏指示器、用量卡片、首次引导、自带设置页 | **删除**；额度与计量改由工具/CLI |
 | 22 条本地路由 | 只留回调 |
+
+### P3 结果（2026-09-26 实测，真 seam 驱动）
+
+- `src/oauth/authorization-flow.js`：flow 只做编排——启动现有 attempt、用 `session.notify` 说人话、
+  需要时才 `session.prompt`，并在**授权写入由 attempt 自己经 `ctx.credentials` 完成**后 resolve。
+  seam 的 `observed.committed` 正是监听 `credentials/record-updated`，所以不需要 `session.commit`
+  （调用它反而会写两次）。**已实测**：真 `AuthorizationService` 下 `begin({method:'manual'})` 走到
+  我们的 flow、prompt 送达 interaction、state 不匹配的回调被拒且 `inFlight` 回落为 false。
+- `src/operations.js`：工具/flow 共用的唯一实现（status / login / logout / cancelLogin）。
+  `login` 的有界等待**不取消**尝试（"我不等了" ≠ "我改主意"），取消是独立动作。
+- `src/tools.js`：`openai_subscription_status|login|logout`。定义交给**宿主自己的** `defineTool`
+  （经共享锚点懒加载；取不到就不注册工具，不阻塞激活）。**已实测**：真 helper 接受全部 3 个定义并能执行。
+- 接线：服务**在场就直接注册**，缺席才 `ctx.inject`。这一点是被真机门禁逼出来的——服务已存在时
+  `ctx.inject` 会同步回调一个尚未激活的 scope，在其上建 effect 会抛 `INACTIVE_EFFECT`，
+  于是整个插件激活失败（旧写法在 smoke 里一直被 try/catch 吞掉才没暴露）。
+
+**D2 修订**：CLI **不做登录**。凭据只能经 `ctx.credentials` seam 写入，而这个 plugin 明确承诺
+"绝不绕过 DSH 直接碰 `.credentials.yaml`"；CLI 若自行挂一个 mini 组合去写，就是在有 DSH 运行时
+当第二个写者（锁与 watch 语义都不受控）。因此登录入口 = **工具 + authorization flow**，
+CLI 保持诊断/安装/备份角色。
+
 
 **已知缺口（P3 需 spike）**：全量 grep 证明 DSH 0.1.7 的**任何客户端都没有调用 `authorization/*`**，
 `settings.models.sign-in` 插槽由账号插件占用走 Platform 自己的 remote。因此注册 flow 只是
@@ -124,7 +143,7 @@ namespace 只由**条目自己的 Config schema 投影**产生；我们的 `Conf
 | P0 | 冻结基线（tag `v1.5.0-pre-rebuild`）、决策入档 | ✅ |
 | P1 | 剥离客户端：删 `client/`、`dsh.client`、`exports`、`files`；删 7 个客户端测试；`doctor` 改为断言"无客户端"；web 门禁反向；新增守卫测试 | ✅ |
 | P2 | 原生配置面（含 spike S1） | ✅（行可见；表单只读，配置以 patch 为准） |
-| P3 | 登录路径（含 spike S2） | 待办 |
+| P3 | 登录路径（含 spike S2） | ✅ |
 | P4 | 计量与额度的工具化/CLI 化 | 待办 |
 | P5 | 路由收口 | 待办 |
 | P6 | 门禁重建 | 待办 |

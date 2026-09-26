@@ -92,10 +92,14 @@ const require = createRequire(join(dshNodeModules, 'noop.js'))
 let Context
 let LocalCredentialProvider
 let LlmRuntime
+let AuthorizationService
 try {
   ;({ Context } = require('@deepseek-ai/cordis'))
   ;({ LocalCredentialProvider } = require('@deepseek-ai/dsh-credentials-local'))
   ;({ LlmRuntime } = require('@deepseek-ai/dsh-llm'))
+  // Optional: an install without the seam still composes, and the block below
+  // reports the skip rather than failing something the plugin cannot control.
+  ;({ AuthorizationService } = require('@deepseek-ai/dsh-authorization'))
 } catch (error) {
   // A partial install is a skip, not a crash: the point of the script is to
   // exercise a real composition when one is available.
@@ -438,6 +442,124 @@ try {
       throw new Error(`the schema failure does not name the offending field: ${String(refused.message)}`)
     }
     console.log('OK: Cordis refuses a malformed config and names the field before apply() runs')
+  }
+
+  // ── authorization flow ─────────────────────────────────────────────────
+  // With no browser half, "sign in" is whatever the authorization seam is told,
+  // so the flow has to be registered with the real service and behave under its
+  // real contract: one attempt at a time, and a record committed during the
+  // attempt or a refusal.
+  if (AuthorizationService !== undefined) {
+    const authCtx = newContext()
+    await authCtx.plugin(LocalCredentialProvider, { path: join(dir, 'auth.credentials.yaml'), watch: false })
+    await authCtx.plugin(AuthorizationService)
+    // The llm service is part of the composition this plugin needs: without it
+    // the runtime reports a missing service instead of activating, and the flow
+    // would never be registered.
+    await authCtx.plugin(LlmRuntime)
+    // Activated through the same entry the loader uses, like every other block
+    // here: mounting the module with `ctx.plugin` would run `apply` on a fiber
+    // these bare contexts have not started, and any effect would be refused.
+    const activated = await activateSafely(authCtx, { state: 'active', oauth: { clientId: 'smoke-client' } })
+    if (activated.loaded !== true) {
+      throw new Error(`activation beside the authorization service failed: ${activated.reason ?? 'unknown'} ${activated.error?.message ?? ''}`)
+    }
+
+    const authorization = authCtx.get('authorization')
+    const key = 'llm-openai-subscription/default'
+    const entry = authorization.describe(key)
+    if (entry === undefined) throw new Error('the plugin registered no authorization flow for its credential')
+    if (entry.inFlight) throw new Error('a flow was registered as already in flight')
+    const methods = entry.methods.map((method) => method.id)
+    for (const id of ['oauth', 'manual', 'device']) {
+      if (!methods.includes(id)) throw new Error(`the flow does not offer the "${id}" method (offers ${methods.join(', ')})`)
+    }
+    if (authorization.list().filter((row) => row.key === key).length !== 1) {
+      throw new Error('the credential key is not claimed exactly once')
+    }
+
+    // Drive one attempt through the seam. The paste is refused on purpose, and
+    // refused *before* the exchange: a callback carrying the wrong state is
+    // rejected by the attempt's own check, so this proves the seam really
+    // dispatched to this flow, carried its prompt to the interaction, and got a
+    // failure back — with no network call and no real login.
+    const notices = []
+    let prompts = 0
+    const outcome = await authorization.begin({
+      key,
+      method: 'manual',
+      interaction: {
+        notify: (notice) => notices.push(notice),
+        prompt: async () => {
+          prompts += 1
+          return 'http://127.0.0.1:1455/auth/callback?code=abc&state=not-the-state'
+        },
+      },
+    }).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    )
+    if (outcome.error === undefined) throw new Error('a refused paste was reported as a successful authorization')
+    if (!/state-mismatch/.test(String(outcome.error.message))) {
+      throw new Error(`the flow failure lost its reason: ${String(outcome.error.message)}`)
+    }
+    if (prompts !== 1) throw new Error(`the flow asked ${prompts} questions instead of one`)
+    if (notices.length !== 1 || typeof notices[0].url !== 'string') {
+      throw new Error('the flow did not hand the interaction the sign-in link')
+    }
+    if (authorization.describe(key)?.inFlight === true) {
+      throw new Error('a failed attempt was left in flight')
+    }
+    console.log(`OK: the authorization seam drives the plugin flow (${methods.join(', ')}, refusal reported, nothing left in flight)`)
+  }
+
+  // ── tool definitions the harness accepts ───────────────────────────────
+  // A tool is not a plain object: the harness's own helper converts the
+  // parameter spec, validates arguments and wraps execution. Hand-building that
+  // shape would be a private copy of a harness contract, so this asserts the
+  // real helper accepts what this plugin declares — the one part of the tools
+  // path a fake cannot verify.
+  {
+    let defineTool
+    try {
+      ;({ defineTool } = require('@deepseek-ai/dsh-tools'))
+    } catch {
+      defineTool = undefined
+    }
+    if (defineTool === undefined) {
+      console.log('SKIP: the harness tool helper is not installed; tool definitions are unverified here')
+    } else {
+      const { toolOptions } = await import('../src/tools.js')
+      const calls = []
+      const options = toolOptions({
+        operations: {
+          status: async () => ({ configured: true, source: 'smoke' }),
+          login: async (input) => {
+            calls.push(input)
+            return { status: 'pending' }
+          },
+          logout: async () => ({ status: 'signed-out' }),
+        },
+      })
+      const definitions = options.map((entry) => defineTool(entry))
+      const names = definitions.map((entry) => entry.name)
+      for (const expected of ['openai_subscription_status', 'openai_subscription_login', 'openai_subscription_logout']) {
+        if (!names.includes(expected)) throw new Error(`defineTool did not produce "${expected}" (got ${names.join(', ')})`)
+      }
+      const login = definitions.find((entry) => entry.name === 'openai_subscription_login')
+      const declared = JSON.stringify(login.parameters ?? {})
+      for (const field of ['method', 'wait_seconds']) {
+        if (!declared.includes(field)) throw new Error(`the login tool lost its "${field}" parameter: ${declared}`)
+      }
+      const status = definitions.find((entry) => entry.name === 'openai_subscription_status')
+      const value = await status.execute({}, {})
+      if (value?.source !== 'smoke') throw new Error('the status tool did not return what its operation produced')
+      await login.execute({ method: 'device', wait_seconds: 2 }, {})
+      if (calls.length !== 1 || calls[0].method !== 'device' || calls[0].waitMs !== 2000) {
+        throw new Error(`the login tool did not translate its arguments: ${JSON.stringify(calls)}`)
+      }
+      console.log(`OK: the harness defineTool accepts all ${definitions.length} tool definitions and runs them`)
+    }
   }
 
   // ── provider request attribution ────────────────────────────────────────

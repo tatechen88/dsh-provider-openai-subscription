@@ -10,8 +10,12 @@
  * @module dsh-provider-openai-subscription/runtime
  */
 
-import { PACKAGE_NAME, PROVIDER_ID, SETTINGS_NAMESPACE } from './constants.js'
+import { PACKAGE_NAME, PROVIDER_ID, SETTINGS_NAMESPACE, CREDENTIAL_KEY } from './constants.js'
 import { CONFIG_SCHEMA_KIND, normalizeConfig } from './config.js'
+import { loadHarnessModule } from './dsh-modules.js'
+import { createOperations } from './operations.js'
+import { toolOptions } from './tools.js'
+import { createAuthorizationFlow } from './oauth/authorization-flow.js'
 import { readConflictReport } from './conflicts.js'
 import { CredentialRepository } from './credentials/repository.js'
 import { TokenManager } from './credentials/token-manager.js'
@@ -71,6 +75,29 @@ export async function waitForService(ctx, name, options = {}) {
     if (remaining <= 0) return undefined
     await sleep(Math.min(tickMs, remaining))
   }
+}
+
+/**
+ * Resolve the harness `defineTool` helper, or nothing when it is unreachable.
+ *
+ * A tool definition is not a plain object: the helper converts the parameter
+ * spec, validates arguments, and wraps execution. Faking that shape would be a
+ * private copy of a harness contract, so the helper is loaded from the
+ * deployment — and its absence is an ordinary, reported outcome.
+ *
+ * @param {object} [logger]
+ * @returns {Promise<((options: object) => object)|undefined>}
+ */
+async function loadDefineTool(logger) {
+  try {
+    const loaded = await loadHarnessModule('@deepseek-ai/dsh-tools')
+    const defineTool = /** @type {{defineTool?: unknown}} */ (loaded)?.defineTool
+    if (typeof defineTool === 'function') return /** @type {(options: object) => object} */ (defineTool)
+    logger?.warn?.(`${PACKAGE_NAME}: the harness tool helper exports no defineTool; tools are not registered`)
+  } catch (error) {
+    logger?.warn?.(`${PACKAGE_NAME}: the harness tool helper is unreachable; tools are not registered`, error)
+  }
+  return undefined
 }
 
 /**
@@ -156,6 +183,28 @@ export async function applyRuntime(ctx, config, options = {}) {
     home: options.home,
     ...(adapter === undefined ? {} : { listOpenAIModels: () => adapter.listModels(PROVIDER_ID) }),
   });
+
+  // The user-facing surface, built once and shared by everything that can reach
+  // it: the authorization seam's flow and the tools describe the same actions, so
+  // they read the same operations object rather than each implementing them.
+  const clientId = config.oauth?.clientId ?? ''
+  const flow = clientId.length === 0
+    ? undefined
+    : createAuthorizationFlow({ attempts, devices, repository, clientId, exchange })
+  const operations = createOperations({
+    repository,
+    attempts,
+    devices,
+    balance,
+    authorization: typeof ctx?.get === 'function' ? ctx.get('authorization') : undefined,
+    authorizationKey: CREDENTIAL_KEY,
+    config,
+  })
+  // The harness's own tool helper, resolved through the shared anchors: this
+  // plugin is installed from a local path, so it must not import a package it
+  // cannot resolve, and a deployment without it gets no tools instead of a
+  // failed activation.
+  const defineTool = await loadDefineTool(logger)
 
   // Everything this activation owns, oldest registration first. Nothing is
   // handed back to Cordis until the whole set has registered, so a failure
@@ -264,6 +313,48 @@ export async function applyRuntime(ctx, config, options = {}) {
         adapter?.setDefaults({ defaultModel: live.provider.defaultModel, reasoningEffort: live.provider.reasoningEffort })
       }))
     }
+    // Without a browser half, these two registrations are the entire user-facing
+    // surface: the seam makes the credential obtainable by any caller, and the
+    // tools are how a chat reaches it.
+    //
+    // A service that is already mounted is registered against directly, and only
+    // an absent one is awaited through an injection. That order matters: on a
+    // context whose services are all present, `ctx.inject` answers synchronously
+    // with a scope that is not active yet, and creating an effect on it throws —
+    // a failed activation for no reason at all.
+    const awaitService = (serviceName, callback, label) => {
+      if (typeof ctx.inject !== 'function') {
+        logger?.warn?.(`${PACKAGE_NAME}: no injection available; ${label} is not registered`)
+        return
+      }
+      const fiber = ctx.inject([serviceName], (scope) => {
+        scope.effect(() => callback(scope[serviceName]), `${PACKAGE_NAME}: ${label}`)
+      })
+      owned.push(() => fiber.dispose())
+    }
+    const registerFlow = (service) => {
+      const dispose = service.registerFlow(flow)
+      return () => dispose()
+    }
+    const registerTools = (service) => {
+      if (defineTool === undefined) {
+        logger?.warn?.(`${PACKAGE_NAME}: the harness tool helper is unreachable; tools are not registered`)
+        return () => {}
+      }
+      const disposers = toolOptions({ operations }).map((options) => service.register(defineTool(options)))
+      return () => {
+        for (const dispose of disposers.reverse()) dispose()
+      }
+    }
+    const service = (name) => (typeof ctx.get === 'function' ? ctx.get(name) : undefined)
+    if (flow !== undefined) {
+      const authorization = service('authorization')
+      if (authorization?.registerFlow !== undefined) owned.push(registerFlow(authorization))
+      else awaitService('authorization', registerFlow, 'authorization flow')
+    }
+    const toolRegistry = service('tools')
+    if (toolRegistry?.register !== undefined) owned.push(registerTools(toolRegistry))
+    else awaitService('tools', registerTools, 'tools')
   }
 
   if (typeof ctx.effect !== 'function') {
