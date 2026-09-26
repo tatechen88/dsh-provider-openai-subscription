@@ -1,6 +1,6 @@
 # HANDOFF
 
-> 交接说明：给接手本仓库的下一个 agent 或新 session。最后更新 2026-09-15。
+> 交接说明：给接手本仓库的下一个 agent 或新 session。最后更新 2026-09-26。
 
 ## 这是什么
 
@@ -190,6 +190,48 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 **修法**：`connectionTrust()` 改为**每请求解析** `ctx.get('connection')`（不再捕获实例），`mountWebRoutes` 始终传入这个 authorizer；`routes.js` 的 `sameOrigin` 回落只保留给「这个部署根本没有 Connection 服务」的情况。fail-closed 一丝不放宽：栅栏抛异常 → 403；**曾经有过栅栏、此刻取不到**（重载途中）→ 403，绝不静默降级到本地的弱检查。回归测试在 `test/runtime.test.mjs`（后继实例接手、重载空窗不降级、无栅栏部署仍用本地守卫）与 `test/web-routes.test.mjs`（受信非 loopback/未受信/跨源 Origin/缺 Host 四种判定）。
 
 **真机约束**：本 profile 的 HMR 是 config-only（用 `root: []` 建 watch-only 实例），不会重载已加载的插件模块，所以**这份修复只有重启 `dsh web` 才会进进程**。
+
+## DSH 0.1.7 兼容与门禁补强（本轮）
+
+问题是「0.1.7 上还能不能跑」。在 `D:\AI\Cache\dsh-0.1.7-verify-npm` 装真 `@deepseek-ai/dsh@0.1.7-rc.2`（518 包）实测，结论：**能跑**，但有一处真实的接口删除要修，并补上了一条此前完全缺失的门禁。
+
+**修掉的**
+
+1. **`ctx.get('settings').get(ns)` 在 0.1.7 被删**。0.1.6 的 `settings` 服务有 `get(ns)`；0.1.7 的同名服务换成 `SettingsForms`（`super(ownerContext, "settings")`），只有 `describe/update/replace/mutate/configure`，Cordis 4.0.4 的 `Service` 基类也没有 `get`。于是 `resolveDeepSeekCredential` / `resolveZhipuCredential` 静默读到 `undefined`，回落到内置环境变量名——profile 里改过 `apiKeyEnv` 的部署会去错的地方找 key，**而且不报错**。现在统一走 `readSettingsSection()`：先试 `get(ns)`，再试 `describe().find(d => d.ns === ns)?.value`（`describe()` 不带 redaction 选项是对的——这是宿主进程内的读，且只取环境变量**名**）。这两条读取路径此前**一个测试都没有**，现在两种服务形状各有用例。
+2. **组合 smoke 的收尾在 0.1.7 上必然失败**（`ENOTEMPTY`）。不是检查项失败：12/12 全过，但脚本从不释放它开的 Cordis 上下文，meter 的 model-watch 扫描与账本 debounce 还在写文件，`rm -rf` 与 rename 赛跑，Windows 上抛 `ENOTEMPTY`，于是 `test:integration:strict` 退出 1、`test:release` 永远红。现在脚本记录每一个上下文，删目录前按后进先出逐个释放（`ctx.fiber.dispose()`）。残留物是 `storages/openai-subscription-meter/models.json`（422B）与 `models.json.tmp-*`（0B）。
+
+**撤回的一条**：上一版体检报告里写过「Web 路由未传 `kind`，22 条路由落进 prefix 表」。**是误判**：`kind: 'exact'` 自初始提交 `32cbd53` 起就在 `src/web/routes.js` 里（`git log -S "kind: 'exact'" -- src/web/routes.js` 只有那一条）。当时的 grep 模式是 `register|path:|methods|handler`，`kind:` 那一行被过滤掉了。教训记在这里：**结论性的 API 审查要用整段读取复核，不要凭窄模式的一次匹配下断言**。
+
+**新增的门禁**：`scripts/web-smoke.mjs`（`npm run test:web[:strict]`，已进 `test:release`）。用临时 home 与临时 profile（插件以包名 link 进 profile 自己的 `node_modules`，宿主的行保持默认 `bootstrap`）真的起一次 `dsh web`，自己挑一个空闲端口，用页面 token 换会话 cookie，然后断言三件事：首页预加载了 `<包名>/client.js`、首页点名的批量地址返回 200、取回的字节里确实有 `__ModuleLoader__.load` 与本插件的客户端席位。不依赖浏览器、不需要登录，与另外两条 smoke 一样「缺 DSH 跳过 / `--require-dsh` 失败」。它填的是本项目最大的门禁空洞：客户端单测跑的是自造 `__ModuleLoader__` 假宿主，组合 smoke 从不启动 web 服务。
+
+**本轮实测**（全部真 0.1.7-rc.2）：
+
+| 门禁 | 结果 |
+|---|---|
+| `npm run test` | 429/429 |
+| `integration-smoke --require-dsh` | 12/12 检查 OK，exit 0；在 0.1.5 上同样 exit 0（无回归） |
+| `web-smoke --require-dsh` | 首页注入 + bundle 393KB 取回，PASS |
+| `headless-smoke --require-dsh` | PASS（NDJSON 契约、按会话记账、续跑不重复） |
+| 真浏览器一次性人工验证 | 设置页出现「OpenAI 接入」，点进去渲染出「OpenAI (ChatGPT OAuth) / 插件未激活」，无 pageerror |
+
+**复现**
+
+```powershell
+$root = 'D:\AI\Cache\dsh-0.1.7-verify-npm'
+$env:DSH_NODE_MODULES = "$root\node_modules"; $env:DSH_HOME = "$root\home"
+node scripts/integration-smoke.mjs --require-dsh
+node scripts/web-smoke.mjs --require-dsh
+$env:PATH = "$root\node_modules\.bin;$env:PATH"
+node scripts/headless-smoke.mjs --require-dsh
+```
+
+`webhome\profiles\webcheck` 是手工浏览器验证用的临时 web profile；asar 阅读工具在 `D:\AI\Cache\asar-tools`（`@electron/asar` + 一个读取脚本），用来核对 Desktop 的 `resources/app.asar`。
+
+**打包**：补了 `LICENSE`（此前 package.json 写 MIT 却没有授权正文）与 `files` 白名单，`npm pack` 从 119 文件 / 358 kB 降到 52 文件 / 144 kB，命令行工具与 `dsh.bundle` / `dsh.client` 指向的文件全部保留。
+
+**还没做的**：Desktop profile 的真实安装。`profiles\desktop` 目前没有任何 `node_modules`，插件从未装进去——安装形态要先拍板（绝对路径 link / `npm pack` 出 tgz / 发 npm 后按包名装），验收清单见 `.scratch/dsh-0.1.7-desktop/spec.md`。
+
+**提交**：`36ecc55` 连接栅栏按请求解析 → `7db5994` model-watch 后端 → `85d59d3` 客户端新模型一行 → `1b849cd` settings 读取兼容 → `a9a1462` smoke 收尾 → `fb8cdec` web 门禁 → `f61ce85` LICENSE 与打包白名单。
 
 ## 关键文件
 

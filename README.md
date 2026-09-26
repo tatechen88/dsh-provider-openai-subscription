@@ -12,7 +12,7 @@
 
 | | |
 |---|---|
-| DSH | **0.1.6 及以上**。插件按 0.1.6 的接口写；0.1.5 实测能用，但不在支持范围内 |
+| DSH | **0.1.6 及以上**。0.1.6-alpha.1 与 **0.1.7-rc.2** 均实测通过（组合、headless、真实 `dsh web` 三条门禁）；0.1.5 实测能用，但不在支持范围内 |
 | Node.js | 22.19+ 或 24+ |
 | 账号 | 一个 ChatGPT 订阅账号（Plus / Pro / Team 等） |
 
@@ -67,6 +67,7 @@ dsh-openai-subscription-rescue doctor --profile "$DSH_HOME/profiles/web/package.
 - **正常的流式输出**，token 用量如实上报——包括缓存命中和思考 token。DSH 每条消息下面的用量数字就是它报上去的。
 - **模型目录是个活的**：每 10 分钟自动重新拉一次，设置页的「刷新」也会真的清缓存重拉。OpenAI 上了新模型不用等插件发版，也不用重启。
 - **额度一目了然**：侧边栏底部的指示器跟着当前模型走，OpenAI 订阅、DeepSeek、智谱 GLM 的额度都显示在同一个地方。
+- **新模型有人盯**：每 30 分钟扫一次 DeepSeek、智谱和 OpenAI 订阅三家的模型目录，出现本机没见过的模型就在用量卡片里点名一行「新模型: xxx」——不用等插件发版，也不用你自己去翻公告。首次扫描只建立基线，不会把现有模型全标成新的。
 - **不和别人抢**：用独立的 Provider ID、设置命名空间和凭据键，不会覆盖旧的 `openai-codex` 插件，两个可以同时装着、按会话切换。
 - **它挂了也不会拖住 DSH**：配置或加载出错时，DSH 只记一条启动警告、照常启动，其它插件不受影响。（这是 0.1.6 的行为；0.1.5 会把整条命令一起停掉。）
 
@@ -104,7 +105,7 @@ dsh-openai-subscription-rescue doctor --profile "$DSH_HOME/profiles/web/package.
 <details>
 <summary>账本、历史和隐私（点开）</summary>
 
-- 账本在 `$DSH_HOME/storages/openai-subscription-meter/usage.json`，**只记调用事实和当时的报价**，不存提示词、不存回复内容、不存密钥。
+- 账本在 `$DSH_HOME/storages/openai-subscription-meter/usage.json`，**只记调用事实和当时的报价**，不存提示词、不存回复内容、不存密钥。模型检测的基线在同目录 `models.json`，只记「见过哪些模型名」，删掉也没事，下次扫描重建。
 - 设置在 `$DSH_HOME/plugin-state/openai-subscription-meter.json`，带版本号；两个标签页同时改，后写的会收到冲突提示而不是覆盖。
 - 超过 `meter.retentionDays`（默认 90 天）的原始记录会在启动时折叠成「每天 × 每路由 × 每模型」的汇总，**所有时间窗的合计一分不差**，只是会话级明细最多回溯这么久。设成 0 就永不折叠。
 - 余额查询每次重新读一遍密钥，只发给 `api.deepseek.com` 的 HTTPS，禁止跳转；失败就保留上一次成功的读数。
@@ -135,7 +136,7 @@ profile 里那段 YAML 的 `config` 支持这些字段：
 | `oauth.clientId` | OAuth Client ID。留空就不会加载 |
 | `provider.defaultModel` | 默认模型，可以留空 |
 | `provider.reasoningEffort` | 默认思考力度，可以留空 |
-| `meter.*` | 用量模块的默认值，字段说明见插件自带的 `cordis.patch.yml` |
+| `meter.*` | 用量模块的默认值，字段说明见插件自带的 `cordis.patch.yml`（含 `modelWatch` 新模型检测开关，默认开） |
 
 想调用量模块的细节（比如统计时区、是否读官方余额、保留多少天），在 profile 的 patch 层加一段 `meter:`，字段和默认值看插件自带的 [`cordis.patch.yml`](cordis.patch.yml)。**设置页里改的值存在插件状态文件里，优先级高于这里。**
 
@@ -202,13 +203,14 @@ npm test                  # 单元测试
 npm run check             # 语法检查 + 全部单元测试
 npm run test:e2e          # 真实 DeepSeek 余额查询；没有 Key 时会跳过
 npm run test:integration  # 真实 DSH 组合 smoke（缺 DSH 依赖时跳过）
+npm run test:web          # 真实 dsh web：浏览器端 bundle 是否被注入并能取回（缺 DSH 时跳过）
 npm run test:headless     # 真实 dsh --profile headless --json 跑一遍（缺 dsh 时跳过）
-npm run test:release      # 发布前跑：单元测试 + 两个 strict 门禁
+npm run test:release      # 发布前跑：单元测试 + 三个 strict 门禁
 ```
 
-`test:integration` 会把插件装进真实的 Cordis 上下文跑一次 `llm/stream`，验证它变成一条已计价记录，并且把结果送进 DSH 自己的流式校验器。`test:headless` 会真的启动一次 `dsh --profile headless --json`（在临时 DSH home 里，用一个 mock 模型路由，不联网），检查输出流是干净的 JSON、账本按会话记账。
+`test:integration` 会把插件装进真实的 Cordis 上下文跑一次 `llm/stream`，验证它变成一条已计价记录，并且把结果送进 DSH 自己的流式校验器。`test:web` 会用临时 profile 真的起一次 `dsh web`，检查插件声明被解析、bundle 被注入首页、并且能按首页给出的批量地址取回（不需要浏览器，也不需要登录）。`test:headless` 会真的启动一次 `dsh --profile headless --json`（在临时 DSH home 里，用一个 mock 模型路由，不联网），检查输出流是干净的 JSON、账本按会话记账。
 
-这两个都需要本机装了 DSH，否则会跳过；加 `:strict` 或直接跑 `test:release` 就会把「跳过」当成失败——免得出现「因为没装 DSH 所以绿灯」的假通过。
+这三条都需要本机装了 DSH，否则会跳过；加 `:strict` 或直接跑 `test:release` 就会把「跳过」当成失败——免得出现「因为没装 DSH 所以绿灯」的假通过。
 
 <details>
 <summary>代码大致在哪（点开）</summary>
