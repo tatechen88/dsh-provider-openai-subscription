@@ -132,12 +132,42 @@ function fakeAdapter(provider) {
 }
 
 const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-integration-'))
+
+/**
+ * Every composed context this script opens.
+ *
+ * A context owns the plugin's background work — the meter's model-watch scan
+ * and its debounced ledger write — and that work outlives the assertions. The
+ * recursive delete of the temporary home then races a rename that has not
+ * landed yet, which on Windows fails the whole run with ENOTEMPTY even though
+ * every check passed. Closing each context first is what makes the teardown
+ * deterministic.
+ */
+const openedContexts = []
+
+/** Create a context and remember it for the teardown. */
+function newContext() {
+  const ctx = new Context()
+  openedContexts.push(ctx)
+  return ctx
+}
+
+/** Close every context this script opened, newest first. */
+async function disposeContexts() {
+  for (const ctx of openedContexts.splice(0).reverse()) {
+    const dispose = ctx?.fiber?.dispose
+    if (typeof dispose !== 'function') continue
+    // A disposer that rejects still must not stop the remaining ones.
+    await Promise.resolve(dispose()).catch(() => {})
+  }
+}
+
 // The meter resolves its ledger and settings through DSH_HOME; pointing that at
 // the temporary directory is what keeps this check away from a real install.
 const previousHome = process.env.DSH_HOME
 process.env.DSH_HOME = dir
 try {
-  const ctx = new Context()
+  const ctx = newContext()
   await ctx.plugin(LocalCredentialProvider, { path: join(dir, '.credentials.yaml'), watch: false })
   await ctx.plugin(LlmRuntime)
 
@@ -374,7 +404,7 @@ try {
       provider: { defaultModel: '', reasoningEffort: '' },
       meter: { refreshPublicPrices: true },
     }
-    const schemaCtx = new Context()
+    const schemaCtx = newContext()
     await schemaCtx.plugin(LocalCredentialProvider, { path: join(dir, 'schema.credentials.yaml'), watch: false })
     await schemaCtx.plugin(LlmRuntime)
     // An unknown extra key stays legal: forward compatibility is why the plugin
@@ -474,7 +504,7 @@ try {
     const previousLateHome = process.env.DSH_HOME
     process.env.DSH_HOME = lateHome
     try {
-      const routeCtx = new Context()
+      const routeCtx = newContext()
       await routeCtx.plugin(LocalCredentialProvider, { path: join(lateHome, '.credentials.yaml'), watch: false })
       await routeCtx.plugin(LlmRuntime)
 
@@ -527,5 +557,8 @@ try {
 } finally {
   if (previousHome === undefined) delete process.env.DSH_HOME
   else process.env.DSH_HOME = previousHome
+  // Release every composition before its home is deleted: the ledger flush and
+  // the model-watch scan are file writers, and the delete must not race them.
+  await disposeContexts()
   await rm(dir, { recursive: true, force: true })
 }
