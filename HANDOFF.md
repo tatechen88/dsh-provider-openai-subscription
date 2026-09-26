@@ -199,6 +199,7 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 
 1. **`ctx.get('settings').get(ns)` 在 0.1.7 被删**。0.1.6 的 `settings` 服务有 `get(ns)`；0.1.7 的同名服务换成 `SettingsForms`（`super(ownerContext, "settings")`），只有 `describe/update/replace/mutate/configure`，Cordis 4.0.4 的 `Service` 基类也没有 `get`。于是 `resolveDeepSeekCredential` / `resolveZhipuCredential` 静默读到 `undefined`，回落到内置环境变量名——profile 里改过 `apiKeyEnv` 的部署会去错的地方找 key，**而且不报错**。现在统一走 `readSettingsSection()`：先试 `get(ns)`，再试 `describe().find(d => d.ns === ns)?.value`（`describe()` 不带 redaction 选项是对的——这是宿主进程内的读，且只取环境变量**名**）。这两条读取路径此前**一个测试都没有**，现在两种服务形状各有用例。
 2. **组合 smoke 的收尾在 0.1.7 上必然失败**（`ENOTEMPTY`）。不是检查项失败：12/12 全过，但脚本从不释放它开的 Cordis 上下文，meter 的 model-watch 扫描与账本 debounce 还在写文件，`rm -rf` 与 rename 赛跑，Windows 上抛 `ENOTEMPTY`，于是 `test:integration:strict` 退出 1、`test:release` 永远红。现在脚本记录每一个上下文，删目录前按后进先出逐个释放（`ctx.fiber.dispose()`）。残留物是 `storages/openai-subscription-meter/models.json`（422B）与 `models.json.tmp-*`（0B）。
+3. **`settle()` 只等已排队的写入，不等在途的扫描**（跑发布门禁时才暴露）。`ModelWatchStore.writes` 是已入队的写入链，而一次仍在读目录的扫描**还没入队**——它随后发起的写入（连同临时文件）会晚于承诺"不留残留"的 disposer。表现是 `applyRuntime` 的三个拆卸断言在全量套件下随机失败（6 次里 3 次），也正是 smoke 里那个 `models.json.tmp-*` 的来源。现在 `settle()` 先 await 在途的 `scan_`（有界，受自身的请求超时约束）再 await 写入链；三个断言改为**等插件自己那两个文件出现**（比较整份目录列表，所以残留的临时文件仍会失败），不再睡固定 50 ms。
 
 **撤回的一条**：上一版体检报告里写过「Web 路由未传 `kind`，22 条路由落进 prefix 表」。**是误判**：`kind: 'exact'` 自初始提交 `32cbd53` 起就在 `src/web/routes.js` 里（`git log -S "kind: 'exact'" -- src/web/routes.js` 只有那一条）。当时的 grep 模式是 `register|path:|methods|handler`，`kind:` 那一行被过滤掉了。教训记在这里：**结论性的 API 审查要用整段读取复核，不要凭窄模式的一次匹配下断言**。
 
@@ -208,11 +209,14 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 
 | 门禁 | 结果 |
 |---|---|
-| `npm run test` | 429/429 |
+| `npm run test` | 430/430 |
 | `integration-smoke --require-dsh` | 12/12 检查 OK，exit 0；在 0.1.5 上同样 exit 0（无回归） |
 | `web-smoke --require-dsh` | 首页注入 + bundle 393KB 取回，PASS |
 | `headless-smoke --require-dsh` | PASS（NDJSON 契约、按会话记账、续跑不重复） |
+| `npm run test:release`（上面四条串起来） | **exit 0** |
 | 真浏览器一次性人工验证 | 设置页出现「OpenAI 接入」，点进去渲染出「OpenAI (ChatGPT OAuth) / 插件未激活」，无 pageerror |
+
+**关于 `oauth-callback-server` 那条旧偶发**：修完上面第 3 条后，它在 27 次全量运行里只出现过 0 次，在修复前 6 次里出现过 1 次——样本太小，**既不能归因也不能结案**。另外并发跑 8 份该测试文件（制造端口压力）也是 0/8 复现。既有记录里"失败点在 fetch 而不是 bind"仍未证实；下次复现时先抓 undici 的 `code`（`cause.code`），再决定是给 `port: 0` 的两步绑定加重试，还是让测试对连接类错误重试。**不要**在没有证据的情况下加盲重试。
 
 **复现**
 
@@ -231,7 +235,7 @@ node scripts/headless-smoke.mjs --require-dsh
 
 **还没做的**：Desktop profile 的真实安装。`profiles\desktop` 目前没有任何 `node_modules`，插件从未装进去——安装形态要先拍板（绝对路径 link / `npm pack` 出 tgz / 发 npm 后按包名装），验收清单见 `.scratch/dsh-0.1.7-desktop/spec.md`。
 
-**提交**：`36ecc55` 连接栅栏按请求解析 → `7db5994` model-watch 后端 → `85d59d3` 客户端新模型一行 → `1b849cd` settings 读取兼容 → `a9a1462` smoke 收尾 → `fb8cdec` web 门禁 → `f61ce85` LICENSE 与打包白名单。
+**提交**：`36ecc55` 连接栅栏按请求解析 → `7db5994` model-watch 后端 → `85d59d3` 客户端新模型一行 → `1b849cd` settings 读取兼容 → `a9a1462` smoke 收尾 → `fb8cdec` web 门禁 → `f61ce85` LICENSE 与打包白名单 → `84e5ed8` 文档 → `407772c` settle 竞态。
 
 ## 关键文件
 

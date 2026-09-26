@@ -94,20 +94,22 @@ Depends on: 无（P0 可立即开始）
 |---|---|---|
 | P1.1 修 G1 | 新增 `readSettingsSection(settings, ns)`：优先 `settings.get?.(ns)`，否则 `settings.describe?.().find(d => d.ns === ns)?.value`；改 `src/runtime.js` 的 DeepSeek / Zhipu 两处解析 | ✅ 已完成。`test/runtime.test.mjs` 新增 3 例：两种服务形状都取到 `apiKeyEnv`、`get` 未命中时回落 `describe()`、无服务时用内置默认名 |
 | P1.2 ~~修 G2~~ | ~~`src/web/routes.js` 注册补 `kind: 'exact'`~~ **撤回：误判**。`kind: 'exact'` 自初始提交 `32cbd53` 起就在（`git log -S "kind: 'exact'" -- src/web/routes.js` 只有那一条）。上一版 spec 的这条结论来自一次被过滤掉的 grep——把 `kind:` 行排除在匹配之外。无需改动 | 无 |
-| P1.3 修 G2 | `scripts/integration-smoke.mjs`：`late-web-server` 块结束前 dispose `routeCtx`（或 await `modelWatch.settle()`）再 `rm` | 在 0.1.7 上 `test:integration:strict` **exit 0**；0.1.5 仍 0 |
-| P1.4 版本口径 | 明确 `engines.dsh` 的处理（见 D6）；`doctor` 输出保持 `null ≠ 通过` | `rescue doctor` 在真 0.1.7 上仍 `ok: true` |
-| P1.5 文档 | `README.md:15` 改为「0.1.6 / 0.1.7-rc.2 实测通过」；`HANDOFF.md` 增「DSH 0.1.7 兼容」一节，写清复现命令与 `D:\AI\Cache\dsh-0.1.7-verify-npm` | 文档与实测一致 |
+| P1.3 修 G2 | `scripts/integration-smoke.mjs`：`late-web-server` 块结束前 dispose `routeCtx`（或 await `modelWatch.settle()`）再 `rm` | ✅ 已完成。`36ecc55` 是栅栏轮，`a9a1462` 记录每个上下文、删目录前逐个释放；0.1.7 与 0.1.5 上 `test:integration:strict` 均 exit 0 |
+| P1.4 版本口径 | 明确 `engines.dsh` 的处理（见 D6）；`doctor` 输出保持 `null ≠ 通过` | ✅ 保持 `>=0.1.6-alpha.1` 不加 peer（见 D6 理由）；README 改写为「0.1.6-alpha.1 与 0.1.7-rc.2 均实测通过」；`rescue doctor` 在真 0.1.7 上仍 `ok: true` |
+| P1.5 文档 | `README.md:15` 改为「0.1.6 / 0.1.7-rc.2 实测通过」；`HANDOFF.md` 增「DSH 0.1.7 兼容」一节，写清复现命令与 `D:\AI\Cache\dsh-0.1.7-verify-npm` | ✅ 已完成（`84e5ed8`）：README 支持表与开发命令、HANDOFF 新增一节（含撤回记录与复现命令）、`docs/usage-meter.md` 补 model-watch 模块/路由/卡片行 |
 
-**本阶段的硬门槛**：在真 0.1.7-rc.2 上 `npm run test` + `test:integration:strict` + `test:headless:strict` 全绿。
+**本阶段的硬门槛**：在真 0.1.7-rc.2 上 `npm run test` + `test:integration:strict` + `test:web:strict` + `test:headless:strict` 全绿。**已达**：`npm run test:release` exit 0（430/430），0.1.5 上 integration 亦 exit 0。
+
+**执行中发现并修掉的额外缺陷（不在原计划内）**：`ModelWatchService.settle()` 只等已入队的写入、不等在途扫描，导致 `applyRuntime` 三个拆卸断言在全量套件下 6 次里失败 3 次（也是 smoke 里 `models.json.tmp-*` 的来源）。已修为先 await 在途扫描（有界）再 await 写入链，测试改为等待插件自己那两个文件出现。详见 `407772c`。
 
 ### P2 — 门禁与打包补强（0.5–1 天）
 
 | 任务 | 内容 | 验收 |
 |---|---|---|
-| P2.1 | 新增 `scripts/web-smoke.mjs`：临时 home + 临时 profile（`dsh-base` + `dsh-web-app` + 本插件），起 `dsh web --no-open --port <高端口>`，断言首页注入清单含 `dsh-provider-openai-subscription/client.js`，并按 batch URL 抓下 bundle 断言含 `__ModuleLoader__.load` 与关键导出；`--require-dsh` 语义与其它 smoke 一致 | 在 0.1.7 上跑通；缺 dsh 时 SKIP / strict 时 FAIL |
-| P2.2（可选） | 把上一轮我用的 Playwright 真浏览器检查固化为 `test:client:browser`，**不进 release 门**（依赖浏览器，环境重） | 能复现「设置页出现 OpenAI 接入」 |
-| P2.3 | 补 `LICENSE`（MIT 全文）；`package.json` 加 `files` 白名单（`src`/`client`/`cordis.patch.yml`/`README.md`/`LICENSE`）、`repository`/`bugs`/`homepage` | `npm pack --dry-run` 不再包含 `test/`、`docs/images`、`HANDOFF.md`；包体明显变小 |
-| P2.4 | 决定 CI（见 D3）：至少 `check` + `test`；可选在 CI 里 `npm i @deepseek-ai/dsh@<pin>` 后跑两个 strict 门 | 决策记录 + （若做）首次流水线绿 |
+| P2.1 | 新增 `scripts/web-smoke.mjs`：临时 home + 临时 profile（`dsh-base` + `dsh-web-app` + 本插件），起 `dsh web --no-open --port <高端口>`，断言首页注入清单含 `dsh-provider-openai-subscription/client.js`，并按 batch URL 抓下 bundle 断言含 `__ModuleLoader__.load` 与关键导出；`--require-dsh` 语义与其它 smoke 一致 | ✅ 已完成（`fb8cdec`）：插件以包名 link 进临时 profile 的 `node_modules`（不写真实安装），脚本自己挑空闲端口并携带会话 cookie；3 项断言通过，已进 `test:release` |
+| P2.2（可选） | 把上一轮我用的 Playwright 真浏览器检查固化为 `test:client:browser`，**不进 release 门**（依赖浏览器，环境重） | 未做（D4 待定）。人工验证已做过一次并记录在 HANDOFF |
+| P2.3 | 补 `LICENSE`（MIT 全文）；`package.json` 加 `files` 白名单（`src`/`client`/`cordis.patch.yml`/`README.md`/`LICENSE`）、`repository`/`bugs`/`homepage` | ✅ 已完成（`f61ce85`）：119 文件/358 kB → 52 文件/144 kB，`bin`/`dsh.bundle`/`dsh.client` 指向的文件全部保留 |
+| P2.4 | 决定 CI（见 D3）：至少 `check` + `test`；可选在 CI 里 `npm i @deepseek-ai/dsh@<pin>` 后跑三个 strict 门 | **未做，等 D3 拍板** |
 
 ### P3 — Desktop 接入（0.5 天）
 
@@ -131,15 +133,15 @@ Depends on: 无（P0 可立即开始）
 
 ### P5 — 文档与交接（0.5 天）
 
-- P5.1 `HANDOFF.md`：增「DSH 0.1.7 兼容」「Desktop 插件页接入」「真实 web/client 门禁」三节，含复现命令与踩坑（含 `settings.get` 被删、semver 预发布规则、smoke teardown 竞态）。
-- P5.2 `docs/usage-meter.md`：模块目录里补 `model-watch.js` 一节（设计文档现在缺它）。
-- P5.3 `README.md` 安装章节同时给两条路径：Desktop 插件页（绝对路径）与 `dsh plugin add` CLI。
+- P5.1 `HANDOFF.md`：增「DSH 0.1.7 兼容」「Desktop 插件页接入」「真实 web/client 门禁」三节，含复现命令与踩坑（含 `settings.get` 被删、semver 预发布规则、smoke teardown 竞态）。→ ✅ 已完成（`84e5ed8`，Desktop 接入一节待 P3 完成后补）
+- P5.2 `docs/usage-meter.md`：模块目录里补 `model-watch.js` 一节（设计文档现在缺它）。→ ✅ 已完成
+- P5.3 `README.md` 安装章节同时给两条路径：Desktop 插件页（绝对路径）与 `dsh plugin add` CLI。→ 待 P3（取决于 D1）
 
 ### P6 —  backlog（非本轮，按价值排序）
 
 1. 智谱国际站 `zai` 路由的凭据条目 + 账号读数（现在只有中国站有客户端入口）。
 2. `POST /meter/{deepseek,zhipu}/refresh` 接上客户端调用者（现在靠轮询 + TTL 自刷新）。
-3. `test/oauth-callback-server.test.mjs` 偶发失败定论（先抓 undici 的 `code`，再决定给临时端口路径加重试还是让测试对连接类错误重试）。
+3. `test/oauth-callback-server.test.mjs` 偶发失败定论。**本轮数据更新**：修复 `settle()` 竞态前，全量套件 6 次里失败 1 次（同一次运行另外 3 次失败在 model-watch 竞态，已修）；修复后 27 次全量运行 0 次复现，并发 8 份该测试文件也是 0/8。样本太小，**未归因、未结案**。下次复现先抓 `cause.code`（undici 的连接错误码），再决定给 `port: 0` 的两步绑定加重试，还是让测试对连接类错误重试；**不要盲加重试**。
 4. 价格表跨档按"开始时刻"取档，可考虑显示区间估算（当前是单档取值）。
 5. `usage/reading-slot.js` 补直接单测（目前只有间接覆盖）。
 
@@ -216,4 +218,7 @@ node scripts/headless-smoke.mjs --require-dsh
 - 2026-09-26 **更正**：初版 §2.5 的 G2「Web 路由未传 `kind`」是误判。`kind: 'exact'` 自初始提交 `32cbd53` 起就在 `src/web/routes.js`；那条结论产生于一次把 `kind:` 行排除在外的 grep（模式为 `register|path:|methods|handler`）。已从问题清单与 P1 计划中撤回，G3 顺次改为 G2。教训：**结论性的 API 审查要用整段读取或多模式 grep 复核，不要用窄模式的一次匹配下断言**。
 - 2026-09-26 P0 完成：工作树里的两轮未提交工作拆成 3 个提交（`36ecc55` 连接栅栏 / `7db5994` model-watch 后端 / `85d59d3` 客户端展示），各自可验证；`36ecc55` 单独 stash 出其余改动后跑测 418/418 通过。
 - 2026-09-26 P1.1 完成：`readSettingsSection()` 兜底两种服务形状，补上此前**完全没有测试**的 `resolveDeepSeekCredential` / `resolveZhipuCredential` 路径。
+- 2026-09-26 P0/P1/P2（P2.4 除外）执行完毕，共 9 个提交，工作树干净。硬门槛达成：真 0.1.7-rc.2 上 `npm run test:release` **exit 0**（430/430 + integration 12/12 + web PASS + headless PASS）；0.1.5 上 integration 仍 exit 0（无回归）。打包 119→52 文件、358→144 kB。
+- 2026-09-26 **执行中发现的第 3 个缺陷**（不在原计划）：`ModelWatchService.settle()` 只等已入队写入、不等在途扫描，使 `applyRuntime` 的三个拆卸断言在全量套件下 6 次里失败 3 次，也是 smoke 残留 `models.json.tmp-*` 的来源。已修为「先 await 在途扫描（有界）再 await 写入链」，三个断言改为等待插件自己那两个文件出现（整份目录比较，残留临时文件仍会失败）。见 `407772c`。**教训**：跑门禁本身就是取证手段——这条只有把整套测试跑很多遍才会露出来。
+- 2026-09-26 未执行、等拍板：P2.4（CI，D3）、P3（Desktop 真实安装，D1）、P4（发布 1.6.0，D2）、P5.3（README 双路径安装说明，随 P3）。
 
