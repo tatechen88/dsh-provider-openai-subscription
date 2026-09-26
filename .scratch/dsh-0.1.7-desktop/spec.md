@@ -115,11 +115,13 @@ Depends on: 无（P0 可立即开始）
 
 | 任务 | 内容 | 验收 |
 |---|---|---|
-| P3.1 | 定安装形态（见 D1） | 决策记录 |
-| P3.2 | 左侧栏「插件」→ 粘贴绝对路径安装；核对 `profiles\desktop\package.json` 的 `dependencies` + `dsh.profile.bundles`，以及 `node_modules` 出现 | 插件页出现组合包 + `llm-openai-subscription` 行 |
-| P3.3 | 追加激活层到 `profiles\desktop\cordis.patch.yml`（该文件已是 YAML 序列，**追加**即可，不是替换 `[]`）：`- id: llm-openai-subscription` + `config.state: active` + `config.oauth.clientId` | 重启后 `dsh --profile desktop --dump-config` 能看到 active 行 |
-| P3.4 | 端到端验收（见 §5） | §5 全过 |
-| P3.5 | 回滚演练：插件页卸载 → 重启 → profile 正常；再确认 `storages/openai-subscription-meter/usage.json` 与 `plugin-state/openai-subscription-meter.json` 保留 | profile 能启动；账本在两处仍在 |
+| P3.1 | 定安装形态（见 D1） | ✅ **D1 = ①绝对路径 link:**（用户 2026-09-26 拍板） |
+| P3.2 | 左侧栏「插件」→ 粘贴绝对路径安装；核对 `profiles\desktop\package.json` 的 `dependencies` + `dsh.profile.bundles`，以及 `node_modules` 出现 | ✅ 已完成，且**未重启即热生效**。用会话内的 `plugin_manager` 工具按真实安装链路执行（与插件页同一服务）：`pnpm add` 产出 `"dsh-provider-openai-subscription": "link:D:/AI/Workspaces/DSH/dsh-provider-openai-subscription"`、bundles 追加同名字、`profiles\desktop\node_modules\<pkg>` 为链接；`list_plugins` 出现 `include:llm-openai-subscription`（`enabled: true`，`fiberPhase: active`） |
+| P3.3 | 追加激活层到 `profiles\desktop\cordis.patch.yml`（该文件已是 YAML 序列，**追加**即可，不是替换 `[]`）：`- id: llm-openai-subscription` + `config.state: active` + `config.oauth.clientId` | ✅ 已完成（clientId 由用户确认）。激活**热生效**，无需重启：宿主路由探针 `GET /plugins/openai-subscription/status` 从 **404 变 401**（路由已挂载、被连接栅栏拦下），`storages\openai-subscription-meter\{usage.json,models.json}` 已创建 |
+| P3.4 | 端到端验收（见 §5） | ⏳ **7/8 已验**（插件页/行、provider 注册、路由挂载、meter 落盘、doctor ok）。剩第 3–6 项需要在 GUI 里登录一次并对话——只有用户能做：刷新页面 → 设置 → 「OpenAI 接入」→ 用 ChatGPT 账号登录 |
+| P3.5 | 回滚演练：插件页卸载 → 重启 → profile 正常；再确认 `storages/openai-subscription-meter/usage.json` 与 `plugin-state/openai-subscription-meter.json` 保留 | ⏳ 未演练（会中断用户当前会话）。命令已备好：插件页「卸载」或 `plugin_manager remove_bundle`；只关不卸则把 patch 里的 `state` 改回 `bootstrap`；应急用 `node src\rescue.mjs disable` |
+
+**P3 附带修掉的**：`doctor` 在打包版 Desktop 上报 `installedDsh: null` → `satisfied: null`（`detectDshVersion` 只找 npm 布局路径，而打包版的运行时在 `resources/app.asar` 里）。现在直接读 asar（零依赖，`dsh/desktop-runtime.json` 的 `release.version`），并补了针对**头部 4 字节对齐**的回归测试——`16 + 头部长度` 会早读 2 字节、解析出乱码。见 `67d99b9`。真机复测：`installedDsh: 0.1.7-rc.2`、`satisfied: true`。
 
 **注意**：Desktop 的包管理操作由 Desktop shell 负责（shell 把 `resources/runtime/pnpm/bin/pnpm.mjs` 传给运行时子进程）；若页面按钮行为与预期不符，兜底方案是手工改 `profiles\desktop\package.json`（deps + bundles）后重启，效果等价。
 

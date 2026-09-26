@@ -209,7 +209,7 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 
 | 门禁 | 结果 |
 |---|---|
-| `npm run test` | 430/430 |
+| `npm run test` | 432/432 |
 | `integration-smoke --require-dsh` | 12/12 检查 OK，exit 0；在 0.1.5 上同样 exit 0（无回归） |
 | `web-smoke --require-dsh` | 首页注入 + bundle 393KB 取回，PASS |
 | `headless-smoke --require-dsh` | PASS（NDJSON 契约、按会话记账、续跑不重复） |
@@ -233,9 +233,36 @@ node scripts/headless-smoke.mjs --require-dsh
 
 **打包**：补了 `LICENSE`（此前 package.json 写 MIT 却没有授权正文）与 `files` 白名单，`npm pack` 从 119 文件 / 358 kB 降到 52 文件 / 144 kB，命令行工具与 `dsh.bundle` / `dsh.client` 指向的文件全部保留。
 
-**还没做的**：Desktop profile 的真实安装。`profiles\desktop` 目前没有任何 `node_modules`，插件从未装进去——安装形态要先拍板（绝对路径 link / `npm pack` 出 tgz / 发 npm 后按包名装），验收清单见 `.scratch/dsh-0.1.7-desktop/spec.md`。
+**还没做的**：发布 1.6.0（见 P4）。Desktop 接入已完成——见下一节。
 
-**提交**：`36ecc55` 连接栅栏按请求解析 → `7db5994` model-watch 后端 → `85d59d3` 客户端新模型一行 → `1b849cd` settings 读取兼容 → `a9a1462` smoke 收尾 → `fb8cdec` web 门禁 → `f61ce85` LICENSE 与打包白名单 → `84e5ed8` 文档 → `407772c` settle 竞态。
+## Desktop 接入（本轮）
+
+用户拍板用**绝对路径 link:** 形态。执行方式不是手改 profile，而是走会话内的 `plugin_manager` 工具（与左侧栏「插件」页同一个服务、同一条 pnpm 链路）：
+
+1. `install_bundle D:\AI\Workspaces\DSH\dsh-provider-openai-subscription`
+   → `pnpm add` 写入 `profiles\desktop\package.json` 的 `dependencies`（`link:D:/AI/Workspaces/DSH/dsh-provider-openai-subscription`）与 `dsh.profile.bundles`，`profiles\desktop\node_modules\<包名>` 成为链接；`list_plugins` 立刻出现 `include:llm-openai-subscription`（`enabled: true`、`fiberPhase: active`）。**没有重启**。
+2. 追加激活层到 `profiles\desktop\cordis.patch.yml`（该文件本来就是 YAML 序列，追加即可；`name` 要与 bundle 的补丁行一致）：
+   ```yaml
+   - id: llm-openai-subscription
+     name: "dsh-provider-openai-subscription"
+     config:
+       state: active
+       oauth:
+         clientId: app_EMoamEEZ73f0CkXaXp7hrann
+   ```
+   注意该层**整段替换**目标行的 `config`（不是合并），所以插件自带的 `provider.*` / `meter.*` 默认值不再出现在 row 里——它们由 `normalizeConfig` / `normalizeMeterConfig` 的内置默认值兜底，行为不变。
+3. 验证（都没有重启）：
+   - 宿主路由探针 `GET http://127.0.0.1:19387/plugins/openai-subscription/status`：激活前 **404**，激活后 **401**（路由已挂载，被 DSH 连接栅栏拦下）。这是不需要浏览器会话就能判断"运行时是否真的起来了"的办法。
+   - `storages\openai-subscription-meter\usage.json` 与 `models.json` 出现。
+   - `node src\rescue.mjs doctor --profile ...\profiles\desktop\package.json` → `ok: true`、`profileHasPlugin/Row/Patch` 全 true、`compatibility.installedDsh = 0.1.7-rc.2`、`satisfied: true`。
+
+**顺带修掉的**：`doctor` 在打包版上原先报 `installedDsh: null`（`detectDshVersion` 只找 npm 布局路径，而 Desktop 的运行时在 `resources/app.asar` 里）。现在零依赖地直接读 asar：`dsh/desktop-runtime.json` 的 `release.version`。**偏移量有个坑**：数据区起点是 `16 + 头部 JSON 长度按 4 字节对齐`，写成 `16 + 长度` 会早读 2 字节、解析出乱码；测试用刻意不对齐的夹具锁住了这一点（`67d99b9`）。
+
+**仍未验完的**：§5 验收清单第 3–6 项（GUI 里完成一次 OAuth 登录、看模型列表、对话、看指示器）只有用户能做。刷新页面后：设置 → **OpenAI 接入** → 用 ChatGPT 账号登录；当前状态面板会显示「插件未激活」以外的连接控件。
+
+**回滚**（三步任一即可）：插件页卸载 / `plugin_manager remove_bundle`；只关不卸就把 patch 里的 `state` 改回 `bootstrap`；应急 `node src\rescue.mjs disable`（kill switch，重启后生效）。账本与设置在 `storages\`、`plugin-state\`，卸载不会删。
+
+**提交**：`36ecc55` 连接栅栏按请求解析 → `7db5994` model-watch 后端 → `85d59d3` 客户端新模型一行 → `1b849cd` settings 读取兼容 → `a9a1462` smoke 收尾 → `fb8cdec` web 门禁 → `f61ce85` LICENSE 与打包白名单 → `84e5ed8` 文档 → `407772c` settle 竞态 → `67d99b9` doctor 读打包版 asar。
 
 ## 关键文件
 
