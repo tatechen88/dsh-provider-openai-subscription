@@ -56,6 +56,12 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
   const DEEPSEEK_PROVIDER_ID = 'deepseek-official'
   /** pi-ai's Z.AI coding-plan route, the third account the indicator follows. */
   const ZHIPU_PROVIDER_ID = 'zai-coding-cn'
+  /** Which model-watch vendor a card route's new models belong to. */
+  const MODEL_WATCH_VENDOR_OF = Object.freeze({
+    [DEEPSEEK_PROVIDER_ID]: 'deepseek',
+    [ZHIPU_PROVIDER_ID]: 'zhipu',
+    [PROVIDER_ID]: 'openai-subscription',
+  })
   const SECTION_ID = 'openai-subscription'
   const ONBOARDING_STEP_ID = 'openai-subscription-connect'
   /**
@@ -212,6 +218,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterPriceRefreshFailed: '价格表刷新失败',
       meterReasoning: '含思考',
       meterByModel: '会话构成',
+      meterNewModels: '新模型',
       meterBandPeak: '高峰时段',
       meterBandOffPeak: '空闲时段（半价）',
       meterBandNextPeak: '后转高峰时段',
@@ -307,6 +314,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       meterPriceRefreshFailed: 'Price table refresh failed',
       meterReasoning: 'incl. reasoning',
       meterByModel: 'Session by model',
+      meterNewModels: 'New models',
       meterBandPeak: 'Peak window',
       meterBandOffPeak: 'Off-peak (half price)',
       meterBandNextPeak: ' to peak',
@@ -2367,6 +2375,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
           ? `${t('meterReadingUnavailable')} (${slice.errors.join(', ')})`
           : undefined,
         ...tokenLines(meter, t),
+        newModelsLine(meter, provider, t),
         modelsLine(meter, t),
       ].filter(isFilled)
     }
@@ -2387,6 +2396,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
         bandLine(pricing, t),
         unpricedModelsLine(pricing, provider, t),
         priceRefreshLine(pricing, t),
+        newModelsLine(meter, provider, t),
         modelsLine(meter, t),
       ].filter(isFilled)
     }
@@ -2396,6 +2406,7 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       provider,
       ...tokenLines(meter, t),
       unpricedModelsLine(meter?.pricing, provider, t),
+      newModelsLine(meter, provider, t),
       modelsLine(meter, t),
     ].filter(isFilled)
   }
@@ -2451,6 +2462,31 @@ window.__ModuleLoader__.load({ id: 'dsh-provider-openai-subscription', factory: 
       .map((entry) => `${entry.model} ×${Number.isFinite(entry.calls) ? entry.calls : 1}`)
     if (named.length === 0) return undefined
     return `${t('meterNoPrice')}: ${named.join(' · ')}`
+  }
+
+  /**
+   * The models of one vendor's directory this deployment has not seen before,
+   * named so a newly shipped model is noticed when it ships.
+   *
+   * The watch view is filtered to the route the card describes: another
+   * vendor's new model is not this one's business, and a vendor with no watch
+   * entry simply contributes no line.
+   * @param {object|null} meter - meter view payload.
+   * @param {string} provider
+   * @param {(key: string) => string} t
+   * @returns {string|undefined}
+   */
+  function newModelsLine(meter, provider, t) {
+    const vendors = meter?.modelWatch?.vendors
+    if (!Array.isArray(vendors)) return undefined
+    const vendor = vendors.find((entry) => entry?.vendor === MODEL_WATCH_VENDOR_OF[provider])
+    if (vendor === undefined || vendor === null) return undefined
+    const news = Array.isArray(vendor.newModels) ? vendor.newModels : []
+    const named = news
+      .filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.id === 'string')
+      .map((entry) => entry.id)
+    if (named.length === 0) return undefined
+    return `${t('meterNewModels')}: ${named.join(' · ')}`
   }
 
   /**
