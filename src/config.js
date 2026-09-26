@@ -15,7 +15,7 @@
  */
 
 import { PACKAGE_NAME } from './constants.js'
-import { requireHarnessModule } from './dsh-modules.js'
+import { loadHarnessModule } from './dsh-modules.js'
 
 /** Valid plugin states. `active` is the only state that loads runtime.js. */
 export const PLUGIN_STATES = Object.freeze(['bootstrap', 'disabled', 'active'])
@@ -200,17 +200,26 @@ export const STANDARD_CONFIG = Object.freeze({
 
 /**
  * Load the deployment's own schemastery, when it ships one.
- * @returns {object|undefined} the `Schema` entry point, or undefined.
+ *
+ * Asynchronous, and awaited at module scope below: the packaged Desktop keeps
+ * its runtime inside `app.asar`, where only a URL import reaches it, and a
+ * module-scope await is what still leaves a `Config` for the loader that imports
+ * this file.
+ *
+ * @returns {Promise<{Schema?: object, problem?: string}>} the `Schema` entry point, or why not.
  */
-function loadSchemastery() {
+async function loadSchemastery() {
   try {
-    const loaded = requireHarnessModule('@deepseek-ai/schemastery')
+    const loaded = await loadHarnessModule('@deepseek-ai/schemastery')
     // The package ships both builds; the CJS one exports the class directly,
     // while an ESM namespace carries it as `default`.
     const Schema = /** @type {{default?: object}} */ (loaded)?.default ?? loaded
-    return typeof /** @type {object} */ (Schema)?.object === 'function' ? Schema : undefined
-  } catch {
-    return undefined
+    if (typeof /** @type {object} */ (Schema)?.object !== 'function') {
+      return { problem: '@deepseek-ai/schemastery loaded but exports no object builder' }
+    }
+    return { Schema }
+  } catch (error) {
+    return { problem: error instanceof Error ? error.message : String(error) }
   }
 }
 
@@ -234,18 +243,27 @@ function loadSchemastery() {
  * `meter` stays free-form (its own normalizer owns those fields), and every
  * field is optional so a sparse row keeps composing.
  *
- * @param {() => object|undefined} [load] - schemastery loader; a test seam.
- * @returns {{kind: 'schemastery'|'standard', schema: object}}
+ * @param {() => object|{Schema?: object, problem?: string}} [load] - schemastery loader; a test seam.
+ * @returns {{kind: 'schemastery'|'standard', schema: object, problem?: string}}
  */
-export function selectConfigSchema(load = loadSchemastery) {
-  let Schema
+export async function selectConfigSchema(load = loadSchemastery) {
+  let loaded
   try {
-    Schema = load()
-  } catch {
-    Schema = undefined
+    // The default loader is asynchronous — it imports through a URL, which is the
+    // only thing that reaches a package inside a packaged archive — and the seam
+    // may also be a plain function, so both are awaited here.
+    loaded = await load()
+  } catch (error) {
+    return { kind: 'standard', schema: STANDARD_CONFIG, problem: error instanceof Error ? error.message : String(error) }
   }
+  // The loader may hand back the class itself (a test seam) or a verdict.
+  const Schema = typeof loaded === 'function' || typeof loaded?.object === 'function' ? loaded : loaded?.Schema
   if (Schema === undefined || Schema === null || typeof Schema.object !== 'function') {
-    return { kind: 'standard', schema: STANDARD_CONFIG }
+    return {
+      kind: 'standard',
+      schema: STANDARD_CONFIG,
+      problem: loaded?.problem ?? '@deepseek-ai/schemastery is not reachable from this install',
+    }
   }
   return {
     kind: 'schemastery',
@@ -267,7 +285,12 @@ export function selectConfigSchema(load = loadSchemastery) {
   }
 }
 
-const selected = selectConfigSchema()
+// Awaiting here is what keeps the plugin loadable in the packaged Desktop:
+// the async import above only lands inside this module's evaluation.
+const selected = await selectConfigSchema()
+
+/** Why the fallback was used, when it was; recorded for the runtime record. */
+export const CONFIG_SCHEMA_PROBLEM = selected.problem
 
 /** Which schema the deployment got: `schemastery` when projectable, else `standard`. */
 export const CONFIG_SCHEMA_KIND = selected.kind

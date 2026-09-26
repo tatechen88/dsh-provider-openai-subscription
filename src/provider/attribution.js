@@ -24,8 +24,11 @@ import { loadHarnessModule } from '../dsh-modules.js'
 /** Repository home of the fallback identity. */
 const FALLBACK_URL = 'https://github.com/tatechen88/dsh-provider-openai-subscription'
 
-/** The plugin's own version, so the fallback header still identifies a build. */
-function ownVersion() {
+/**
+ * The plugin's own version, so the fallback header still identifies a build.
+ * @returns {string} the manifest version, or `unknown` when it cannot be read.
+ */
+export function ownVersion() {
   try {
     const { version } = createRequire(import.meta.url)('../../package.json')
     return typeof version === 'string' && version.length > 0 ? version : 'unknown'

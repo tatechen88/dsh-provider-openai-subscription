@@ -411,6 +411,19 @@ try {
     const schemaCtx = newContext()
     await schemaCtx.plugin(LocalCredentialProvider, { path: join(dir, 'schema.credentials.yaml'), watch: false })
     await schemaCtx.plugin(LlmRuntime)
+    // The plugin declares `tools` and `authorization` in its inject list — the
+    // only way a root-level entry reaches services DSH isolates per scope — so a
+    // composition that lacks them never runs `apply`, and there would be no
+    // config validation to observe. Stand-ins are enough: this block is about
+    // the schema, not about what those services do.
+    await schemaCtx.plugin({
+      name: 'smoke-tools-stand-in',
+      apply: (pluginCtx) => { pluginCtx.provide('tools', { register: () => () => {} }) },
+    })
+    await schemaCtx.plugin({
+      name: 'smoke-authorization-stand-in',
+      apply: (pluginCtx) => { pluginCtx.provide('authorization', { registerFlow: () => () => {} }) },
+    })
     // An unknown extra key stays legal: forward compatibility is why the plugin
     // tolerates config it predates. Activation may still fail for its own
     // runtime reasons here; what must not happen is a *config* refusal.

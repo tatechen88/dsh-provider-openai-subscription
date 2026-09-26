@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { PACKAGE_NAME, ROW_ID, KILL_SWITCH_FILENAME } from './constants.js'
 import {
   dshHome, pluginStateDir, killSwitchPath, enableKillSwitch, disableKillSwitch,
-  usageLedgerPath, meterSettingsPath, retiredCostMeterLedgerPath,
+  usageLedgerPath, meterSettingsPath, retiredCostMeterLedgerPath, runtimeRecordPath,
 } from './state.js'
 import { pricedVendors } from './usage/vendors.js'
 import { satisfiesRange } from './version-range.mjs'
@@ -206,6 +206,22 @@ async function commandStatus() {
   const activationFiles = snapshots
     .filter((entry) => entry.startsWith('openai-subscription-') && entry.endsWith('.json'))
     .sort()
+  // What the running process registered, when there is one. A client-less plugin
+  // has no page to check, so this record is how "are the tools live?" gets an
+  // answer; `stoppedAt` means the activation that wrote it is over.
+  const rawRecord = await tryRead(runtimeRecordPath(home))
+  let runtime
+  if (rawRecord !== undefined) {
+    try {
+      const parsed = JSON.parse(rawRecord)
+      runtime = {
+        ...parsed,
+        live: parsed.stoppedAt === undefined || parsed.stoppedAt === null,
+      }
+    } catch {
+      runtime = { parseError: 'the runtime record is not valid JSON; delete it and restart' }
+    }
+  }
   print(JSON.stringify({
     ok: true,
     plugin: PACKAGE_NAME,
@@ -215,6 +231,7 @@ async function commandStatus() {
     disabled,
     stateDir,
     activationSnapshots: activationFiles.length,
+    ...(runtime === undefined ? { runtime: null, note: 'no activation has written a runtime record yet' } : { runtime }),
     note: 'This report contains no credentials or sensitive paths beyond the effective DSH home directory.',
   }, null, 2))
 }

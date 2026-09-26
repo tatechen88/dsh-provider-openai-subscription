@@ -19,7 +19,7 @@ import {
  * the ambient selection: otherwise the same suite passes or fails depending on
  * the DSH_HOME it inherits.
  */
-const builtIn = selectConfigSchema(() => undefined)
+const builtIn = await selectConfigSchema(() => undefined)
 assert.equal(builtIn.kind, 'standard')
 assert.equal(builtIn.schema, STANDARD_CONFIG)
 
@@ -99,7 +99,7 @@ test('the selected schema is one of the two the deployment can use', () => {
   }
 })
 
-test('a schemastery deployment gets a schema declaring exactly the judged fields', () => {
+test('a schemastery deployment gets a schema declaring exactly the judged fields', async () => {
   // A stand-in for the harness class: it records what we ask it to build, which
   // is the part this repository owns. Whether schemastery itself behaves is the
   // harness's contract, and the integration smoke exercises the real one.
@@ -116,7 +116,7 @@ test('a schemastery deployment gets a schema declaring exactly the judged fields
     union: (list) => chainable({ kind: 'union', list }),
     any: () => chainable({ kind: 'any' }),
   }
-  const selected = selectConfigSchema(() => fake)
+  const selected = await selectConfigSchema(() => fake)
   assert.equal(selected.kind, 'schemastery')
   assert.equal(selected.schema.kind, 'object-schema')
   assert.deepEqual(Object.keys(selected.schema.definition), ['state', 'oauth', 'provider', 'meter'])
@@ -136,8 +136,8 @@ test('a schemastery deployment gets a schema declaring exactly the judged fields
   assert.equal(selected.schema.definition.oauth.definition.clientId.volatileMarked, false)
   // A loader that fails or returns something unusable falls back rather than
   // leaving the entry without a schema.
-  assert.equal(selectConfigSchema(() => { throw new Error('missing') }).kind, 'standard')
-  assert.equal(selectConfigSchema(() => ({ object: 'not-a-function' })).kind, 'standard')
+  assert.equal((await selectConfigSchema(() => { throw new Error('missing') })).kind, 'standard')
+  assert.equal((await selectConfigSchema(() => ({ object: 'not-a-function' }))).kind, 'standard')
 })
 
 test('the schema accepts the shape the deployed profile composes', () => {

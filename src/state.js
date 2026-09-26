@@ -55,6 +55,21 @@ export function meterSettingsPath(home = dshHome()) {
 }
 
 /**
+ * Absolute path of the runtime record: what one activation registered.
+ *
+ * A client-less plugin has no interface to look at, so "did the tools and the
+ * authorization flow really register in this process?" needs an answer that does
+ * not require a debugger. This file is that answer, and the rescue CLI reads it.
+ * It holds identities only — no credential, no account data.
+ *
+ * @param {string} [home] - DSH home; injectable so callers and tests can aim it.
+ * @returns {string}
+ */
+export function runtimeRecordPath(home = dshHome()) {
+  return join(pluginStateDir(home), 'openai-subscription-runtime.json')
+}
+
+/**
  * Absolute path of the price table learned from the vendor's own price page.
  *
  * Derived data, not a preference: it lives beside the ledger under `storages/`

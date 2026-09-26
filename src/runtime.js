@@ -10,11 +10,13 @@
  * @module dsh-provider-openai-subscription/runtime
  */
 
-import { PACKAGE_NAME, PROVIDER_ID, SETTINGS_NAMESPACE, CREDENTIAL_KEY } from './constants.js'
-import { CONFIG_SCHEMA_KIND, normalizeConfig } from './config.js'
+import { PACKAGE_NAME, PROVIDER_ID, SETTINGS_NAMESPACE, CREDENTIAL_KEY, ROUTE_PREFIX } from './constants.js'
+import { CONFIG_SCHEMA_KIND, CONFIG_SCHEMA_PROBLEM, normalizeConfig } from './config.js'
 import { loadHarnessModule } from './dsh-modules.js'
 import { createOperations } from './operations.js'
 import { toolOptions } from './tools.js'
+import { writeRuntimeRecord } from './runtime-record.js'
+import { ownVersion } from './provider/attribution.js'
 import { createAuthorizationFlow } from './oauth/authorization-flow.js'
 import { readConflictReport } from './conflicts.js'
 import { CredentialRepository } from './credentials/repository.js'
@@ -78,26 +80,28 @@ export async function waitForService(ctx, name, options = {}) {
 }
 
 /**
- * Resolve the harness `defineTool` helper, or nothing when it is unreachable.
+ * Resolve the harness `defineTool` helper, and say why not when it is missing.
  *
  * A tool definition is not a plain object: the helper converts the parameter
  * spec, validates arguments, and wraps execution. Faking that shape would be a
  * private copy of a harness contract, so the helper is loaded from the
- * deployment — and its absence is an ordinary, reported outcome.
+ * deployment — and its absence is an ordinary, reported outcome, not a failure.
  *
  * @param {object} [logger]
- * @returns {Promise<((options: object) => object)|undefined>}
+ * @returns {Promise<{defineTool?: (options: object) => object, problem?: string}>}
  */
 async function loadDefineTool(logger) {
+  let problem
   try {
     const loaded = await loadHarnessModule('@deepseek-ai/dsh-tools')
     const defineTool = /** @type {{defineTool?: unknown}} */ (loaded)?.defineTool
-    if (typeof defineTool === 'function') return /** @type {(options: object) => object} */ (defineTool)
-    logger?.warn?.(`${PACKAGE_NAME}: the harness tool helper exports no defineTool; tools are not registered`)
+    if (typeof defineTool === 'function') return { defineTool: /** @type {(options: object) => object} */ (defineTool) }
+    problem = 'the harness tool helper exports no defineTool'
   } catch (error) {
-    logger?.warn?.(`${PACKAGE_NAME}: the harness tool helper is unreachable; tools are not registered`, error)
+    problem = error instanceof Error ? error.message : String(error)
   }
-  return undefined
+  if (logger?.warn) logger.warn(`${PACKAGE_NAME}: tools are not registered (${problem})`)
+  return { problem }
 }
 
 /**
@@ -203,7 +207,37 @@ export async function applyRuntime(ctx, config, options = {}) {
   // plugin is installed from a local path, so it must not import a package it
   // cannot resolve, and a deployment without it gets no tools instead of a
   // failed activation.
-  const defineTool = await loadDefineTool(logger)
+  const toolHelper = await loadDefineTool(logger)
+  const defineTool = toolHelper.defineTool
+
+  /**
+   * What this activation registered, written to `plugin-state` when it settles.
+   * Filled in by the registrations below; identities only, never a credential.
+   */
+  const record = {
+    package: PACKAGE_NAME,
+    version: ownVersion(),
+    provider: PROVIDER_ID,
+    settingsNamespace: SETTINGS_NAMESPACE,
+    configSchema: CONFIG_SCHEMA_KIND,
+    ...(CONFIG_SCHEMA_PROBLEM === undefined ? {} : { configSchemaProblem: CONFIG_SCHEMA_PROBLEM }),
+    clientId: clientId.length === 0 ? 'unset' : 'set',
+    routes: [`${ROUTE_PREFIX}/status`],
+    services: {},
+    tools: { registered: [] },
+  }
+  /**
+   * Rewrite the record after something registers.
+   *
+   * A registration behind an injection lands later than activation, so a record
+   * written once would describe a moment that has already passed. Every writer
+   * here is best effort: the file is a diagnostic and never a dependency.
+   * @returns {void}
+   */
+  const refreshRecord = () => {
+    record.updatedAt = Date.now()
+    void writeRuntimeRecord(record)
+  }
 
   // Everything this activation owns, oldest registration first. Nothing is
   // handed back to Cordis until the whole set has registered, so a failure
@@ -315,9 +349,13 @@ export async function applyRuntime(ctx, config, options = {}) {
     // a failed activation for no reason at all.
     const awaitService = (serviceName, callback, label) => {
       if (typeof ctx.inject !== 'function') {
+        record.services[serviceName] = 'unavailable'
+        refreshRecord()
         logger?.warn?.(`${PACKAGE_NAME}: no injection available; ${label} is not registered`)
         return
       }
+      record.services[serviceName] = 'injected'
+      refreshRecord()
       const fiber = ctx.inject([serviceName], (scope) => {
         scope.effect(() => callback(scope[serviceName]), `${PACKAGE_NAME}: ${label}`)
       })
@@ -325,27 +363,60 @@ export async function applyRuntime(ctx, config, options = {}) {
     }
     const registerFlow = (service) => {
       const dispose = service.registerFlow(flow)
-      return () => dispose()
+      record.authorizationFlow = { registered: true, key: flow.key, methods: flow.methods.map((entry) => entry.id) }
+      refreshRecord()
+      return () => {
+        dispose()
+        record.authorizationFlow = undefined
+        refreshRecord()
+      }
     }
     const registerTools = (service) => {
       if (defineTool === undefined) {
+        record.tools = { registered: [], problem: toolHelper.problem ?? 'harness-tool-helper-unreachable' }
+        refreshRecord()
         logger?.warn?.(`${PACKAGE_NAME}: the harness tool helper is unreachable; tools are not registered`)
         return () => {}
       }
-      const disposers = toolOptions({ operations }).map((options) => service.register(defineTool(options)))
+      const options = toolOptions({ operations })
+      const disposers = options.map((entry) => service.register(defineTool(entry)))
+      record.tools = { registered: options.map((entry) => entry.name) }
+      refreshRecord()
       return () => {
         for (const dispose of disposers.reverse()) dispose()
+        record.tools = { registered: [] }
+        refreshRecord()
       }
     }
     const service = (name) => (typeof ctx.get === 'function' ? ctx.get(name) : undefined)
+    // Which services this context can actually see. `llm`, `credentials` and
+    // `webServer` resolve from a root plugin while `tools` and `authorization`
+    // may not — they are provided in scopes a root plugin does not sit in — so
+    // the record states what was found instead of leaving "the tools did not
+    // register" unexplained.
+    record.services.visible = Object.fromEntries([
+      'llm', 'credentials', 'webServer', 'authorization', 'tools', 'agents', 'systemPrompt',
+    ].map((name) => [name, service(name) === undefined ? 'missing' : 'present']))
     if (flow !== undefined) {
       const authorization = service('authorization')
-      if (authorization?.registerFlow !== undefined) owned.push(registerFlow(authorization))
-      else awaitService('authorization', registerFlow, 'authorization flow')
+      if (authorization?.registerFlow !== undefined) {
+        record.services.authorization = 'direct'
+        owned.push(registerFlow(authorization))
+      } else {
+        awaitService('authorization', registerFlow, 'authorization flow')
+      }
+    } else {
+      record.authorizationFlow = { registered: false, problem: 'no-client-id' }
     }
     const toolRegistry = service('tools')
-    if (toolRegistry?.register !== undefined) owned.push(registerTools(toolRegistry))
-    else awaitService('tools', registerTools, 'tools')
+    if (toolRegistry?.register !== undefined) {
+      record.services.tools = 'direct'
+      owned.push(registerTools(toolRegistry))
+    } else {
+      awaitService('tools', registerTools, 'tools')
+    }
+    record.services.webServer = webServer?.register === undefined ? 'injected' : 'direct'
+    refreshRecord()
   }
 
   if (typeof ctx.effect !== 'function') {
@@ -374,8 +445,18 @@ export async function applyRuntime(ctx, config, options = {}) {
       await release()
       await attempts.dispose().catch(() => {})
       await devices.dispose().catch(() => {})
+      // The record says what was live; a record still claiming that after the
+      // registrations are gone would be worse than no record at all.
+      await writeRuntimeRecord({ ...record, stoppedAt: Date.now() })
     }
   }, `${PACKAGE_NAME}: provider, routes and state`)
+
+  // Leave the record of what this activation registered, now that `register()`
+  // has run and named everything. A deployment with no interface still has to be
+  // answerable from outside the process — that is the whole reason this file
+  // exists.
+  record.startedAt = Date.now()
+  await writeRuntimeRecord(record)
 
   // The schema kind decides whether the native Models page can show this
   // provider at all (only a projectable schema creates a settings namespace),

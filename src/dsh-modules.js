@@ -40,7 +40,16 @@ export function* resolutionAnchors() {
   for (const relative of ['profiles/node_modules', 'profiles/web/node_modules', 'node_modules']) {
     yield pathToFileURL(join(home, relative, 'noop.js')).href
   }
+  // The packaged layouts. The Desktop's own runtime lives inside `app.asar`, and
+  // Electron's `require` reads asar paths transparently — but only where the
+  // archive really is, so `process.resourcesPath` (Electron's own answer) is
+  // tried before the harness home's guess.
+  const resources = process.resourcesPath
+  if (typeof resources === 'string' && resources.length > 0) {
+    yield pathToFileURL(join(resources, 'app.asar', 'dsh', 'node_modules', 'noop.js')).href
+  }
   yield pathToFileURL(join(home, 'resources', 'app.asar', 'dsh', 'node_modules', 'noop.js')).href
+  yield pathToFileURL(join(home, 'resources', 'app.asar.unpacked', 'dsh', 'node_modules', 'noop.js')).href
 }
 
 /**
@@ -59,16 +68,52 @@ export function resolveHarnessModule(specifier) {
   return undefined
 }
 
+/** Entry points to try inside a package whose manifest cannot be read first. */
+const PACKAGE_ENTRIES = ['lib/index.mjs', 'lib/index.js', 'lib/index.cjs']
+
 /**
- * Import a harness-provided package through the first anchor that reaches it.
+ * URL candidates for a package inside a packaged layout's archive.
  *
- * The anchor is kept for the `require` itself rather than re-deriving one from
- * the resolved path: a package inside an asar archive resolves by a path plain
- * Node cannot stat, and only the anchor that answered knows how to read it.
+ * `createRequire` resolves through the real filesystem, and the packaged Desktop
+ * keeps its runtime inside `app.asar` — the walk finds nothing there even though
+ * Electron's own loader imports those very files happily. So the archive is
+ * addressed directly as a URL, which the runtime that needs it can read.
+ *
+ * @param {string} specifier - the bare specifier to locate.
+ * @returns {string[]} file URLs to try, nearest layout first.
+ */
+function packagedCandidates(specifier) {
+  const roots = []
+  if (typeof process.resourcesPath === 'string' && process.resourcesPath.length > 0) {
+    roots.push(join(process.resourcesPath, 'app.asar', 'dsh', 'node_modules'))
+  }
+  const configured = process.env.DSH_HOME
+  if (configured !== undefined && configured.length > 0) {
+    roots.push(join(configured, 'resources', 'app.asar', 'dsh', 'node_modules'))
+    roots.push(join(configured, 'resources', 'app.asar.unpacked', 'dsh', 'node_modules'))
+  }
+  const candidates = []
+  for (const root of roots) {
+    for (const entry of PACKAGE_ENTRIES) {
+      candidates.push(pathToFileURL(join(root, specifier, entry)).href)
+    }
+  }
+  return candidates
+}
+
+/**
+ * Import a harness-provided package: resolved through an anchor first, then
+ * addressed inside a packaged archive when no anchor can see it.
+ *
+ * The anchor is kept for the `require`-style resolution rather than re-deriving
+ * one from the resolved path, because a package inside an asar archive resolves
+ * by a path plain Node cannot stat, and only the anchor that answered knows how
+ * to read it.
+ *
  * @param {string} specifier - the bare specifier to load.
  * @returns {Promise<unknown>} the loaded module.
  */
-export function loadHarnessModule(specifier) {
+export async function loadHarnessModule(specifier) {
   for (const anchor of resolutionAnchors()) {
     let resolved
     try {
@@ -78,22 +123,41 @@ export function loadHarnessModule(specifier) {
     }
     return import(pathToFileURL(resolved).href)
   }
-  return Promise.reject(new Error(`${specifier} is not reachable from this install`))
+  let problem
+  for (const candidate of packagedCandidates(specifier)) {
+    try {
+      return await import(candidate)
+    } catch (error) {
+      problem = error
+    }
+  }
+  const reason = problem instanceof Error ? problem.message : String(problem)
+  throw new Error(`${specifier} is not reachable from this install (packaged layouts: ${reason})`)
 }
 
 /**
  * Require a harness-provided package synchronously, for a load-time need.
+ *
+ * The failure carries the last anchor's own error: "not reachable" without a
+ * reason is unactionable in a packaged layout, where a wrong path and a broken
+ * archive look identical from outside.
+ *
  * @param {string} specifier - the bare specifier to load.
  * @returns {unknown} the module's exports.
  * @throws {Error} when no anchor reaches it.
  */
 export function requireHarnessModule(specifier) {
+  let lastAnchor
+  let lastError
   for (const anchor of resolutionAnchors()) {
+    lastAnchor = anchor
     try {
       return createRequire(anchor)(specifier)
-    } catch {
+    } catch (error) {
+      lastError = error
       // Unreachable from this anchor, or its own load failed; try the next.
     }
   }
-  throw new Error(`${specifier} is not reachable from this install`)
+  const reason = lastError instanceof Error ? lastError.message : String(lastError)
+  throw new Error(`${specifier} is not reachable from this install (last anchor ${String(lastAnchor)}: ${reason})`)
 }
