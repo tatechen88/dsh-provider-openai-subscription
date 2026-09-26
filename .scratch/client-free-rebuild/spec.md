@@ -77,6 +77,34 @@ cordis.patch.yml  bundle 补丁层（唯一保留的对外声明）
 **已知缺口（P2 需 spike）**：原生「设置 → 模型」页对第三方 `settingsNs` 是否给可编辑表单，
 还是只给一行（现成编辑器可能只认 deepseek / pi-ai 两个 family）。退路：配置只走 profile patch 层。
 
+### S1 结论（2026-09-26 实测，已答复）
+
+**机制**：`@deepseek-ai/dsh-client-ui-settings-models` 的 provider 行是**按 settings namespace 过滤**的——
+
+```js
+const configurable = state.rows.filter((row) => state.namespaces.has(row.entry.settingsNs));   // L2069
+const addable = state.rows.flatMap((row) => { const ns = state.namespaces.get(row.entry.settingsNs);
+  return ns === undefined || row.configured ? [] : [{ row, namespace: ns }] });                 // L2070
+```
+
+`state.namespaces` 来自共享 settings 镜像（`describe()`）。而 0.1.7 的 settings 服务**没有 `register`**，
+namespace 只由**条目自己的 Config schema 投影**产生；我们的 `Config` 是手写 Standard Schema，
+宿主 Config inspector 直接报 `"status": "unsupported"`，因此**我们的 provider 在原生模型页里根本不存在**：
+行不显示，**「添加模型提供商」也不会列出它**。
+
+**实测**：真 0.1.7 实例 + 真浏览器，插件 `state: active` 且已注册进可配置目录，模型页文本只有
+`模型 / 填入各提供商的 API 密钥即可使用其模型。/ DeepSeek 编辑 / 添加模型提供商`——没有我们。
+
+**后果**：没有客户端之后，**schemastery Config 是"能被原生 UI 看见"的唯一途径**（这也是所有内置插件的做法）。
+否则插件在登录前是**完全不可见**的（`adapter.listModels()` 需要凭据 → 没登录就没模型 → 模型选择器里也没有）。
+
+**P2 决策（待定）**：
+- **A 维持零依赖**：接受原生 UI 里不可见；配置只走 `cordis.patch.yml`；插件靠模型选择器（登录后）出现。
+- **B/C 引入宿主自带的 schemastery**（peerDependency，`@deepseek-ai/schemastery`；注意兼容性门只检查
+  `@deepseek-ai/dsh*`，不检查它）：`Config` 用 schemastery 写 → namespace 出现 → 行与可编辑表单出现。
+  C 是"能取到 schemastery 就用它、取不到回退内置 Standard Schema"的混合方案，代价是"零依赖"口径要改写。
+
+
 ## 7. 阶段
 
 | 阶段 | 内容 | 状态 |
