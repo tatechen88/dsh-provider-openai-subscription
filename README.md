@@ -2,7 +2,10 @@
 
 用你的 **ChatGPT / Codex 订阅**账号，在 DeepSeek Harness 里直接使用 OpenAI 模型。
 
-装好之后，DSH 的模型列表里会多出一个 `openai-subscription`，选它就能像平时一样对话、调用工具；侧边栏底部会多一个小指示器，告诉你订阅额度还剩多少、这次会话用了多少。
+> **⚠️ 本仓库正在按「纯宿主插件」重建（P1 已完成）。**
+> 浏览器半边（`client/`、`dsh.client` 声明）已删除：它带来的不是功能而是风险——DSH 0.1.7 里一个导入失败的客户端 entry 是**致命的 web 启动错误**（`web boot: 1 entry did not activate`），Desktop 外壳会因此崩溃重启。
+> 因此侧边栏指示器、用量卡片、首次引导与自带设置页**不再存在**；额度、计量与登录入口正在改由 **DSH 原生模型页 + agent 工具 + rescue CLI** 承载（P2–P4）。
+> 下面「它能做什么 / 侧边栏指示器 / 用量与费用 / 安装」等章节描述的仍是 **v1.5.0 的行为**，会在 P2–P5 逐段改写。计划见 [`.scratch/client-free-rebuild/spec.md`](.scratch/client-free-rebuild/spec.md)。
 
 > ⚠️ 它连的是 ChatGPT 订阅在用的**非公开接口**，不是 OpenAI 的 Platform API。用之前请自行确认账号、OAuth Client ID 和这个接口的使用风险。
 
@@ -203,12 +206,12 @@ npm test                  # 单元测试
 npm run check             # 语法检查 + 全部单元测试
 npm run test:e2e          # 真实 DeepSeek 余额查询；没有 Key 时会跳过
 npm run test:integration  # 真实 DSH 组合 smoke（缺 DSH 依赖时跳过）
-npm run test:web          # 真实 dsh web：浏览器端 bundle 是否被注入并能取回（缺 DSH 时跳过）
+npm run test:web          # 真实 dsh web：页面里不含本插件、宿主侧路由确实挂载（缺 DSH 时跳过）
 npm run test:headless     # 真实 dsh --profile headless --json 跑一遍（缺 dsh 时跳过）
 npm run test:release      # 发布前跑：单元测试 + 三个 strict 门禁
 ```
 
-`test:integration` 会把插件装进真实的 Cordis 上下文跑一次 `llm/stream`，验证它变成一条已计价记录，并且把结果送进 DSH 自己的流式校验器。`test:web` 会用临时 profile 真的起一次 `dsh web`，检查插件声明被解析、bundle 被注入首页、并且能按首页给出的批量地址取回（不需要浏览器，也不需要登录）。`test:headless` 会真的启动一次 `dsh --profile headless --json`（在临时 DSH home 里，用一个 mock 模型路由，不联网），检查输出流是干净的 JSON、账本按会话记账。
+`test:integration` 会把插件装进真实的 Cordis 上下文跑一次 `llm/stream`，验证它变成一条已计价记录，并且把结果送进 DSH 自己的流式校验器。`test:web` 会用临时 profile 真的起一次 `dsh web`，断言**首页里没有本插件的任何痕迹**（没有 `dsh.client`、没有预加载、没有 bundle 行），同时从服务端确认宿主半边确实挂载了（自己的路由 401、无人认领的路径 404）——不需要浏览器，也不需要登录。`test:headless` 会真的启动一次 `dsh --profile headless --json`（在临时 DSH home 里，用一个 mock 模型路由，不联网），检查输出流是干净的 JSON、账本按会话记账。
 
 这三条都需要本机装了 DSH，否则会跳过；加 `:strict` 或直接跑 `test:release` 就会把「跳过」当成失败——免得出现「因为没装 DSH 所以绿灯」的假通过。
 
@@ -225,11 +228,12 @@ src/
   balance/  models/         额度查询、模型目录
   usage/                    用量账本、价格表、设置文件
   provider/                 把 DSH 的请求翻译成 Codex Responses，再翻译回来
-  web/                      浏览器用的本地 API
-client/
-  client.js                 设置页、首次引导、侧边栏指示器
+  web/                      宿主侧路由（重建中：将收窄到 OAuth 回调）
 cordis.patch.yml            插件自带的默认配置层
 ```
+
+浏览器半边已删除：`dsh.client` 声明、`exports["./client"]`、`client/` 目录都不再存在，
+`test/no-client.test.mjs` 会阻止它们回来。
 
 </details>
 

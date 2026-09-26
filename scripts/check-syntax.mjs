@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 /** Directories walked for first-party code; node_modules never appears under them. */
-const WALK_ROOTS = ['src', 'client', 'scripts', 'test']
+const WALK_ROOTS = ['src', 'scripts', 'test']
 const EXTENSIONS = new Set(['.js', '.mjs'])
 
 /** Collect every .js/.mjs file under one directory, depth first. */

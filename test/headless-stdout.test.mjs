@@ -47,10 +47,7 @@ async function walk(directory, found = []) {
 }
 
 test('no module DSH loads writes to stdout', async () => {
-  const files = [
-    ...(await walk(join(root, 'src'))),
-    join(root, 'client', 'client.js'),
-  ]
+  const files = await walk(join(root, 'src'))
   const offenders = []
   for (const file of files) {
     const name = relative(root, file).split('\\').join('/')

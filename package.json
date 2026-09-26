@@ -6,7 +6,6 @@
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./client": "./client/client.js",
     "./rescue": "./src/rescue.mjs",
     "./package.json": "./package.json"
   },
@@ -15,7 +14,6 @@
   },
   "files": [
     "src",
-    "client",
     "cordis.patch.yml"
   ],
   "repository": {
@@ -29,14 +27,6 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "platform": "web",
-      "inject": [
-        "@deepseek-ai/dsh-client-ui-renderer",
-        "@deepseek-ai/dsh-client-ui-model-selection",
-        "@deepseek-ai/dsh-client-ui-settings-models"
-      ]
     }
   },
   "scripts": {

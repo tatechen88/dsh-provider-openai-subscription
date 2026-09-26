@@ -375,16 +375,26 @@ async function commandDoctor(profilePackage) {
   const here = dirname(fileURLToPath(import.meta.url))
   const packagePath = join(here, '..', 'package.json')
   const runtimePath = join(here, 'runtime.js')
-  const clientPath = join(here, '..', 'client', 'client.js')
   const patchPath = join(here, '..', 'cordis.patch.yml')
   const switchPath = killSwitchPath()
+  // A browser half is a liability rather than a feature here: in DSH 0.1.7 a
+  // client entry that fails to import is a fatal web-boot failure, so the
+  // readiness report asserts its absence instead of its presence.
+  const manifest = await tryRead(packagePath)
+  let declaresClient = false
+  try {
+    declaresClient = manifest === undefined ? false : JSON.parse(manifest).dsh?.client !== undefined
+  } catch {
+    declaresClient = false
+  }
+  const clientPath = join(here, '..', 'client')
   const checks = {
     node: process.version,
     package: await exists(packagePath),
     runtime: await exists(runtimePath),
-    client: await exists(clientPath),
     patch: await exists(patchPath),
     killSwitch: await exists(switchPath),
+    clientFree: declaresClient === false && !(await exists(clientPath)),
     profileHasPlugin: false,
     profileHasRow: false,
     profilePatchFile: false,
@@ -416,7 +426,7 @@ async function commandDoctor(profilePackage) {
   }
   const declared = await declaredDshRange(packagePath)
   const installed = await detectDshVersion(profilePackage)
-  checks.ok = checks.package && checks.runtime && checks.client && checks.patch
+  checks.ok = checks.package && checks.runtime && checks.patch && checks.clientFree
   checks.schemaVersion = 1
   checks.compatibility = {
     declaredDshRange: declared,

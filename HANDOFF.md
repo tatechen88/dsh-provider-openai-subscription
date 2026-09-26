@@ -2,6 +2,10 @@
 
 > 交接说明：给接手本仓库的下一个 agent 或新 session。最后更新 2026-09-26。
 
+> **当前状态：正在按「纯宿主插件」重建（P1 已完成）。** 浏览器半边已删除，见
+> 「客户端剥离（P1）」一节与 [`.scratch/client-free-rebuild/spec.md`](.scratch/client-free-rebuild/spec.md)。
+> 下文描述侧边栏指示器/用量卡片/自带设置页的段落属于 v1.5.0 行为，会在 P2–P5 逐段改写。
+
 ## 这是什么
 
 面向 DeepSeek Harness（DSH）的独立 OpenAI / ChatGPT 订阅 Provider。使用 ChatGPT OAuth 凭据访问 Codex Responses 接口，向 DSH 提供模型目录、流式生成、token 用量（含缓存命中）、订阅额度查询与 Web 设置界面；额度指示器默认停在侧边栏底部，可拖动。
@@ -281,10 +285,37 @@ OpenAI Responses returned HTTP 400: { "error": { "message": "No tool output foun
 ## 关键文件
 
 - `src/`——Provider 主体（模型目录、流式生成、用量与额度）
-- `client/`——Web 设置界面与侧边栏额度指示器
 - `test/`——测试
 - `cordis.patch.yml`——DSH profile 接入配置
 - `README.md`——面向使用者的说明；`AGENTS.md`——仓库约定与 verify 门禁
+
+## 客户端剥离（P1，本轮）
+
+**根因**：DSH 0.1.7 把"客户端 entry 导入失败"当**致命** web 启动错误（`web boot: 1 entry did not
+activate`），Desktop 外壳据此崩溃重启——2026-09-26 因运行中改动客户端文件实测触发过一次。
+结论不是"少改客户端"，而是**不存在客户端**。
+
+**做了什么**
+
+1. 删掉 `client/client.js`（2587 行）与 7 个 `client-*.test.mjs`；`package.json` 去掉 `dsh.client`、
+   `exports["./client"]`、`files` 里的 `client`；`check-syntax` 的扫描根去掉 `client`。
+2. `src/rescue.mjs` 的 `doctor` 改为**断言无客户端**：新增 `clientFree`（manifest 无 `dsh.client` 且
+   磁盘无 `client/`），`ok` 条件换成 `package && runtime && patch && clientFree`；不再报告 `client` 字段。
+3. `scripts/web-smoke.mjs` **反向**：临时 profile 里把插件以 `state: active` 装好，断言
+   ① 首页不含本包任何痕迹；② 宿主半边确实挂载——自己的路由**401**、无人认领的路径**404**（不带会话 cookie 探测）。
+4. 新增 `test/no-client.test.mjs`：manifest 无 `dsh.client`、无 `./client` 导出、`files` 不含 client、
+   `client/` 目录不存在、`src/` 与 `scripts/` 内 `__ModuleLoader__` 零命中。
+5. `headless-stdout.test.mjs` 不再引用已删除的客户端文件。
+
+**现网处置（D6）**：重构前先把 Desktop 里那份退出，避免"边跑边改"重演——
+`plugin_manager remove_bundle` → 删 profile patch 里的激活块 → 清掉 `node_modules` 里残留的 junction。
+实测：GUI 未崩，`sidebar.footer.action` 的席位只剩系统自己的 `cordis-panel`。
+
+**证据**：`npm run test` 385/385；反向 web 门禁在真 0.1.7-rc.2 上 PASS；基线 tag `v1.5.0-pre-rebuild`。
+
+**下一步**：P2（原生模型页 + 配置面，需先 spike 第三方 settingsNs 是否给可编辑表单）、
+P3（`authorization` flow + 工具/CLI 登录——注意 0.1.7 现成 UI **不调用** `authorization/*`）、
+P4（计量与额度工具化）、P5（路由收口）、P6（门禁）、P7（发 2.0.0）。
 
 ## 接手时先读
 

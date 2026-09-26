@@ -97,7 +97,10 @@ test('rescue doctor prints readiness report', async () => {
   assert.equal(report.plugin, 'dsh-provider-openai-subscription')
   assert.equal(report.package, true)
   assert.equal(report.runtime, true)
-  assert.equal(report.client, true)
+  // The browser half is gone by design; the report asserts its absence, because
+  // a client entry that fails to import is a fatal web-boot failure.
+  assert.equal(report.clientFree, true)
+  assert.equal('client' in report, false)
 })
 
 test('rescue install dry-run does not modify profile', async () => {
