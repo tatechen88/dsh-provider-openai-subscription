@@ -9,7 +9,7 @@
  * @module dsh-provider-openai-subscription/rescue
  */
 
-import { access, readFile, readdir, writeFile, mkdir, rename, mkdtemp, rm } from 'node:fs/promises'
+import { access, open, readFile, readdir, writeFile, mkdir, rename, mkdtemp, rm } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -260,11 +260,60 @@ function isPlaceholderThenBlock(text) {
 }
 
 /**
+ * Read one file out of an Electron `app.asar` archive.
+ *
+ * A packaged DSH keeps its runtime inside `resources/app.asar`, so an install
+ * whose profile has no `node_modules` of its own — the Desktop layout — carries
+ * its version only in there. The archive is read directly rather than through a
+ * dependency, because this CLI is the tool that has to work when the rest of the
+ * plugin does not.
+ *
+ * The data offset is the part worth stating: the header's JSON length sits at
+ * byte 12, and the payload starts after that JSON **padded to a four-byte
+ * boundary**, so `16 + length` reads two or three bytes early and the parsed
+ * entry comes out corrupt.
+ *
+ * @param {string} asarPath - absolute path of the archive.
+ * @param {string} inside - slash-separated entry path, e.g. `dsh/package.json`.
+ * @returns {Promise<string|undefined>} the entry's text, or undefined.
+ */
+async function readAsarEntry(asarPath, inside) {
+  let handle
+  try {
+    handle = await open(asarPath, 'r')
+    const head = Buffer.alloc(16)
+    await handle.read(head, 0, 16, 0)
+    const length = head.readUInt32LE(12)
+    if (!Number.isSafeInteger(length) || length <= 0) return undefined
+    const raw = Buffer.alloc(length)
+    await handle.read(raw, 0, length, 16)
+    const header = JSON.parse(raw.toString('utf8').replace(/\0+$/, ''))
+    let node = header
+    for (const part of inside.split('/')) {
+      if (node === null || typeof node !== 'object' || node.files === undefined) return undefined
+      node = node.files[part]
+    }
+    if (node === null || typeof node !== 'object' || node.files !== undefined || typeof node.size !== 'number') return undefined
+    const start = 16 + Math.ceil(length / 4) * 4
+    const content = Buffer.alloc(node.size)
+    if (node.size > 0) await handle.read(content, 0, node.size, start + Number(node.offset))
+    return content.toString('utf8')
+  } catch {
+    // A missing, truncated, or differently-shaped archive is "unknown", never a
+    // crash: the rest of the report is still worth printing.
+    return undefined
+  } finally {
+    await handle?.close().catch(() => {})
+  }
+}
+
+/**
  * Read the installed DSH version without booting it.
  *
  * The launcher package is what a profile resolves `@deepseek-ai/dsh` to, so the
  * candidates are the profile's own `node_modules`, the shared `profiles/` one,
- * and the harness home's own.
+ * and the harness home's own. A packaged install has none of those: its runtime
+ * lives inside `resources/app.asar`, which this reads last.
  * @param {string|undefined} profilePackage - the profile package.json, when given.
  * @returns {Promise<string|null>}
  */
@@ -287,6 +336,20 @@ async function detectDshVersion(profilePackage) {
       if (typeof version === 'string' && version.length > 0) return version
     } catch {
       // An unreadable manifest is not a version; keep looking.
+    }
+  }
+  // The packaged layout: `desktop-runtime.json` records the runtime release,
+  // and the runtime's own manifest is the fallback.
+  const asar = join(home, 'resources', 'app.asar')
+  for (const inside of ['dsh/desktop-runtime.json', 'dsh/package.json']) {
+    const raw = await readAsarEntry(asar, inside)
+    if (raw === undefined) continue
+    try {
+      const parsed = JSON.parse(raw)
+      const version = typeof parsed.release?.version === 'string' ? parsed.release.version : parsed.version
+      if (typeof version === 'string' && version.length > 0) return version
+    } catch {
+      // Not the manifest this looked like; try the next entry.
     }
   }
   return null

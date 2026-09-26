@@ -342,6 +342,84 @@ test('rescue doctor treats the shipped placeholder as unremarkable', async () =>
   assert.equal(report.profilePatchActivatesRow, false)
 })
 
+/**
+ * Build the smallest archive a packaged Desktop install ships: a 16-byte pickle
+ * header, the JSON directory padded to a four-byte boundary, then the payloads.
+ *
+ * The padding is the point of the fixture. A reader that adds the raw JSON
+ * length to 16 lands two or three bytes early and parses garbage, which is
+ * exactly the mistake this test exists to catch.
+ * @param {Array<{path: string, content: string}>} entries
+ * @returns {{archive: Buffer, headerLength: number}}
+ */
+function buildAsar(entries) {
+  const tree = {}
+  const payloads = []
+  let offset = 0
+  for (const entry of entries) {
+    const content = Buffer.from(entry.content, 'utf8')
+    const parts = entry.path.split('/')
+    let node = tree
+    for (const part of parts.slice(0, -1)) {
+      if (node[part] === undefined) node[part] = { files: {} }
+      node = node[part]
+    }
+    node.files[parts.at(-1)] = { size: content.length, offset }
+    offset += content.length
+    payloads.push(content)
+  }
+  // Trailing whitespace keeps the JSON valid while making the header length
+  // deliberately unaligned, so the padding cannot be skipped.
+  let json = JSON.stringify({ files: tree })
+  while (json.length % 4 === 0) json += ' '
+  const padded = Buffer.alloc(Math.ceil(json.length / 4) * 4)
+  Buffer.from(json, 'utf8').copy(padded)
+  const head = Buffer.alloc(16)
+  head.writeUInt32LE(4, 0)
+  head.writeUInt32LE(8 + padded.length, 4)
+  head.writeUInt32LE(Buffer.byteLength(json), 12)
+  return { archive: Buffer.concat([head, padded, ...payloads]), headerLength: Buffer.byteLength(json) }
+}
+
+test('rescue doctor reads the DSH version out of a packaged install app.asar', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-home-'))
+  dirs.push(dir)
+  const runtime = JSON.stringify({
+    schemaVersion: 1,
+    release: { version: '0.1.7-rc.2', nodeVersion: '24.18.1', pnpmVersion: '11.7.0' },
+  })
+  const { archive, headerLength } = buildAsar([{ path: 'dsh/desktop-runtime.json', content: runtime }])
+  assert.notEqual(headerLength % 4, 0, 'the fixture must exercise the header padding')
+  await mkdir(join(dir, 'resources'), { recursive: true })
+  await writeFile(join(dir, 'resources', 'app.asar'), archive)
+
+  const profileDir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-profile-'))
+  dirs.push(profileDir)
+  const packagePath = join(profileDir, 'package.json')
+  await writeFile(packagePath, JSON.stringify({ dependencies: {} }))
+
+  const { stdout } = await runRescue(['doctor', '--profile', packagePath], { DSH_HOME: dir })
+  const report = JSON.parse(stdout)
+  assert.equal(report.compatibility.installedDsh, '0.1.7-rc.2')
+  assert.equal(report.compatibility.declaredDshRange, '>=0.1.6-alpha.1')
+  assert.equal(report.compatibility.satisfied, true)
+})
+
+test('rescue doctor reports an unknown version rather than a wrong one', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-home-'))
+  dirs.push(dir)
+  const profileDir = await mkdtemp(join(tmpdir(), 'dsh-openai-subscription-profile-'))
+  dirs.push(profileDir)
+  const packagePath = join(profileDir, 'package.json')
+  await writeFile(packagePath, JSON.stringify({ dependencies: {} }))
+
+  const { stdout } = await runRescue(['doctor', '--profile', packagePath], { DSH_HOME: dir })
+  const report = JSON.parse(stdout)
+  assert.equal(report.compatibility.installedDsh, null)
+  // "unknown" must never read as "satisfied".
+  assert.equal(report.compatibility.satisfied, null)
+})
+
 test('unknown command exits non-zero', async () => {
   await assert.rejects(runRescue(['wat'], {}), (error) => error.code === 2)
 })
