@@ -350,6 +350,52 @@ export function connectionTrust(ctx) {
 }
 
 /**
+ * Read one namespace's resolved settings section from the deployment's service.
+ *
+ * DSH 0.1.6 exposed `settings.get(ns)`; 0.1.7 provides the same service name
+ * through `SettingsForms`, which has no `get` at all — the equivalent read is
+ * `describe()`, whose descriptors carry the namespace and its resolved value.
+ * Both shapes are tried, so a deployment keeps resolving the credential
+ * reference its profile configured instead of silently falling back to a
+ * built-in environment name. A service that answers neither, or refuses with an
+ * exception, reads as "not configured": the caller falls back exactly as it did
+ * before.
+ *
+ * `describe()` is called without its redaction options on purpose. Redaction
+ * exists for wire surfaces; this read happens in the host process, and the only
+ * field ever taken from the result is an environment-variable *name*.
+ *
+ * @param {object|undefined} settings - the `settings` service, when one is mounted.
+ * @param {string} ns - namespace (profile entry id) to read.
+ * @returns {object|undefined} the resolved section, when one is readable.
+ */
+export function readSettingsSection(settings, ns) {
+  if (settings === null || typeof settings !== 'object') return undefined
+  // 0.1.6 and earlier: one direct read per namespace.
+  try {
+    if (typeof settings.get === 'function') {
+      const direct = settings.get(ns)
+      if (direct !== undefined) return direct
+    }
+  } catch {
+    // A service that refuses the direct read is still tried through describe().
+  }
+  // 0.1.7: the service projects registered namespaces into descriptors.
+  try {
+    if (typeof settings.describe === 'function') {
+      const descriptors = settings.describe()
+      if (Array.isArray(descriptors)) {
+        const found = descriptors.find((entry) => entry !== null && typeof entry === 'object' && entry.ns === ns)
+        if (found !== undefined && typeof found === 'object') return found.value
+      }
+    }
+  } catch {
+    // No readable section; the caller's built-in default stands.
+  }
+  return undefined
+}
+
+/**
  * Resolve the DeepSeek API key for the meter's balance query.
  *
  * Only the key is taken from the DeepSeek configuration: the balance is read
@@ -364,13 +410,13 @@ export function connectionTrust(ctx) {
  * @returns {Promise<{apiKey: string|undefined}>}
  */
 export async function resolveDeepSeekCredential(ctx, credentials) {
-  let section
+  let settings
   try {
-    const settings = typeof ctx?.get === 'function' ? ctx.get('settings') : undefined
-    section = typeof settings?.get === 'function' ? settings.get('llm-deepseek') : undefined
+    settings = typeof ctx?.get === 'function' ? ctx.get('settings') : undefined
   } catch {
-    section = undefined
+    settings = undefined
   }
+  const section = readSettingsSection(settings, 'llm-deepseek')
   const envName = typeof section?.apiKeyEnv === 'string' && section.apiKeyEnv.length > 0 ? section.apiKeyEnv : 'DEEPSEEK_API_KEY'
   let apiKey
   try {
@@ -403,14 +449,14 @@ export async function resolveDeepSeekCredential(ctx, credentials) {
 export async function resolveZhipuCredential(ctx, credentials) {
   // The reference pi-ai's installed catalog names for `zai-coding-cn`.
   const fallbackName = 'ZAI_CODING_CN_API_KEY'
-  let configured
+  let settings
   try {
-    const settings = typeof ctx?.get === 'function' ? ctx.get('settings') : undefined
-    const section = typeof settings?.get === 'function' ? settings.get('llm-pi-ai') : undefined
-    configured = section?.providers?.['zai-coding-cn']?.apiKeyEnv
+    settings = typeof ctx?.get === 'function' ? ctx.get('settings') : undefined
   } catch {
-    configured = undefined
+    settings = undefined
   }
+  const section = readSettingsSection(settings, 'llm-pi-ai')
+  const configured = section?.providers?.['zai-coding-cn']?.apiKeyEnv
   const envName = typeof configured === 'string' && configured.length > 0 ? configured : fallbackName
   let apiKey
   try {

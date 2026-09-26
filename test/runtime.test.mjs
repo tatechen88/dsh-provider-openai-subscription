@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { applyRuntime, connectionTrust, waitForService } from '../src/runtime.js'
+import { applyRuntime, connectionTrust, readSettingsSection, resolveDeepSeekCredential, resolveZhipuCredential, waitForService } from '../src/runtime.js'
 import { PROVIDER_ID, ROUTE_PREFIX, SETTINGS_NAMESPACE } from '../src/constants.js'
 
 function fakeContext() {
@@ -323,4 +323,43 @@ test('waitForService gives up after the timeout', async () => {
   assert.equal(result, undefined)
   assert.equal(sleeps, 4, 'four 25ms ticks exhaust the 100ms budget')
   assert.equal(clock, 100)
+})
+
+test('readSettingsSection reads the direct shape and the describe() shape', () => {
+  // 0.1.6: the service answers get(ns) directly.
+  assert.deepEqual(readSettingsSection({ get: (ns) => (ns === 'a' ? { apiKeyEnv: 'X' } : undefined) }, 'a'), { apiKeyEnv: 'X' })
+  // 0.1.7: SettingsForms has no get at all; describe() carries the values.
+  assert.deepEqual(readSettingsSection({ describe: () => [{ ns: 'other', value: {} }, { ns: 'a', value: { apiKeyEnv: 'Y' } }] }, 'a'), { apiKeyEnv: 'Y' })
+  // A get() that exists but misses falls through instead of ending the read.
+  assert.deepEqual(readSettingsSection({ get: () => undefined, describe: () => [{ ns: 'a', value: { apiKeyEnv: 'Z' } }] }, 'a'), { apiKeyEnv: 'Z' })
+  // A service that answers neither, or refuses, reads as "not configured".
+  assert.equal(readSettingsSection({ get() { throw new Error('no registry') }, describe() { throw new Error('closed') } }, 'a'), undefined)
+  assert.equal(readSettingsSection({ describe: () => 'not-an-array' }, 'a'), undefined)
+  assert.equal(readSettingsSection(undefined, 'a'), undefined)
+  assert.equal(readSettingsSection({ get: () => undefined }, 'a'), undefined)
+})
+
+test('the DeepSeek credential reference is read through whichever settings shape the harness provides', async () => {
+  const store = { resolve: async (ref) => (ref === 'CUSTOM_DS_KEY' ? { value: 'ds-secret' } : undefined) }
+  const withSettings = (settings) => ({ get: (name) => (name === 'settings' ? settings : undefined) })
+  const direct = { get: (ns) => (ns === 'llm-deepseek' ? { apiKeyEnv: 'CUSTOM_DS_KEY' } : undefined) }
+  assert.deepEqual(await resolveDeepSeekCredential(withSettings(direct), store), { apiKey: 'ds-secret' })
+  // The shape 0.1.7 actually provides: no get, only describe().
+  const described = { describe: () => [{ ns: 'llm-deepseek', value: { apiKeyEnv: 'CUSTOM_DS_KEY' } }] }
+  assert.deepEqual(await resolveDeepSeekCredential(withSettings(described), store), { apiKey: 'ds-secret' })
+})
+
+test('the Zhipu route reference is read through describe() and keeps its fallback', async () => {
+  const store = { resolve: async (ref) => (ref === 'CUSTOM_ZAI_KEY' ? { value: 'zai-secret' } : undefined) }
+  const described = { describe: () => [{ ns: 'llm-pi-ai', value: { providers: { 'zai-coding-cn': { apiKeyEnv: 'CUSTOM_ZAI_KEY' } } } }] }
+  assert.deepEqual(
+    await resolveZhipuCredential({ get: (name) => (name === 'settings' ? described : undefined) }, store),
+    { apiKey: 'zai-secret' },
+  )
+  // No settings service at all: the catalog default still names the reference.
+  const seen = []
+  const recorder = { resolve: async (ref) => { seen.push(ref); return undefined } }
+  await resolveDeepSeekCredential({}, recorder)
+  await resolveZhipuCredential({}, recorder)
+  assert.deepEqual(seen, ['DEEPSEEK_API_KEY', 'ZAI_CODING_CN_API_KEY'])
 })
