@@ -1,6 +1,6 @@
 # Spec: 纯宿主插件重建（移除浏览器半边）
 
-Status: done（P0–P7 全部完成，2.0.0 已发布）
+Status: done（P0–P7 完成，2.0.0 已发布）**＋ 一条未决项（P8，见文末）**
 Type: task
 Created: 2026-09-26
 Supersedes: `.scratch/dsh-0.1.7-desktop/spec.md`（那份的接入与兼容轮已经落地；本文件是**重建**的依据）
@@ -173,3 +173,45 @@ namespace 只由**条目自己的 Config schema 投影**产生；我们的 `Conf
 - 2026-09-26 建档。P0+P1 已完成：仓库 385 单测全绿，反向 web 门禁 PASS。
   现网（Desktop profile）已按 D6 退出：`plugin_manager remove_bundle` + 删除 profile patch 里的激活块 +
   清理 `node_modules` 里残留的 junction；实测 GUI 未崩，客户端席位列表里已无本插件注册。
+
+## P8（未决）：打包版 Desktop 里拿不到隔离服务
+
+**现象（实测，非推测）**：同一份 2.0.0 代码在真 `dsh web`（npm 布局）里一切正常——
+运行时记录显示 `configSchema: schemastery`、5 个工具全部注册、授权 flow 注册、
+`llm/credentials/webServer/authorization/tools/agents/systemPrompt` 全部 present。
+但在**打包版 Desktop** 里，同一个探针记录显示：
+
+```json
+"configSchema": "standard",
+"configSchemaProblem": "... not reachable ... (packaged layouts: Cannot find module '...app.asar.unpacked...')",
+"services": { "visible": { "llm": "present", "credentials": "present", "webServer": "present",
+                            "authorization": "missing", "tools": "missing",
+                            "agents": "missing", "systemPrompt": "missing" } },
+"tools": { "registered": [] }
+```
+
+**已确认的机制**：cordis 4 的 `ctx.get(name)` 沿 fiber 链上溯，遇到**隔离**该名字的祖先就停下
+（`cordis/lib/index.js` 的 `ReflectService.handler.get`：`if (fiber.parent[isolate][prop] !== key) throw error`）。
+DSH 把 `tools`/`authorization`/`agents`/`systemPrompt` 隔离在各自的 scope 里，所以根级第三方入口只看得到
+`llm`/`credentials`/`webServer`。DSH 自己的工具插件靠**声明 `inject`** 拿到它们
+（`dsh-experimental-tool-agent-team`：`inject = ['agents','agentTeams','tools','systemPrompt']`）。
+
+**已做**：`src/index.js` 声明了 `export const inject = ['tools', 'authorization']`；
+`config.js` 改为模块级 await + URL 优先导入（`process.resourcesPath` 锚点 + 直接 asar URL）；
+新增运行时记录用于从进程外观测。**但 Desktop 里 `inject` 仍未生效**——两种可能：
+
+1. **需要重启**：loader 在安装/首次创建条目时读走了 `inject`，之后改文件只重导入模块、不重建
+   entry 的 inject（这条最可能，因为记录显示新代码确实在跑，而服务仍 missing）。
+2. `inject` 只对 asar 内的官方插件生效，第三方 link 插件需要另一条路。
+
+**下一步（按顺序）**
+
+1. 重启 DSH Desktop，读 `$DSH_HOME/plugin-state/openai-subscription-runtime.json`：
+   若 `services.visible.tools === "present"` 且 `tools.registered` 有 5 个名字 → 问题只是重启；
+   若依旧 missing → 走第 2 步。
+2. 改走 DSH 自己的模式：像 `dsh-experimental-tool-agent-team` 那样，
+   通过 `agents` 服务在**每个 agent scope** 内注册工具（`agent.ctx.tools.register(...)`），
+   并在 agent 出现/消失时安装与拆除。注意 `agents` 同样是隔离服务，需先解决可见性，
+   或改为在 loader 的 agent 作用域内注入。
+3. 备选：向宿主暴露一个 `ctx.get('loader')` 通道来解析宿主包（loader 自己的
+   `import(name, baseUrl)` 能读到 asar 内的包），把 schemastery / `defineTool` 走宿主解析而不是自己解析。

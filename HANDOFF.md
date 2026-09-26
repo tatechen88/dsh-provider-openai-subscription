@@ -9,6 +9,16 @@
 
 ## 2.0.0 发布（P4–P7，本轮）
 
+> **⚠️ 未决项（P8）**：同一份 2.0.0 在 npm 布局的真 `dsh web` 里**全部正常**（schemastery + 5 工具 + 授权 flow，
+> 运行时记录可证），但在**打包版 Desktop** 里 `tools` / `authorization` 取不到（cordis 的隔离屏障），
+> 因此工具与 flow 不注册、schemastery 也解析不到。已声明 `inject`，但 Desktop 未生效 →
+> **先重启 DSH Desktop 再看记录**；仍不行则改走按 agent scope 注册工具的路子。
+> 完整证据、机制与下一步见 [`.scratch/client-free-rebuild/spec.md`](.scratch/client-free-rebuild/spec.md) 的 P8 一节。
+
+**运行时可观测性（新增）**：每次激活会写 `$DSH_HOME/plugin-state/openai-subscription-runtime.json`——
+声明了哪套 schema（含失败原因）、注册了哪些工具、flow 的 method、路由、以及**这次上下文能看见哪些服务**。
+纯宿主插件没有界面可看，这个文件就是"到底活着没有"的答案；`rescue status` 也会打印它。
+
 **P4 额度与计量工具化**：`openaiQuota` 现在尊重强制刷新（工具说"现在去问"就不会拿缓存回答）；
 `operations.quota()` 返回订阅的限流窗口，`operations.usage()` 把 meter 视图**投影**成工具结果——
 只带 `usage` 切片、账号、显示币种、隐私、`unpricedModels`、档位与估算口径，刻意丢掉 `pricing` / `metered`
