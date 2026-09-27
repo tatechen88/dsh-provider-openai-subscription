@@ -144,11 +144,12 @@ profile 里那段 YAML 的 `config` 支持这些字段：
 | `oauth.clientId` | OAuth Client ID。留空就不会加载 |
 | `provider.defaultModel` | 默认模型，可以留空。**标为 volatile**：改动会被运行中的插件直接采用，不用重启 |
 | `provider.reasoningEffort` | 默认思考力度，可以留空。同样 volatile |
+| `provider.streamTimeoutMs` | 一次模型调用的**整体超时**（响应头 + 整个 SSE 流），默认 `300000`（5 分钟），范围 1000–600000。同样 volatile。来源：旧版硬编码 120 秒，上游拥堵期响应一旦超过它，正在生成的流会被直接掐断（表现为整轮 "This operation was aborted"） |
 | `meter.*` | 用量模块的默认值，字段说明见插件自带的 `cordis.patch.yml`（含 `modelWatch` 新模型检测开关，默认开） |
 
 字段类型写错（比如 `state: 5`）会在插件加载前就被拒绝，并在 DSH 启动输出里点名是哪个字段，而不是悄悄当成默认值——省得你对着「插件怎么不加载」发呆。
 
-`provider.defaultModel` / `provider.reasoningEffort` 是插件里**唯二**标了 volatile 的字段：只有它们能在运行中被真正采用
+`provider.defaultModel` / `provider.reasoningEffort` / `provider.streamTimeoutMs` 是插件里**仅有的三个**标了 volatile 的字段：只有它们能在运行中被真正采用
 （adapter 会立刻改用新值），所以只有它们会出现在设置表单的投影里。其余字段只在激活时生效，标成 volatile 就等于给你一个"改了要等重启"的假开关。
 
 ## 语言：跟随当前语言（中文 / English）

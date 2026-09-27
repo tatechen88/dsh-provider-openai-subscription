@@ -234,7 +234,7 @@ test('a cancelled discovery read is not cached as the answer', async () => {
   assert.equal(attempt, 2)
 })
 
-test('setDefaults adopts the two live fields and nothing else', () => {
+test('setDefaults adopts the three live fields and nothing else', () => {
   // These are the fields the Config schema marks volatile: DSH writes an edit
   // into the running plugin instead of remounting it, and the adapter is what
   // makes that edit mean anything.
@@ -243,16 +243,22 @@ test('setDefaults adopts the two live fields and nothing else', () => {
     defaultModel: 'old-model',
     reasoningEffort: 'low',
   })
-  adapter.setDefaults({ defaultModel: 'gpt-6-luna', reasoningEffort: 'max' })
+  assert.equal(adapter.timeoutMs, 300_000, 'constructor default is five minutes now')
+  adapter.setDefaults({ defaultModel: 'gpt-6-luna', reasoningEffort: 'max', streamTimeoutMs: 240_000 })
   assert.equal(adapter.defaultModel, 'gpt-6-luna')
   assert.equal(adapter.reasoningEffort, 'max')
+  assert.equal(adapter.timeoutMs, 240_000, 'a live stream deadline is adopted')
   // A live update carries whatever the row now says; a malformed value must not
-  // erase a working default.
-  adapter.setDefaults({ defaultModel: 42, reasoningEffort: undefined })
+  // erase a working default — that goes for the deadline as much as the strings.
+  adapter.setDefaults({ defaultModel: 42, reasoningEffort: undefined, streamTimeoutMs: Number.NaN })
   assert.equal(adapter.defaultModel, 'gpt-6-luna')
   assert.equal(adapter.reasoningEffort, 'max')
+  assert.equal(adapter.timeoutMs, 240_000, 'NaN does not trade a deadline for a hang')
+  adapter.setDefaults({ streamTimeoutMs: 5 })
+  assert.equal(adapter.timeoutMs, 240_000, 'a sub-floor deadline is ignored, not clamped')
   adapter.setDefaults(undefined)
   assert.equal(adapter.defaultModel, 'gpt-6-luna')
+  assert.equal(adapter.timeoutMs, 240_000)
 })
 test('an exhausted subscription window is reported as a when, not a body dump', async () => {
   // The exact shape the vendor returned when a 5-hour window ran out.

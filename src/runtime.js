@@ -185,6 +185,13 @@ export async function applyRuntime(ctx, config, options = {}) {
     getAccess: () => tokenManager.getAccessSnapshot(),
     defaultModel: config.provider?.defaultModel || '',
     reasoningEffort: config.provider?.reasoningEffort || '',
+    // `config` here is the raw row; normalizeConfig owns the fallback, so this
+    // guard only decides whether a configured value is trustworthy enough to
+    // override the adapter's own default.
+    ...(typeof config.provider?.streamTimeoutMs === 'number' && Number.isFinite(config.provider.streamTimeoutMs)
+      && config.provider.streamTimeoutMs >= 1_000
+      ? { timeoutMs: config.provider.streamTimeoutMs }
+      : {}),
     t,
   })
   const meter = await createMeter({
@@ -345,11 +352,15 @@ export async function applyRuntime(ctx, config, options = {}) {
     // A volatile config edit does not remount this plugin: the loader writes the
     // new value into the object `apply()` received and emits this event. Reading
     // it back through `ctx.fiber.config` is what makes the settings form honest —
-    // the two fields it can edit are the two the adapter adopts here.
+    // the three fields it can edit are the three the adapter adopts here.
     if (ctx.on !== undefined) {
       owned.push(ctx.on('loader/volatile-update', () => {
         const live = normalizeConfig(ctx.fiber?.config ?? config)
-        adapter?.setDefaults({ defaultModel: live.provider.defaultModel, reasoningEffort: live.provider.reasoningEffort })
+        adapter?.setDefaults({
+          defaultModel: live.provider.defaultModel,
+          reasoningEffort: live.provider.reasoningEffort,
+          streamTimeoutMs: live.provider.streamTimeoutMs,
+        })
       }))
     }
     // Without a browser half, these two registrations are the entire user-facing

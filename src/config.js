@@ -20,6 +20,14 @@ import { loadHarnessModule } from './dsh-modules.js'
 /** Valid plugin states. `active` is the only state that loads runtime.js. */
 export const PLUGIN_STATES = Object.freeze(['bootstrap', 'disabled', 'active'])
 
+/**
+ * Floor for `provider.streamTimeoutMs`. A configured value below this is
+ * treated as unset rather than clamped: a deadline that tight cannot cover a
+ * model round trip, so silently honoring it would just reintroduce the
+ * aborted-mid-generation failure the field exists to tune.
+ */
+export const MIN_STREAM_TIMEOUT_MS = 1_000
+
 /** Default configuration. */
 export const DEFAULT_CONFIG = Object.freeze({
   state: 'bootstrap',
@@ -29,6 +37,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   provider: Object.freeze({
     defaultModel: '',
     reasoningEffort: '',
+    streamTimeoutMs: 300_000,
   }),
 })
 
@@ -62,6 +71,16 @@ export function normalizeConfig(input) {
     && typeof providerRaw.reasoningEffort === 'string'
     ? providerRaw.reasoningEffort
     : DEFAULT_CONFIG.provider.reasoningEffort
+  // The stream deadline covers headers *and* the whole SSE body, so a healthy
+  // value is minutes, not seconds. Malformed or sub-floor values fall back to
+  // the default instead of being clamped: see MIN_STREAM_TIMEOUT_MS.
+  const streamTimeoutRaw = providerRaw !== null && typeof providerRaw === 'object' && !Array.isArray(providerRaw)
+    ? providerRaw.streamTimeoutMs
+    : undefined
+  const streamTimeoutMs = typeof streamTimeoutRaw === 'number' && Number.isFinite(streamTimeoutRaw)
+    && streamTimeoutRaw >= MIN_STREAM_TIMEOUT_MS
+    ? streamTimeoutRaw
+    : DEFAULT_CONFIG.provider.streamTimeoutMs
   return {
     ...record,
     state,
@@ -70,7 +89,7 @@ export function normalizeConfig(input) {
       : {}), clientId },
     provider: { ...(providerRaw !== null && typeof providerRaw === 'object' && !Array.isArray(providerRaw)
       ? providerRaw
-      : {}), defaultModel, reasoningEffort },
+      : {}), defaultModel, reasoningEffort, streamTimeoutMs },
   }
 }
 
@@ -156,6 +175,10 @@ function configIssues(input) {
         if (!isUnset(value) && typeof value !== 'string') {
           issues.push({ message: `provider.${field} must be a string`, path: ['provider', field] })
         }
+      }
+      const streamTimeoutMs = input.provider.streamTimeoutMs
+      if (!isUnset(streamTimeoutMs) && typeof streamTimeoutMs !== 'number') {
+        issues.push({ message: 'provider.streamTimeoutMs must be a number', path: ['provider', 'streamTimeoutMs'] })
       }
     }
   }
@@ -270,7 +293,7 @@ export async function selectConfigSchema(load = loadSchemastery) {
     schema: Schema.object({
       state: Schema.union([Schema.const('bootstrap'), Schema.const('disabled'), Schema.const('active')]).default('bootstrap'),
       oauth: Schema.object({ clientId: Schema.string().default('') }).default({ clientId: '' }),
-      // Volatile: DSH hands these two to the running plugin instead of remounting
+      // Volatile: DSH hands these three to the running plugin instead of remounting
       // it, and the adapter adopts them (`setDefaults`). Everything else here
       // changes meaning only at activation, so marking it volatile would offer an
       // edit that silently waits for a restart. This is also what earns the entry
@@ -279,7 +302,12 @@ export async function selectConfigSchema(load = loadSchemastery) {
       provider: Schema.object({
         defaultModel: Schema.string().default('').volatile(),
         reasoningEffort: Schema.string().default('').volatile(),
-      }).default({ defaultModel: '', reasoningEffort: '' }),
+        // Whole-request deadline for one model call: response headers plus the
+        // entire SSE body. The old hard-coded 120s aborted slow-but-healthy
+        // generations during upstream congestion; 5 minutes is the new default
+        // and the ceiling keeps a typo from becoming "never time out".
+        streamTimeoutMs: Schema.number().min(1000).max(600_000).default(300_000).volatile(),
+      }).default({ defaultModel: '', reasoningEffort: '', streamTimeoutMs: 300_000 }),
       meter: Schema.any(),
     }),
   }

@@ -43,6 +43,27 @@ test('normalizeConfig coerces malformed provider to defaults', () => {
   assert.equal(normalizeConfig({ provider: null }).provider.reasoningEffort, '')
 })
 
+test('normalizeConfig defaults streamTimeoutMs to five minutes', () => {
+  // The old adapter hard-coded a two-minute whole-request deadline; upstream
+  // congestion made that abort healthy generations, so the default is now five.
+  assert.equal(normalizeConfig(undefined).provider.streamTimeoutMs, 300_000)
+  assert.equal(normalizeConfig({ provider: null }).provider.streamTimeoutMs, 300_000)
+  assert.equal(normalizeConfig({ provider: {} }).provider.streamTimeoutMs, 300_000)
+})
+
+test('normalizeConfig passes a configured streamTimeoutMs through', () => {
+  assert.equal(normalizeConfig({ provider: { streamTimeoutMs: 240_000 } }).provider.streamTimeoutMs, 240_000)
+})
+
+test('normalizeConfig rejects malformed streamTimeoutMs values by falling back', () => {
+  // Not clamped: a sub-floor deadline cannot cover a model round trip, and
+  // honoring it would reintroduce the aborted-mid-generation failure.
+  assert.equal(normalizeConfig({ provider: { streamTimeoutMs: 500 } }).provider.streamTimeoutMs, 300_000)
+  assert.equal(normalizeConfig({ provider: { streamTimeoutMs: 'slow' } }).provider.streamTimeoutMs, 300_000)
+  assert.equal(normalizeConfig({ provider: { streamTimeoutMs: Number.NaN } }).provider.streamTimeoutMs, 300_000)
+  assert.equal(normalizeConfig({ provider: { streamTimeoutMs: Number.POSITIVE_INFINITY } }).provider.streamTimeoutMs, 300_000)
+})
+
 test('normalizeConfig coerces invalid state back to bootstrap', () => {
   for (const invalid of ['enabled', 'yes', 1, undefined, null, []]) {
     assert.equal(normalizeConfig({ state: invalid }).state, 'bootstrap')
@@ -108,10 +129,13 @@ test('a schemastery deployment gets a schema declaring exactly the judged fields
     volatileMarked: false,
     default() { return this },
     volatile() { this.volatileMarked = true; return this },
+    min() { return this },
+    max() { return this },
   })
   const fake = {
     object: (definition) => chainable({ kind: 'object-schema', definition }),
     string: () => chainable({ kind: 'string' }),
+    number: () => chainable({ kind: 'number' }),
     const: (value) => chainable({ kind: 'const', value }),
     union: (list) => chainable({ kind: 'union', list }),
     any: () => chainable({ kind: 'any' }),
@@ -125,12 +149,14 @@ test('a schemastery deployment gets a schema declaring exactly the judged fields
   assert.equal(selected.schema.definition.meter.kind, 'any')
   // The state union is the whole vocabulary the loader may compose.
   assert.deepEqual(selected.schema.definition.state.list.map((entry) => entry.value), ['bootstrap', 'disabled', 'active'])
-  // Exactly the two fields a running plugin can adopt are volatile: volatility is
+  // Exactly the three fields a running plugin can adopt are volatile: volatility is
   // what earns the entry a settings namespace, and it must not be claimed for a
   // field whose edit would silently wait for a restart.
   const provider = selected.schema.definition.provider.definition
   assert.equal(provider.defaultModel.volatileMarked, true)
   assert.equal(provider.reasoningEffort.volatileMarked, true)
+  assert.equal(provider.streamTimeoutMs.volatileMarked, true)
+  assert.equal(provider.streamTimeoutMs.kind, 'number')
   assert.equal(selected.schema.definition.state.volatileMarked, false)
   assert.equal(selected.schema.definition.meter.volatileMarked, false)
   assert.equal(selected.schema.definition.oauth.definition.clientId.volatileMarked, false)

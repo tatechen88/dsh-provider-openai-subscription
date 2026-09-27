@@ -94,7 +94,10 @@ export class OpenAISubscriptionAdapter {
    * @param {object} options
    * @param {() => Promise<{accessToken: string, accountId: string}>} options.getAccess
    * @param {(url: string, init: RequestInit) => Promise<Response>} [options.fetchImpl]
-   * @param {number} [options.timeoutMs]
+   * @param {number} [options.timeoutMs] - whole-request deadline: response
+   *   headers plus the entire SSE body. Defaults to 5 minutes; the old 2-minute
+   *   default aborted slow-but-healthy generations whenever the upstream was
+   *   congested.
    * @param {string} [options.defaultModel]
    * @param {string} [options.reasoningEffort]
    * @param {() => number} [options.now]
@@ -102,7 +105,7 @@ export class OpenAISubscriptionAdapter {
    *   translator for the sentences a person reads; English by default, because a
    *   test or a headless caller has no language to follow.
    */
-  constructor({ getAccess, fetchImpl = fetch, timeoutMs = 120_000, defaultModel = '', reasoningEffort = '', now = Date.now, t = translatorFor('en') }) {
+  constructor({ getAccess, fetchImpl = fetch, timeoutMs = 300_000, defaultModel = '', reasoningEffort = '', now = Date.now, t = translatorFor('en') }) {
     if (typeof getAccess !== 'function') throw new TypeError('OpenAISubscriptionAdapter requires getAccess')
     this.getAccess = getAccess
     this.fetchImpl = fetchImpl
@@ -128,17 +131,21 @@ export class OpenAISubscriptionAdapter {
   /**
    * Adopt settings a running deployment changed without remounting this plugin.
    *
-   * These two fields are the ones the Config schema marks volatile, so DSH
+   * These three fields are the ones the Config schema marks volatile, so DSH
    * pushes edits to them into the live config object and tells the plugin to
    * re-read. An adapter that kept its constructor copy would silently ignore
    * what the settings page shows.
    *
-   * @param {{defaultModel?: string, reasoningEffort?: string}} next
+   * @param {{defaultModel?: string, reasoningEffort?: string, streamTimeoutMs?: number}} next
    * @returns {void}
    */
   setDefaults(next) {
     if (typeof next?.defaultModel === 'string') this.defaultModel = next.defaultModel
     if (typeof next?.reasoningEffort === 'string') this.reasoningEffort = next.reasoningEffort
+    // Only a finite value at or above the floor is adopted; anything else keeps
+    // the current deadline instead of trading one bad setting for a hang.
+    const timeout = next?.streamTimeoutMs
+    if (typeof timeout === 'number' && Number.isFinite(timeout) && timeout >= 1_000) this.timeoutMs = timeout
   }
 
   /**
