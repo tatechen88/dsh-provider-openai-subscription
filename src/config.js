@@ -35,9 +35,8 @@ export const MIN_STREAM_TIMEOUT_MS = 1_000
  * exactly what it always did. It is configurable because Windows can make a
  * literal port permanently unbindable: Hyper-V/WSL/Docker reserve *dynamic*
  * exclusion ranges, and a port inside one fails with `EACCES` even though
- * nothing is listening on it. Observed here on 2026-09-29: `1437-1536` was
- * excluded, so `1455` could not be bound on either loopback stack and the
- * OAuth method could not start at all. Check with
+ * nothing is listening on it. The reservation moves between boots, so a port
+ * that works today may not tomorrow. Check with
  * `netsh int ipv4 show excludedportrange protocol=tcp` and pick a free port.
  */
 export const DEFAULT_OAUTH_CALLBACK_PORT = 1455

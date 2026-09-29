@@ -163,7 +163,7 @@ c3f27d9 2026-09-15 feat: keep the meter numbers on desktop and shrink to an icon
 
 三条口径值得记住：**业务性拒绝不是 0**（「当前用户不存在 coding plan」是 HTTP 200 + `code:500`，卡片照抄官方措辞）；**空字符串余额不是 0**；**GLM 只计量不计价**（订阅制没有按 token 价格，台账里永远是 `unpriced` / `no-schedule`，DeepSeek 的价格表绝不给它计价——有测试守着）。全量失败时加载器**抛错**而不是返回空快照，否则会把上一次成功读数抹掉。
 
-本机实测（该部署的账号）：两个站点都答「无 coding plan」，现金 `availableBalance=0`、`totalSpendAmount=0`，5 个 `EFFECTIVE` 资源包（2M 通用、6M glm-4.6v、12M glm-4.5-air、20 次图片/视频、100 次搜索，均 2026-11-27 到期），`tokenBalance === tokensMagnitude`（未消耗）。凭据在 `.credentials.yaml` 的 `ZAI_CODING_CN_API_KEY`，**不在进程环境**，所以必须走 `ctx.credentials`；解析顺序是设置里的 `llm-pi-ai.providers['zai-coding-cn'].apiKeyEnv` → `ZAI_CODING_CN_API_KEY` → 进程环境。
+实测该部署的账号：两个站点都答「无 coding plan」，现金与消费字段都回 `0`，资源包按官方字段原样呈现（`EFFECTIVE` + 剩余量 + 到期日），且 `tokenBalance === tokensMagnitude`（未消耗）——这里只记**形状**，不抄具体余额与到期日。凭据在 `.credentials.yaml` 的 `ZAI_CODING_CN_API_KEY`，**不在进程环境**，所以必须走 `ctx.credentials`；解析顺序是设置里的 `llm-pi-ai.providers['zai-coding-cn'].apiKeyEnv` → `ZAI_CODING_CN_API_KEY` → 进程环境。
 
 仍未接的两处（都留着测试驱动，不是忘记）：`POST /meter/deepseek/refresh` 与 `POST /meter/zhipu/refresh` 没有客户端调用者，界面靠轮询 + TTL 自刷新；国际站 `zai` 路由需要自己的凭据引用还没有条目。
 

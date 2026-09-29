@@ -192,7 +192,7 @@ profile 里那段 YAML 的 `config` 支持这些字段：
 
 1. `openai_subscription_status` 看 `login.attempt` 里的 URL——若还在 `waiting`，说明浏览器那一步没走完；
 2. 回环回调需要一个本机端口（默认 `127.0.0.1:1455`）：被占用或被杀软拦截时，链接会打开但回调进不来；
-   - 报错是 **`oauth callback port 1455 is unavailable on IPv4`** 时，先别去找占用进程：Windows 会把整段端口动态预留（**`EACCES` 而不是 `EADDRINUSE`**，`netstat` 里是空的）。跑 `netsh int ipv4 show excludedportrange protocol=tcp` 看 `1455` 是否落在某个保留段里，是的话把 `oauth.callbackPort` 改到段外（本机实测 `1437-1536` 被占，`1537` 可用）。**该段重启后会漂移**，换过环境要重查；
+   - 报错是 **`oauth callback port 1455 is unavailable on IPv4`** 时，先别去找占用进程：Windows 会把整段端口动态预留（**`EACCES` 而不是 `EADDRINUSE`**，`netstat` 里是空的）。跑 `netsh int ipv4 show excludedportrange protocol=tcp` 看 `1455` 是否落在某个保留段里，是的话把 `oauth.callbackPort` 改到段外（实测中曾见 `1437-1536` 整段被占，需要试探段外的端口）。**预留范围随机器与启动时机变化**，换过环境要重查；
 3. 换成 `method: "device"`，用设备码在别的设备上完成；
 4. 想重来：`openai_subscription_logout` 会取消挂起的尝试并清掉旧记录。
 
