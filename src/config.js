@@ -28,11 +28,26 @@ export const PLUGIN_STATES = Object.freeze(['bootstrap', 'disabled', 'active'])
  */
 export const MIN_STREAM_TIMEOUT_MS = 1_000
 
+/**
+ * Default loopback port for the authorization-code callback.
+ *
+ * Kept at OpenAI's documented `1455` so a profile that says nothing composes
+ * exactly what it always did. It is configurable because Windows can make a
+ * literal port permanently unbindable: Hyper-V/WSL/Docker reserve *dynamic*
+ * exclusion ranges, and a port inside one fails with `EACCES` even though
+ * nothing is listening on it. Observed here on 2026-09-29: `1437-1536` was
+ * excluded, so `1455` could not be bound on either loopback stack and the
+ * OAuth method could not start at all. Check with
+ * `netsh int ipv4 show excludedportrange protocol=tcp` and pick a free port.
+ */
+export const DEFAULT_OAUTH_CALLBACK_PORT = 1455
+
 /** Default configuration. */
 export const DEFAULT_CONFIG = Object.freeze({
   state: 'bootstrap',
   oauth: Object.freeze({
     clientId: '',
+    callbackPort: DEFAULT_OAUTH_CALLBACK_PORT,
   }),
   provider: Object.freeze({
     defaultModel: '',
@@ -47,7 +62,7 @@ export const DEFAULT_CONFIG = Object.freeze({
  * coerced to the default when malformed.
  *
  * @param {unknown} input - raw cordis config, usually an object.
- * @returns {{state: string, oauth: {clientId: string}, [key: string]: unknown}}
+ * @returns {{state: string, oauth: {clientId: string, callbackPort: number}, [key: string]: unknown}}
  */
 export function normalizeConfig(input) {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) {
@@ -62,6 +77,18 @@ export function normalizeConfig(input) {
     && typeof oauthRaw.clientId === 'string'
     ? oauthRaw.clientId
     : DEFAULT_CONFIG.oauth.clientId
+  // A callback port is a literal TCP port. 0 is deliberately not accepted as
+  // "pick one": the redirect URI has to be stable and known before the browser
+  // opens, so an OS-assigned port would only produce a callback nobody can
+  // reach. Malformed values fall back to the default rather than clamping —
+  // silently rewriting a port the profile declared is worse than ignoring it.
+  const callbackPortRaw = oauthRaw !== null && typeof oauthRaw === 'object' && !Array.isArray(oauthRaw)
+    ? oauthRaw.callbackPort
+    : undefined
+  const callbackPort = typeof callbackPortRaw === 'number' && Number.isInteger(callbackPortRaw)
+    && callbackPortRaw >= 1 && callbackPortRaw <= 65_535
+    ? callbackPortRaw
+    : DEFAULT_CONFIG.oauth.callbackPort
   const providerRaw = record.provider
   const defaultModel = providerRaw !== null && typeof providerRaw === 'object' && !Array.isArray(providerRaw)
     && typeof providerRaw.defaultModel === 'string'
@@ -86,7 +113,7 @@ export function normalizeConfig(input) {
     state,
     oauth: { ...(oauthRaw !== null && typeof oauthRaw === 'object' && !Array.isArray(oauthRaw)
       ? oauthRaw
-      : {}), clientId },
+      : {}), clientId, callbackPort },
     provider: { ...(providerRaw !== null && typeof providerRaw === 'object' && !Array.isArray(providerRaw)
       ? providerRaw
       : {}), defaultModel, reasoningEffort, streamTimeoutMs },
@@ -165,6 +192,15 @@ function configIssues(input) {
     if (!isPlainObject(input.oauth)) issues.push({ message: 'oauth must be an object', path: ['oauth'] })
     else if (!isUnset(input.oauth.clientId) && typeof input.oauth.clientId !== 'string') {
       issues.push({ message: 'oauth.clientId must be a string', path: ['oauth', 'clientId'] })
+    }
+    if (isPlainObject(input.oauth) && !isUnset(input.oauth.callbackPort)) {
+      const port = input.oauth.callbackPort
+      // Rejected, not clamped: a port is either bindable or it is not, and a
+      // silently substituted one would leave the user waiting on a redirect URI
+      // they never configured.
+      if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65_535) {
+        issues.push({ message: 'oauth.callbackPort must be an integer between 1 and 65535', path: ['oauth', 'callbackPort'] })
+      }
     }
   }
   if (!isUnset(input.provider)) {
@@ -292,7 +328,13 @@ export async function selectConfigSchema(load = loadSchemastery) {
     kind: 'schemastery',
     schema: Schema.object({
       state: Schema.union([Schema.const('bootstrap'), Schema.const('disabled'), Schema.const('active')]).default('bootstrap'),
-      oauth: Schema.object({ clientId: Schema.string().default('') }).default({ clientId: '' }),
+      oauth: Schema.object({
+        clientId: Schema.string().default(''),
+        // Not volatile: the callback server is created per sign-in attempt, but
+        // the port also has to reach the redirect URI the user's browser is sent
+        // to, so an edit mid-flight would only confuse a running attempt.
+        callbackPort: Schema.number().min(1).max(65_535).default(DEFAULT_OAUTH_CALLBACK_PORT),
+      }).default({ clientId: '', callbackPort: DEFAULT_OAUTH_CALLBACK_PORT }),
       // Volatile: DSH hands these three to the running plugin instead of remounting
       // it, and the adapter adopts them (`setDefaults`). Everything else here
       // changes meaning only at activation, so marking it volatile would offer an

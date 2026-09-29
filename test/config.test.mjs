@@ -76,6 +76,31 @@ test('normalizeConfig coerces malformed oauth to empty client id', () => {
   assert.equal(normalizeConfig({ oauth: 'x' }).oauth.clientId, '')
 })
 
+test('normalizeConfig defaults the OAuth callback port to 1455', () => {
+  // Windows reserves dynamic exclusion ranges, so this default is not always
+  // bindable; when it is not, a profile overrides it rather than the plugin
+  // guessing. See DEFAULT_OAUTH_CALLBACK_PORT.
+  assert.equal(normalizeConfig(undefined).oauth.callbackPort, 1455)
+  assert.equal(normalizeConfig({ oauth: null }).oauth.callbackPort, 1455)
+  assert.equal(normalizeConfig({ oauth: {} }).oauth.callbackPort, 1455)
+})
+
+test('normalizeConfig passes a configured callback port through', () => {
+  assert.equal(normalizeConfig({ oauth: { callbackPort: 1537 } }).oauth.callbackPort, 1537)
+  assert.equal(normalizeConfig({ oauth: { callbackPort: 1 } }).oauth.callbackPort, 1)
+  assert.equal(normalizeConfig({ oauth: { callbackPort: 65_535 } }).oauth.callbackPort, 65_535)
+})
+
+test('normalizeConfig rejects malformed callback ports by falling back', () => {
+  for (const bad of [0, -1, 65_536, 1.5, '1455', Number.NaN, Number.POSITIVE_INFINITY, true, null, {}]) {
+    assert.equal(
+      normalizeConfig({ oauth: { callbackPort: bad } }).oauth.callbackPort,
+      1455,
+      `${JSON.stringify(bad)} must fall back to the default`,
+    )
+  }
+})
+
 test('PLUGIN_STATES are frozen and include bootstrap, disabled, active', () => {
   assert.deepEqual([...PLUGIN_STATES], ['bootstrap', 'disabled', 'active'])
   assert.equal(Object.isFrozen(PLUGIN_STATES), true)
@@ -160,6 +185,11 @@ test('a schemastery deployment gets a schema declaring exactly the judged fields
   assert.equal(selected.schema.definition.state.volatileMarked, false)
   assert.equal(selected.schema.definition.meter.volatileMarked, false)
   assert.equal(selected.schema.definition.oauth.definition.clientId.volatileMarked, false)
+  // The callback port is read when a sign-in attempt starts, not adopted by a
+  // running plugin, so it must not claim volatility (and must not cost the entry
+  // its namespace by being the only field).
+  assert.equal(selected.schema.definition.oauth.definition.callbackPort.volatileMarked, false)
+  assert.equal(selected.schema.definition.oauth.definition.callbackPort.kind, 'number')
   // A loader that fails or returns something unusable falls back rather than
   // leaving the entry without a schema.
   assert.equal((await selectConfigSchema(() => { throw new Error('missing') })).kind, 'standard')
@@ -223,6 +253,10 @@ test('the schema refuses the malformed fields that used to be coerced away', () 
     [{ oauth: 'x' }, /oauth must be an object/],
     [{ oauth: [] }, /oauth must be an object/],
     [{ oauth: { clientId: 42 } }, /oauth\.clientId must be a string/],
+    [{ oauth: { callbackPort: 0 } }, /oauth\.callbackPort must be an integer between 1 and 65535/],
+    [{ oauth: { callbackPort: 65_536 } }, /oauth\.callbackPort must be an integer between 1 and 65535/],
+    [{ oauth: { callbackPort: 1.5 } }, /oauth\.callbackPort must be an integer between 1 and 65535/],
+    [{ oauth: { callbackPort: '1455' } }, /oauth\.callbackPort must be an integer between 1 and 65535/],
     [{ provider: 'x' }, /provider must be an object/],
     [{ provider: { defaultModel: 42 } }, /provider\.defaultModel must be a string/],
     [{ provider: { reasoningEffort: 0 } }, /provider\.reasoningEffort must be a string/],

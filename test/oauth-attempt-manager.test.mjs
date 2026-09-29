@@ -29,6 +29,52 @@ function idToken(accountId) {
   return `${header}.${body}.sig`
 }
 
+test('OAuthAttempt binds the literal callback port it is given', async () => {
+  // The port reaches the redirect URI, so an operator whose default port is
+  // unbindable (Windows dynamic exclusion ranges) must get exactly the port
+  // they configured — not a substituted one.
+  const repository = new CredentialRepository(fakeProvider())
+  const attempt = new OAuthAttempt({
+    clientId: 'cid',
+    repository,
+    port: 1537,
+    exchange: async () => { throw new Error('never exchanged') },
+  })
+  try {
+    const started = await attempt.start()
+    assert.equal(started.redirectUri, 'http://localhost:1537/auth/callback')
+    assert.equal(attempt.port, 1537)
+    assert.match(started.url, /redirect_uri=http%3A%2F%2Flocalhost%3A1537%2Fauth%2Fcallback/)
+  } finally {
+    attempt.cancel('test teardown')
+    await attempt.callbackServer?.close()
+  }
+})
+
+test('OAuthAttempt does not substitute a port when the configured one is unbindable', async () => {
+  // A reserved or occupied port must surface as a hard failure: silently moving
+  // to another port would send the browser to a redirect URI the operator never
+  // configured, which is exactly the failure this option exists to avoid.
+  // 65535 is a valid literal port; the attempt must either bind *that* port or
+  // fail loudly naming it — never a different one.
+  const repository = new CredentialRepository(fakeProvider())
+  const attempt = new OAuthAttempt({
+    clientId: 'cid',
+    repository,
+    port: 65_535,
+    exchange: async () => { throw new Error('never exchanged') },
+  })
+  try {
+    const started = await attempt.start()
+    assert.equal(started.redirectUri, 'http://localhost:65535/auth/callback')
+  } catch (error) {
+    assert.match(String(error.message), /65535/)
+  } finally {
+    attempt.cancel('test teardown')
+    await attempt.callbackServer?.close()
+  }
+})
+
 test('OAuthAttempt completes through manual code and persists grant', async () => {
   const provider = fakeProvider()
   const repository = new CredentialRepository(provider)

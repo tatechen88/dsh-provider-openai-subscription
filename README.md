@@ -142,6 +142,7 @@ profile 里那段 YAML 的 `config` 支持这些字段：
 |---|---|
 | `state` | `bootstrap`（默认，不加载）、`disabled`、或 `active`（真正启用） |
 | `oauth.clientId` | OAuth Client ID。留空就不会加载 |
+| `oauth.callbackPort` | 回环回调端口，默认 `1455`，取值 1–65535 的整数。**Windows 上常常必须改**：Hyper-V/WSL/Docker 会动态预留一段端口，落在段里的端口**任何进程都绑不上**（`bind` 报 `EACCES`，而 `netstat` 里看不到占用者）。查保留段用 `netsh int ipv4 show excludedportrange protocol=tcp`，挑一个段外端口填这里。**不接受 `0`**：redirect_uri 必须在打开浏览器之前就已知，系统随机端口等于没人能回调。不可绑时插件会**明确报错并点名端口**，不会偷偷换一个 |
 | `provider.defaultModel` | 默认模型，可以留空。**标为 volatile**：改动会被运行中的插件直接采用，不用重启 |
 | `provider.reasoningEffort` | 默认思考力度，可以留空。同样 volatile |
 | `provider.streamTimeoutMs` | 一次模型调用的**整体超时**（响应头 + 整个 SSE 流），默认 `300000`（5 分钟），范围 1000–600000。同样 volatile。来源：旧版硬编码 120 秒，上游拥堵期响应一旦超过它，正在生成的流会被直接掐断（表现为整轮 "This operation was aborted"） |
@@ -191,6 +192,7 @@ profile 里那段 YAML 的 `config` 支持这些字段：
 
 1. `openai_subscription_status` 看 `login.attempt` 里的 URL——若还在 `waiting`，说明浏览器那一步没走完；
 2. 回环回调需要一个本机端口（默认 `127.0.0.1:1455`）：被占用或被杀软拦截时，链接会打开但回调进不来；
+   - 报错是 **`oauth callback port 1455 is unavailable on IPv4`** 时，先别去找占用进程：Windows 会把整段端口动态预留（**`EACCES` 而不是 `EADDRINUSE`**，`netstat` 里是空的）。跑 `netsh int ipv4 show excludedportrange protocol=tcp` 看 `1455` 是否落在某个保留段里，是的话把 `oauth.callbackPort` 改到段外（本机实测 `1437-1536` 被占，`1537` 可用）。**该段重启后会漂移**，换过环境要重查；
 3. 换成 `method: "device"`，用设备码在别的设备上完成；
 4. 想重来：`openai_subscription_logout` 会取消挂起的尝试并清掉旧记录。
 

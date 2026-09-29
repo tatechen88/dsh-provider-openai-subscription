@@ -2,6 +2,39 @@
 
 本文件记录值得让使用者知道的变化。更早的版本看 git tag（`v1.5.0` 及以前）。
 
+## 2.1.0 — 回调端口可配置：把「写死的 1455」变成 `oauth.callbackPort`
+
+### 修复：Windows 端口保留段让 OAuth 登录根本无法开始
+
+**现象**（2026-09-29 实测）：`openai_subscription_login` 的 `oauth` 方式直接报
+`OAuth callback port 1455 is unavailable on IPv4`（`CallbackServerError: ipv4-unavailable`），
+而 `netstat` / `Get-NetTCPConnection` 里**没有任何进程占用 1455**。改用 device flow 能登录，
+所以问题不在凭据、不在上游。
+
+**根因**：Windows 上 Hyper-V / WSL / Docker 会**动态预留**成段的端口，
+落在段里的端口对任何进程都是不可绑的——报 `EACCES`（不是 `EADDRINUSE`），
+占用者查询因此永远查不到。本机实测保留段 `1437-1536`，`1455` 正在其中；
+逐端口实测 `1537` 是其后第一个可用端口。**该范围随重启漂移**（本机 2026-09-20 那次是 `8348-8447`）。
+
+**变更**：
+
+- 新增配置 `oauth.callbackPort`（**非 volatile**，默认 **1455**，整数 1–65535）：
+  此前回调端口在 `attempt-manager.js` 里硬编码 `port = 1455`，配置面只有 `oauth.clientId`。
+  默认值不变，所以什么都不写的 profile 与从前**完全一致**。
+- **刻意不接受 `0`**（虽然 `startCallbackServer` 支持）：redirect_uri 必须在打开浏览器之前
+  就已知，让操作系统随机挑端口等于回调永远进不来。畸形值（0、负数、小数、超范围、非数字）
+  **回退默认而不是钳制**——静默改写运维者声明的端口比忽略它更糟。
+- **端口不可绑时明确失败，绝不换端口**：自动回退会把浏览器送到一个运维者从未配置过的
+  redirect_uri，那正是本选项要避免的失败；错误信息里点名端口。
+- Standard Schema 回退与 schemastery 两套 schema 同步校验；写错类型照旧在加载前点名。
+- README 配置表与「登录点了链接但没登录」排查段同步更新（含 `netsh int ipv4 show excludedportrange protocol=tcp`）。
+
+**注意**：宿主半边改动，**需重启 DSH Desktop** 才加载本版（junction 安装，源码即产物）。
+`inject` 只在创建条目时读取，改 `callbackPort` 后运行中的进程不会采用新值。
+
+**测试**：424/424 通过（`npm run test`；原 419 + 新增 5 条，覆盖默认值、透传、
+畸形回退、字面端口进 redirect_uri、以及"不可绑时不替换端口"）。
+
 ## 2.0.2 — 流超时可配置：把「120 秒硬上限」变成 `provider.streamTimeoutMs`
 
 ### 修复：上游拥堵时正在生成的流被静默掐断

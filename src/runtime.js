@@ -165,7 +165,21 @@ export async function applyRuntime(ctx, config, options = {}) {
   const exchange = async ({ clientId, code, redirectUri, codeVerifier }) => {
     return exchangeAuthorizationCode({ clientId, code, redirectUri, codeVerifier, fetchImpl: globalThis.fetch })
   }
-  const attempts = new OAuthAttemptManager({ clientId: config.oauth.clientId, repository, exchange })
+  // The callback port is a literal port on purpose: the redirect URI has to be
+  // known before the browser opens. `normalizeConfig` owns the fallback, so a
+  // value is only adopted here when it is a real port.
+  const callbackPort = typeof config.oauth?.callbackPort === 'number'
+    && Number.isInteger(config.oauth.callbackPort)
+    && config.oauth.callbackPort >= 1
+    && config.oauth.callbackPort <= 65_535
+    ? config.oauth.callbackPort
+    : undefined
+  const attempts = new OAuthAttemptManager({
+    clientId: config.oauth.clientId,
+    repository,
+    exchange,
+    ...(callbackPort === undefined ? {} : { port: callbackPort }),
+  })
   const devices = new DeviceOAuthAttemptManager({ clientId: config.oauth.clientId, repository, exchange })
   const balance = new BalanceService({
     fetch: () => fetchBalance({ getAccess: () => tokenManager.getAccessSnapshot() }),
